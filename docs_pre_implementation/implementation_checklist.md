@@ -14,7 +14,7 @@ A phase must never be marked complete if any item in its Definition of Done rema
 ### ☐ Phase 0 — Repo, containers, skeletons
 
 - ☑ Packet 0.1 — repository structure and root files
-- ☐ Packet 0.2 — docker-compose and service bootstrapping
+- [~] Packet 0.2 — docker-compose and service bootstrapping
 - ☐ Packet 0.3 — shared health, metrics, logging, middleware
 - ☐ Packet 0.4 — API and model service skeleton entrypoints
 - ☐ Packet 0.5 — GPU backend local HTTP stub
