@@ -1,0 +1,61 @@
+"""
+services/eep/app/main.py
+------------------------
+EEP — Execution Engine Pipeline API service.
+Phase 0 skeleton: health/ready/metrics are live; all business logic is stubbed.
+
+Real implementations:
+  POST /v1/auth/token          → Phase 7 (Packet 7.1)
+  POST /v1/uploads/jobs/presign → Phase 1 (Packet 1.7b)
+  POST /v1/jobs                → Phase 1 (Packet 1.8)
+  GET  /v1/jobs/{job_id}       → Phase 1 (Packet 1.9)
+"""
+
+from fastapi import FastAPI
+
+from shared.logging_config import setup_logging
+from shared.middleware import configure_observability
+
+# Must be called before app is created so uvicorn log capture is configured
+setup_logging(service_name="eep")
+
+app = FastAPI(
+    title="EEP — Execution Engine Pipeline",
+    version="0.1.0",
+    description=(
+        "Central orchestrator for the LibraryAI processing pipeline. "
+        "Owns job management, page routing, quality gates, artifact persistence, "
+        "lineage recording, and all acceptance decisions."
+    ),
+)
+
+configure_observability(app, service_name="eep")
+
+# ── Phase 0 placeholder endpoints ─────────────────────────────────────────────
+# These stubs satisfy the Phase 0 definition of done ("EEP placeholder endpoints
+# exist"). They are replaced with real implementations in the phases listed above.
+
+
+@app.post("/v1/auth/token", tags=["auth"], summary="[stub] Issue JWT token")
+async def auth_token_placeholder() -> dict[str, str]:
+    return {"detail": "not implemented — Phase 7 (Packet 7.1)"}
+
+
+@app.post(
+    "/v1/jobs",
+    status_code=501,
+    tags=["jobs"],
+    summary="[stub] Create processing job",
+)
+async def create_job_placeholder() -> dict[str, str]:
+    return {"detail": "not implemented — Phase 1 (Packet 1.8)"}
+
+
+@app.get(
+    "/v1/jobs/{job_id}",
+    status_code=501,
+    tags=["jobs"],
+    summary="[stub] Get job status",
+)
+async def get_job_placeholder(job_id: str) -> dict[str, str]:
+    return {"detail": "not implemented — Phase 1 (Packet 1.9)"}

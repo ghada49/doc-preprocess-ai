@@ -16,10 +16,9 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - ☑ Packet 0.1 — repository structure and root files
 - [~] Packet 0.2 — docker-compose and service bootstrapping
 - ☑ Packet 0.3 — shared health, metrics, logging, middleware
-- ☐ Packet 0.4 — API and model service skeleton entrypoints
-- ☐ Packet 0.5 — GPU backend local HTTP stub
+- ☑ Packet 0.4 — API and model service skeleton entrypoints
+- ☑ Packet 0.5 — GPU backend local HTTP stub
 - ☐ Packet 0.6 — service skeletons for worker, recovery, and maintenance processes
-- ☐ Packet 0.7 — checklist creation
 
 - **Summary:**
 - **Blocked/blocking:**
