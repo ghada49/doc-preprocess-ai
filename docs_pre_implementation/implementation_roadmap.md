@@ -1176,7 +1176,7 @@ Done when:
 - job-level PTIFF QA gate release occurs only when all relevant pages have been QA-resolved according to mode and no page remains in correction flow that must return to PTIFF QA
 - in manual mode, page approval alone does not change page state out of `ptiff_qa_pending`; gate release performs the controlled batch transition
 
-##### Note: 
+##### Note:
 Approve-all must operate only on rows where `job_id = ? AND status = 'ptiff_qa_pending'`.
 
 In `ptiff_qa_mode="manual"`, approve-all records approval intent only and must not immediately transition page state out of `ptiff_qa_pending`.

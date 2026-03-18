@@ -1,0 +1,79 @@
+# Claude
+.claude/
+.claude
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+.venv/
+venv/
+env/
+.Python
+
+# uv
+.uv/
+uv.lock
+
+# mypy
+.mypy_cache/
+.dmypy.json
+
+# ruff
+.ruff_cache/
+
+# pytest
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+
+# Environment
+.env
+.env.*
+!.env.example
+
+# Docker
+.docker/
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Model weights (large binaries — never commit)
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+*.bin
+
+# MLflow artifacts
+mlruns/
+mlartifacts/
+
+# Logs
+*.log
+logs/
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb
+
+# Terraform / infra secrets
+*.tfstate
+*.tfstate.backup
+.terraform/

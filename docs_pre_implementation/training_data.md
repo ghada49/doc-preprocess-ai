@@ -117,4 +117,3 @@ With ~125 book files, ~300 na121 files, and ~275 na246 files, your non-microfilm
 This means your generalization evaluation for the book collection will give you directional signal but not statistically reliable estimates. You should treat the book collection leave-one-out result as a qualitative indicator — does the model completely fail on books, or does it degrade gracefully — rather than as a precise accuracy number.
 
 The mic_06 collection is large enough that leave-one-out results on it will be reliable. This is your strongest generalization test.
-
