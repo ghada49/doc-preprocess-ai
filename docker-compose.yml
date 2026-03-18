@@ -199,7 +199,7 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-    command: ["python", "-m", "services.eep_worker.app.main"]
+    command: ["uvicorn", "services.eep_worker.app.main:app", "--host", "0.0.0.0", "--port", "9100", "--reload"]
 
   # ── EEP recovery ─────────────────────────────────────────────────────────────
 
@@ -225,7 +225,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: ["python", "-m", "services.eep_recovery.app.main"]
+    command: ["uvicorn", "services.eep_recovery.app.main:app", "--host", "0.0.0.0", "--port", "9101", "--reload"]
 
   # ── Shadow worker ─────────────────────────────────────────────────────────────
 
@@ -251,7 +251,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: ["python", "-m", "services.shadow_worker.app.main"]
+    command: ["uvicorn", "services.shadow_worker.app.main:app", "--host", "0.0.0.0", "--port", "9102", "--reload"]
 
   # ── Shadow recovery ───────────────────────────────────────────────────────────
 
@@ -277,7 +277,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: ["python", "-m", "services.shadow_recovery.app.main"]
+    command: ["uvicorn", "services.shadow_recovery.app.main:app", "--host", "0.0.0.0", "--port", "9103", "--reload"]
 
   # ── Retraining worker ─────────────────────────────────────────────────────────
 
@@ -305,7 +305,7 @@ services:
         condition: service_healthy
       mlflow:
         condition: service_started
-    command: ["python", "-m", "services.retraining_worker.app.main"]
+    command: ["uvicorn", "services.retraining_worker.app.main:app", "--host", "0.0.0.0", "--port", "9104", "--reload"]
 
   # ── Retraining recovery ────────────────────────────────────────────────────────
 
@@ -331,7 +331,7 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
-    command: ["python", "-m", "services.retraining_recovery.app.main"]
+    command: ["uvicorn", "services.retraining_recovery.app.main:app", "--host", "0.0.0.0", "--port", "9105", "--reload"]
 
   # ── Artifact cleanup ──────────────────────────────────────────────────────────
 
@@ -357,7 +357,7 @@ services:
         condition: service_healthy
       minio:
         condition: service_healthy
-    command: ["python", "-m", "services.artifact_cleanup.app.main"]
+    command: ["uvicorn", "services.artifact_cleanup.app.main:app", "--host", "0.0.0.0", "--port", "9106", "--reload"]
 
   # ── IEP1A — YOLOv8-seg geometry service ──────────────────────────────────────
 
