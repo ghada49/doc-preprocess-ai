@@ -26,12 +26,12 @@ A phase must never be marked complete if any item in its Definition of Done rema
 
 ### ☐ Phase 1 — Schemas, DB, storage, Redis, job API
 
-- ☐ Packet 1.1 — UCF and preprocessing schemas
-- ☐ Packet 1.2 — geometry, normalization, iep1d, layout schemas
-- ☐ Packet 1.3 — EEP schemas and terminal page states
-- ☐ Packet 1.3a — page state machine contract
-- ☐ Packet 1.4 — storage backends
-- ☐ Packet 1.5 — core DB migration
+- ☑ Packet 1.1 — UCF and preprocessing schemas
+- ☑ Packet 1.2 — geometry, normalization, iep1d, layout schemas
+- ☑ Packet 1.3 — EEP schemas and terminal page states
+- ☑ Packet 1.3a — page state machine contract
+- ☑ Packet 1.4 — storage backends
+- ☑ Packet 1.5 — core DB migration
 - ☐ Packet 1.6 — ORM / DB model layer
 - ☐ Packet 1.7 — Redis queue setup
 - ☐ Packet 1.7a — reliable Redis queue contract
