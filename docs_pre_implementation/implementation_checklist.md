@@ -33,7 +33,7 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - ☑ Packet 1.4 — storage backends
 - ☑ Packet 1.5 — core DB migration
 - ☑ Packet 1.6 — ORM / DB model layer
-- ☐ Packet 1.7 — Redis queue setup
+- ☑ Packet 1.7 — Redis queue setup
 - ☐ Packet 1.7a — reliable Redis queue contract
 - ☐ Packet 1.7b — presigned upload endpoint
 - ☐ Packet 1.8 — job creation endpoint
