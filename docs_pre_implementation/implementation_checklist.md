@@ -11,19 +11,18 @@ A phase must never be marked complete if any item in its Definition of Done rema
 
 ## Phases
 
-### ☐ Phase 0 — Repo, containers, skeletons
+### ☑ Phase 0 — Repo, containers, skeletons
 
-- ☐ Packet 0.1 — repository structure and root files
-- ☐ Packet 0.2 — docker-compose and service bootstrapping
-- ☐ Packet 0.3 — shared health, metrics, logging, middleware
-- ☐ Packet 0.4 — API and model service skeleton entrypoints
-- ☐ Packet 0.5 — GPU backend local HTTP stub
-- ☐ Packet 0.6 — service skeletons for worker, recovery, and maintenance processes
-- ☐ Packet 0.7 — checklist creation
+- ☑ Packet 0.1 — repository structure and root files
+- ☑ Packet 0.2 — docker-compose and service bootstrapping
+- ☑ Packet 0.3 — shared health, metrics, logging, middleware
+- ☑ Packet 0.4 — API and model service skeleton entrypoints
+- ☑ Packet 0.5 — GPU backend local HTTP stub
+- ☑ Packet 0.6 — service skeletons for worker, recovery, and maintenance processes
 
-- **Summary:**
-- **Blocked/blocking:**
-- **Relevant spec constraints:**
+- **Summary:** Repo structure, all containers, all service skeletons, shared utilities, GPU backend abstraction, and implementation ledger are complete.
+- **Blocked/blocking:** None. Phase 1 may begin.
+- **Relevant spec constraints:** PYTHONPATH=/app in all containers (Section 1.5); Redis AOF enabled; IEP services are mock only until Phase 12.
 
 ### ☐ Phase 1 — Schemas, DB, storage, Redis, job API
 

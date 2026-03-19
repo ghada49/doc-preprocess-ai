@@ -222,7 +222,7 @@ ACCEPTED   review
 | IEP1C | (shared module) | NormalizeRequest (internal) | PreprocessBranchResponse (internal) | — |
 | IEP1D | `POST /v1/rectify` | RectifyRequest | RectifyResponse | 60s |
 | IEP2A | `POST /v1/layout-detect` | LayoutDetectRequest | LayoutDetectResponse (detector_type="detectron2") | 60s |
-| IEP2B | `POST /v1/layout-detect` |LayoutDetectRequest | LayoutDetectResponse (detector_type="doclayout_yolo") | 30s | 
+| IEP2B | `POST /v1/layout-detect` |LayoutDetectRequest | LayoutDetectResponse (detector_type="doclayout_yolo") | 30s |
 
 IEP1A and IEP1B expose identical endpoint schemas. The same GeometryRequest/GeometryResponse contract serves both.
 
@@ -619,7 +619,7 @@ This schema is the output of IEP1C and is the input to the EEP artifact validati
 
 EEP receives the raw OTIFF via a storage URI.
 
-The system does not accept large image payloads directly in API requests.  
+The system does not accept large image payloads directly in API requests.
 Clients must upload images to an external or managed storage location and provide a URI.
 
 Supported ingestion patterns include:
@@ -661,7 +661,7 @@ Each model attempts to return a `GeometryResponse` including:
 - If one model fails, the other remains a valid candidate
 - If both models fail, no reliable geometry is available
 
-Model failure or disagreement does not trigger immediate human correction.  
+Model failure or disagreement does not trigger immediate human correction.
 Uncertainty is handled through validation and rescue stages.
 
 ---
@@ -672,13 +672,13 @@ EEP constructs the set of available geometry candidates from Step 2.
 
 1. **Candidate construction**
 
-   - Include all valid model outputs  
-   - Exclude failed or malformed outputs  
+   - Include all valid model outputs
+   - Exclude failed or malformed outputs
 
 2. **Sanity filtering**
 
-   - Apply sanity checks (Section 6.8) independently to each candidate  
-   - Remove any candidate that fails  
+   - Apply sanity checks (Section 6.8) independently to each candidate
+   - Remove any candidate that fails
 
 3. **Candidate availability**
 
@@ -687,8 +687,8 @@ EEP constructs the set of available geometry candidates from Step 2.
 
 4. **Confidence and uncertainty evaluation**
 
-   - Structural agreement between models increases confidence but is not required at this stage  
-   - Disagreement is treated as uncertainty  
+   - Structural agreement between models increases confidence but is not required at this stage
+   - Disagreement is treated as uncertainty
    - Consider:
      - `geometry_confidence`
      - `tta_structural_agreement_rate`
@@ -697,11 +697,11 @@ EEP constructs the set of available geometry candidates from Step 2.
 
 5. **Page area preference**
 
-   - Prefer IEP1B (keypoint) when `page_area_fraction` is small  
+   - Prefer IEP1B (keypoint) when `page_area_fraction` is small
 
 6. **Selection**
 
-   - Select the candidate with highest effective confidence  
+   - Select the candidate with highest effective confidence
 
 The selected geometry is treated as the **initial structure hypothesis**.
 
@@ -713,9 +713,9 @@ EEP invokes IEP1C with the full-resolution OTIFF and selected geometry.
 
 IEP1C produces:
 
-- normalized page artifact(s)  
-- deskew / perspective-corrected output  
-- `TransformRecord`  
+- normalized page artifact(s)
+- deskew / perspective-corrected output
+- `TransformRecord`
 - quality metrics:
   - `blur_score`
   - `border_score`
@@ -724,8 +724,8 @@ IEP1C produces:
 
 If `split_required=True`:
 
-- split at `split_x`  
-- process each child independently  
+- split at `split_x`
+- process each child independently
 
 ---
 
@@ -737,17 +737,17 @@ Each artifact is evaluated independently along two dimensions:
 
 **Hard requirements (must pass):**
 
-- artifact exists and is decodable  
-- dimensions are valid  
-- crop is within bounds  
-- geometry matches output  
+- artifact exists and is decodable
+- dimensions are valid
+- crop is within bounds
+- geometry matches output
 
 **Quality signals:**
 
-- skew residual  
-- blur score  
-- border score  
-- foreground coverage  
+- skew residual
+- blur score
+- border score
+- foreground coverage
 
 ---
 
@@ -755,11 +755,11 @@ Each artifact is evaluated independently along two dimensions:
 
 Evaluate whether the selected geometry is reliable enough for auto-ingestion:
 
-- `geometry_confidence`  
-- `tta_structural_agreement_rate`  
-- `split_confidence` (if applicable)  
-- model agreement vs disagreement  
-- whether geometry came from one or both models  
+- `geometry_confidence`
+- `tta_structural_agreement_rate`
+- `split_confidence` (if applicable)
+- model agreement vs disagreement
+- whether geometry came from one or both models
 
 ---
 
@@ -767,16 +767,16 @@ Evaluate whether the selected geometry is reliable enough for auto-ingestion:
 
 An artifact proceeds directly to Step 8 only if **both conditions are satisfied**:
 
-- artifact quality is acceptable  
+- artifact quality is acceptable
 - geometry trust is high (i.e., first-pass structural agreement was achieved)
 
 Otherwise, the artifact proceeds to rectification (Step 6).
 
 This includes cases where:
 
-- only one model produced valid geometry  
-- models disagreed structurally  
-- geometry confidence or stability is insufficient  
+- only one model produced valid geometry
+- models disagreed structurally
+- geometry confidence or stability is insufficient
 
 Rectification is the mandatory rescue stage before any human correction.
 
@@ -786,8 +786,8 @@ Rectification is the mandatory rescue stage before any human correction.
 
 When `split_required=True`:
 
-- evaluate each child independently  
-- only failing children proceed to Step 6  
+- evaluate each child independently
+- only failing children proceed to Step 6
 
 ---
 
@@ -799,9 +799,9 @@ EEP invokes IEP1D `POST /v1/rectify`.
 
 IEP1D returns:
 
-- rectified image  
-- `rectification_confidence`  
-- quality improvement metrics  
+- rectified image
+- `rectification_confidence`
+- quality improvement metrics
 
 **Failure handling:**
 
@@ -809,7 +809,7 @@ IEP1D returns:
   - route artifact to `pending_human_correction` (`review_reasons=["rectification_failed"]`)
   - stop further processing for that artifact
 
-Rectification operates on the artifact produced in Step 4.  
+Rectification operates on the artifact produced in Step 4.
 It improves visual quality only and does not redefine page structure.
 
 ---
@@ -820,29 +820,29 @@ For each successfully rectified artifact:
 
 EEP reruns geometry inference:
 
-- IEP1A on rectified proxy  
-- IEP1B on rectified proxy  
+- IEP1A on rectified proxy
+- IEP1B on rectified proxy
 
 Expected behavior:
 
-- already-split child → `page_count=1`, `split_required=False`  
+- already-split child → `page_count=1`, `split_required=False`
 
 If re-splitting occurs:
 
-- route to `pending_human_correction` (`geometry_unexpected_split_on_child`)  
+- route to `pending_human_correction` (`geometry_unexpected_split_on_child`)
 
 ---
 
 ##### **Second-pass geometry selection (authoritative stage)**
 
-- Both IEP1A and IEP1B must return valid outputs  
-- Both models must agree on `page_count` and `split_required`  
+- Both IEP1A and IEP1B must return valid outputs
+- Both models must agree on `page_count` and `split_required`
 
 If either condition fails:
 
-- route to `pending_human_correction`  
+- route to `pending_human_correction`
 
-This requirement is strict and non-bypassable.  
+This requirement is strict and non-bypassable.
 Second-pass agreement is required to restore trust in geometry.
 
 ---
@@ -851,15 +851,15 @@ Second-pass agreement is required to restore trust in geometry.
 
 EEP:
 
-- reruns IEP1C normalization using second-pass geometry  
-- reruns validation (same logic as Step 5)  
+- reruns IEP1C normalization using second-pass geometry
+- reruns validation (same logic as Step 5)
 
 Final decision:
 
-- If validation passes → proceed to Step 8  
-- If validation fails → route to `pending_human_correction`  
+- If validation passes → proceed to Step 8
+- If validation fails → route to `pending_human_correction`
 
-This is the final automated rescue attempt.  
+This is the final automated rescue attempt.
 No further automated rescue is attempted after this step.
 
 ---
@@ -870,27 +870,27 @@ No further automated rescue is attempted after this step.
 
 After all children exit validation:
 
-- Parent → `status="split"` (terminal routing state)  
+- Parent → `status="split"` (terminal routing state)
 - Children:
   - assigned `sub_page_index`
   - independent artifacts
-  - independent lifecycle  
+  - independent lifecycle
 
 The parent transitions to `split` only after all child artifacts have completed their validation paths.
 
 Each valid child:
 
-- enqueued as a new Redis task  
+- enqueued as a new Redis task
 
 Each failed child:
 
-- `pending_human_correction`  
+- `pending_human_correction`
 
 ---
 
 ##### **When `split_required=False`**
 
-- proceed with single artifact  
+- proceed with single artifact
 
 ---
 
@@ -898,9 +898,9 @@ Each failed child:
 
 If `pipeline_mode == "preprocess"`:
 
-- store artifact  
-- set `status="accepted"`  
-- stop  
+- store artifact
+- set `status="accepted"`
+- stop
 
 If `pipeline_mode == "layout"`:
 
@@ -1586,7 +1586,7 @@ All five states below stop automated worker processing. They are subdivided by p
 - **failed** — leaf-final. Unrecoverable infrastructure or system failure; no automated retry will be attempted.
 - **split** — routing-terminal state for the parent page of a spread; child sub-pages are created and independently processed.
 
-`ptiff_qa_pending` is not a worker-terminal state and not a leaf-final state. 
+`ptiff_qa_pending` is not a worker-terminal state and not a leaf-final state.
 However, in `ptiff_qa_mode="manual"`, `ptiff_qa_pending` is an automatic-processing stop point: workers must not progress the page further until reviewer action occurs and the PTIFF QA gate is released.
 A job with any leaf page in `ptiff_qa_pending` remains `running`, not `done`
 It is a non-terminal page state representing the PTIFF-stage QA checkpoint between preprocessing and downstream routing. Pages in `ptiff_qa_pending` do not count as terminal for job completion.

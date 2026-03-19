@@ -1,0 +1,73 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+
+alerting:
+  alertmanagers:
+    - static_configs:
+        - targets:
+            - alertmanager:9093
+
+# Rule files are added in Phase 9
+rule_files: []
+
+scrape_configs:
+  # ── Prometheus self-scrape ────────────────────────────────────────────────
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]
+
+  # ── EEP API ───────────────────────────────────────────────────────────────
+  - job_name: eep
+    static_configs:
+      - targets: ["eep:8000"]
+
+  # ── Background workers and recovery services ──────────────────────────────
+  - job_name: eep-worker
+    static_configs:
+      - targets: ["eep-worker:9100"]
+
+  - job_name: eep-recovery
+    static_configs:
+      - targets: ["eep-recovery:9101"]
+
+  - job_name: shadow-worker
+    static_configs:
+      - targets: ["shadow-worker:9102"]
+
+  - job_name: shadow-recovery
+    static_configs:
+      - targets: ["shadow-recovery:9103"]
+
+  - job_name: retraining-worker
+    static_configs:
+      - targets: ["retraining-worker:9104"]
+
+  - job_name: retraining-recovery
+    static_configs:
+      - targets: ["retraining-recovery:9105"]
+
+  - job_name: artifact-cleanup
+    static_configs:
+      - targets: ["artifact-cleanup:9106"]
+
+  # ── IEP services ──────────────────────────────────────────────────────────
+  - job_name: iep1a
+    static_configs:
+      - targets: ["iep1a:8001"]
+
+  - job_name: iep1b
+    static_configs:
+      - targets: ["iep1b:8002"]
+
+  - job_name: iep1d
+    static_configs:
+      - targets: ["iep1d:8003"]
+
+  - job_name: iep2a
+    static_configs:
+      - targets: ["iep2a:8004"]
+
+  - job_name: iep2b
+    static_configs:
+      - targets: ["iep2b:8005"]
