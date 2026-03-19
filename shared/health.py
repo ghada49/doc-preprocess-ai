@@ -50,7 +50,7 @@ def make_health_router(
     async def health() -> dict[str, str]:
         return {"status": "ok"}
 
-    @router.get("/ready", summary="Readiness probe")
+    @router.get("/ready", summary="Readiness probe", response_model=None)
     async def ready() -> JSONResponse | dict[str, str]:
         for check in _checks:
             try:

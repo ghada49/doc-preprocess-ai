@@ -40,7 +40,6 @@ services:
       retries: 5
 
   # ── MinIO (S3-compatible object storage) ─────────────────────────────────────
-
   minio:
     image: minio/minio:RELEASE.2024-02-24T17-11-14Z
     command: server /data --console-address ":9001"
@@ -55,21 +54,20 @@ services:
     networks:
       - libraryai-net
     restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
 
   # One-shot service that creates the libraryai bucket on first start
   minio-init:
     image: minio/mc:RELEASE.2024-02-24T01-33-20Z
     depends_on:
-      minio:
-        condition: service_healthy
+      - minio
     entrypoint: >
       /bin/sh -c "
-        mc alias set local http://minio:9000 ${S3_ACCESS_KEY_ID:-minioadmin} ${S3_SECRET_ACCESS_KEY:-minioadmin};
+        until mc alias set local http://minio:9000 ${S3_ACCESS_KEY_ID:-minioadmin} ${S3_SECRET_ACCESS_KEY:-minioadmin}; do
+          sleep 2;
+        done;
+        until mc ready local; do
+          sleep 2;
+        done;
         mc mb --ignore-existing local/${S3_BUCKET_NAME:-libraryai};
         exit 0;
       "
@@ -166,11 +164,11 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
-        condition: service_healthy
+        condition: service_started
       redis:
-        condition: service_healthy
+        condition: service_started
       minio:
-        condition: service_healthy
+        condition: service_started
     command: ["uvicorn", "services.eep.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
 
   # ── EEP worker ───────────────────────────────────────────────────────────────
@@ -194,11 +192,11 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
-        condition: service_healthy
+        condition: service_started
       redis:
-        condition: service_healthy
+        condition: service_started
       minio:
-        condition: service_healthy
+        condition: service_started
     command: ["uvicorn", "services.eep_worker.app.main:app", "--host", "0.0.0.0", "--port", "9100", "--reload"]
 
   # ── EEP recovery ─────────────────────────────────────────────────────────────
@@ -222,9 +220,9 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
-        condition: service_healthy
+        condition: service_started
       redis:
-        condition: service_healthy
+        condition: service_started
     command: ["uvicorn", "services.eep_recovery.app.main:app", "--host", "0.0.0.0", "--port", "9101", "--reload"]
 
   # ── Shadow worker ─────────────────────────────────────────────────────────────
@@ -248,9 +246,9 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
-        condition: service_healthy
+        condition: service_started
       redis:
-        condition: service_healthy
+        condition: service_started
     command: ["uvicorn", "services.shadow_worker.app.main:app", "--host", "0.0.0.0", "--port", "9102", "--reload"]
 
   # ── Shadow recovery ───────────────────────────────────────────────────────────
@@ -274,9 +272,9 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
-        condition: service_healthy
+        condition: service_started
       redis:
-        condition: service_healthy
+        condition: service_started
     command: ["uvicorn", "services.shadow_recovery.app.main:app", "--host", "0.0.0.0", "--port", "9103", "--reload"]
 
   # ── Retraining worker ─────────────────────────────────────────────────────────
@@ -300,9 +298,9 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
-        condition: service_healthy
+        condition: service_started
       redis:
-        condition: service_healthy
+        condition: service_started
       mlflow:
         condition: service_started
     command: ["uvicorn", "services.retraining_worker.app.main:app", "--host", "0.0.0.0", "--port", "9104", "--reload"]
@@ -328,9 +326,9 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
-        condition: service_healthy
+        condition: service_started
       redis:
-        condition: service_healthy
+        condition: service_started
     command: ["uvicorn", "services.retraining_recovery.app.main:app", "--host", "0.0.0.0", "--port", "9105", "--reload"]
 
   # ── Artifact cleanup ──────────────────────────────────────────────────────────
@@ -354,9 +352,9 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
-        condition: service_healthy
+        condition: service_started
       minio:
-        condition: service_healthy
+        condition: service_started
     command: ["uvicorn", "services.artifact_cleanup.app.main:app", "--host", "0.0.0.0", "--port", "9106", "--reload"]
 
   # ── IEP1A — YOLOv8-seg geometry service ──────────────────────────────────────
