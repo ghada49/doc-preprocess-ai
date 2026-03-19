@@ -7,12 +7,13 @@ Phase 0 skeleton: health/ready/metrics are live; all business logic is stubbed.
 Real implementations:
   POST /v1/auth/token          → Phase 7 (Packet 7.1)
   POST /v1/uploads/jobs/presign → LIVE (Packet 1.7b)
-  POST /v1/jobs                → Phase 1 (Packet 1.8)
+  POST /v1/jobs                → LIVE (Packet 1.8)
   GET  /v1/jobs/{job_id}       → Phase 1 (Packet 1.9)
 """
 
 from fastapi import FastAPI
 
+from services.eep.app.jobs.create import router as jobs_router
 from services.eep.app.uploads import router as uploads_router
 from shared.logging_config import setup_logging
 from shared.middleware import configure_observability
@@ -34,6 +35,7 @@ configure_observability(app, service_name="eep")
 
 # ── Phase 1 routers ────────────────────────────────────────────────────────────
 app.include_router(uploads_router)
+app.include_router(jobs_router)
 
 # ── Phase 0 placeholder endpoints ─────────────────────────────────────────────
 # These stubs satisfy the Phase 0 definition of done ("EEP placeholder endpoints
@@ -43,16 +45,6 @@ app.include_router(uploads_router)
 @app.post("/v1/auth/token", tags=["auth"], summary="[stub] Issue JWT token")
 async def auth_token_placeholder() -> dict[str, str]:
     return {"detail": "not implemented — Phase 7 (Packet 7.1)"}
-
-
-@app.post(
-    "/v1/jobs",
-    status_code=501,
-    tags=["jobs"],
-    summary="[stub] Create processing job",
-)
-async def create_job_placeholder() -> dict[str, str]:
-    return {"detail": "not implemented — Phase 1 (Packet 1.8)"}
 
 
 @app.get(
