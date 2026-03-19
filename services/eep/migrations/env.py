@@ -17,6 +17,8 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
+from services.eep.app.db.models import Base
+
 # Alembic Config object (gives access to alembic.ini values)
 config = context.config
 
@@ -33,9 +35,8 @@ _database_url = os.environ.get(
 )
 config.set_main_option("sqlalchemy.url", _database_url)
 
-# target_metadata: set to the ORM MetaData once Packet 1.6 (models.py) is
-# implemented.  Left as None for Packet 1.5 (raw SQL migrations only).
-target_metadata = None
+# ORM metadata used by Alembic for autogenerate support (Packet 1.6+).
+target_metadata = Base.metadata
 
 
 def run_migrations_offline() -> None:
