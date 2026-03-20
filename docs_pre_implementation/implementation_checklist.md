@@ -43,15 +43,15 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - **Blocked/blocking:** None. Phase 2 may begin.
 - **Relevant spec constraints:** DB is source of truth; Redis is execution mechanism only. DB committed before Redis enqueue; Packet 4.7 recovery re-enqueues orphaned tasks. `ptiff_qa_pending` is non-terminal (job stays `running`). Split-parent pages (status=`split`) excluded from job status derivation.
 
-### ☐ Phase 2 — IEP1A/B mocks + IEP1C
+### ☑ Phase 2 — IEP1A/B mocks + IEP1C
 
-- ☐ Packet 2.1 — IEP1A mock service shell
-- ☐ Packet 2.2 — IEP1A TTA mock behavior
-- ☐ Packet 2.3 — IEP1B mock service shell
-- ☐ Packet 2.4 — IEP1B TTA mock behavior
-- ☐ Packet 2.5 — normalization core
-- ☐ Packet 2.6 — split handling
-- ☐ Packet 2.7 — quality metrics
+- ☑ Packet 2.1 — IEP1A mock service shell
+- ☑ Packet 2.2 — IEP1A TTA mock behavior
+- ☑ Packet 2.3 — IEP1B mock service shell
+- ☑ Packet 2.4 — IEP1B TTA mock behavior
+- ☑ Packet 2.5 — normalization core
+- ☑ Packet 2.6 — split handling
+- ☑ Packet 2.7 — quality metrics
 
 - **Summary:**
 - **Blocked/blocking:**

@@ -140,7 +140,7 @@ class LocalHTTPBackend(GPUBackend):
 
     # Internal HTTP client; created lazily so the dataclass can be constructed
     # synchronously and the client opened on first use.
-    _client: httpx.AsyncClient = field(init=False, default=None, repr=False)
+    _client: httpx.AsyncClient | None = field(init=False, default=None, repr=False)
 
     def _get_client(self) -> httpx.AsyncClient:
         if self._client is None:
