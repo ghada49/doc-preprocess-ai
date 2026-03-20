@@ -2,14 +2,21 @@
 services/iep1a/app/main.py
 --------------------------
 IEP1A — YOLOv8-seg page geometry service.
-Phase 0 skeleton: health/ready/metrics are live.
 
-Real implementation:
-  POST /v1/geometry  → Phase 2 (Packets 2.1, 2.2)
+Endpoints:
+  POST /v1/geometry   → GeometryResponse on success
+                      → PreprocessError (HTTP 422 or 503) on failure
+  GET  /health        → {"status": "ok"}   (always 200)
+  GET  /ready         → {"status": "ready"} | {"status": "not_ready"}
+                        (503 when IEP1A_MOCK_NOT_READY="true";
+                         Phase 12 wires real CUDA + model-loaded check)
+  GET  /metrics       → Prometheus text
 """
 
 from fastapi import FastAPI
 
+from services.iep1a.app.geometry import router as geometry_router
+from services.iep1a.app.inference import is_model_ready
 from shared.logging_config import setup_logging
 from shared.middleware import configure_observability
 
@@ -25,6 +32,10 @@ app = FastAPI(
     ),
 )
 
-configure_observability(app, service_name="iep1a")
+configure_observability(
+    app,
+    service_name="iep1a",
+    health_checks=[is_model_ready],
+)
 
-# POST /v1/geometry implemented in Phase 2 (Packet 2.1)
+app.include_router(geometry_router)
