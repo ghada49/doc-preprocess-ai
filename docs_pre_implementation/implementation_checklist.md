@@ -57,18 +57,18 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - **Blocked/blocking:**
 - **Relevant spec constraints:**
 
-### ☐ Phase 3 — Geometry selection + artifact validation
+### ☑ Phase 3 — Geometry selection + artifact validation
 
 - ☑ Packet 3.1 — structural agreement and sanity checks
 - ☑ Packet 3.2 — split confidence, variance, page area preference
 - ☑ Packet 3.3 — final selection and route-to-human logic
 - ☑ Packet 3.4 — artifact hard requirements
 - ☑ Packet 3.5 — artifact soft score and threshold logic
-- ☐ Packet 3.6 — gate test suite
+- ☑ Packet 3.6 — gate test suite
 
-- **Summary:**
-- **Blocked/blocking:**
-- **Relevant spec constraints:**
+- **Summary:** Geometry selection gate (structural agreement, sanity checks, split confidence, TTA variance, page area preference, confidence-based selection, route-to-human logic) and artifact validation gate (five hard requirements, six-signal weighted soft scoring, gate log record builders) are complete and fully tested (35 integration tests + 81 artifact tests + 114 geometry tests = 230 tests pass).
+- **Blocked/blocking:** None. Phase 4 may begin.
+- **Relevant spec constraints:** Spec Sections 6.8–6.9; geometry trust HIGH only when both models present + structural agreement + zero dropouts; route_decision never equals "failed"; soft scoring skipped when any hard check fails.
 
 ### ☐ Phase 4 — Full IEP1 worker orchestration
 
