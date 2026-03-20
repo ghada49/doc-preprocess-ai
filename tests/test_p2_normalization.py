@@ -6,7 +6,8 @@ Contract tests for Packet 2.5: shared normalization core.
 Covers:
   - perspective.py : four_point_transform
   - deskew.py      : compute_deskew_angle, apply_affine_deskew
-  - normalize.py   : normalize_single_page, NormalizeResult
+  - normalize.py   : normalize_single_page, NormalizeResult,
+                     normalize_result_to_branch_response
 
 All tests use synthetic numpy arrays — no real images or storage required.
 Quality metrics are asserted to be placeholder zeros in Packet 2.5.
@@ -20,10 +21,20 @@ import numpy as np
 import pytest
 
 from shared.normalization.deskew import apply_affine_deskew, compute_deskew_angle
-from shared.normalization.normalize import NormalizeResult, normalize_single_page
+from shared.normalization.normalize import (
+    NormalizeResult,
+    normalize_result_to_branch_response,
+    normalize_single_page,
+)
 from shared.normalization.perspective import four_point_transform
 from shared.schemas.geometry import GeometryResponse, PageRegion
-from shared.schemas.preprocessing import CropResult, DeskewResult, QualityMetrics, SplitResult
+from shared.schemas.preprocessing import (
+    CropResult,
+    DeskewResult,
+    PreprocessBranchResponse,
+    QualityMetrics,
+    SplitResult,
+)
 from shared.schemas.ucf import BoundingBox, TransformRecord
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -513,3 +524,81 @@ class TestNormalizeResultTypes:
 
     def test_crop_border_score_in_range(self) -> None:
         assert 0.0 <= self._result().crop.border_score <= 1.0
+
+
+# ── TestNormalizeResultToBranchResponse ───────────────────────────────────────
+
+
+class TestNormalizeResultToBranchResponse:
+    """
+    Phase 2 DoD: 'IEP1C produces real PreprocessBranchResponse'.
+
+    normalize_result_to_branch_response is the IEP1C adapter that assembles
+    the canonical output schema from a completed NormalizeResult plus the two
+    caller-supplied fields (source_model from Phase 3 selection, and
+    processed_image_uri from Phase 4 storage write).
+    """
+
+    _URI = "s3://libraryai-test/jobs/job1/pages/1/output.ptiff"
+
+    def _result(self) -> NormalizeResult:
+        img = _solid(200, 300)
+        geo = _make_geo(w=300, h=200)
+        return normalize_single_page(img, geo.pages[0], geo)
+
+    def _branch(
+        self, source_model: Literal["iep1a", "iep1b"] = "iep1a"
+    ) -> PreprocessBranchResponse:
+        return normalize_result_to_branch_response(self._result(), source_model, self._URI)
+
+    def test_returns_preprocess_branch_response(self) -> None:
+        assert isinstance(self._branch(), PreprocessBranchResponse)
+
+    def test_processed_image_uri_preserved(self) -> None:
+        assert self._branch().processed_image_uri == self._URI
+
+    def test_source_model_iep1a(self) -> None:
+        assert self._branch("iep1a").source_model == "iep1a"
+
+    def test_source_model_iep1b(self) -> None:
+        assert self._branch("iep1b").source_model == "iep1b"
+
+    def test_deskew_preserved(self) -> None:
+        r = self._result()
+        b = normalize_result_to_branch_response(r, "iep1a", self._URI)
+        assert b.deskew == r.deskew
+
+    def test_crop_preserved(self) -> None:
+        r = self._result()
+        b = normalize_result_to_branch_response(r, "iep1a", self._URI)
+        assert b.crop == r.crop
+
+    def test_split_preserved(self) -> None:
+        r = self._result()
+        b = normalize_result_to_branch_response(r, "iep1a", self._URI)
+        assert b.split == r.split
+
+    def test_quality_preserved(self) -> None:
+        r = self._result()
+        b = normalize_result_to_branch_response(r, "iep1a", self._URI)
+        assert b.quality == r.quality
+
+    def test_transform_preserved(self) -> None:
+        r = self._result()
+        b = normalize_result_to_branch_response(r, "iep1a", self._URI)
+        assert b.transform == r.transform
+
+    def test_processing_time_preserved(self) -> None:
+        r = self._result()
+        b = normalize_result_to_branch_response(r, "iep1a", self._URI)
+        assert b.processing_time_ms == r.processing_time_ms
+
+    def test_warnings_preserved(self) -> None:
+        r = self._result()
+        b = normalize_result_to_branch_response(r, "iep1a", self._URI)
+        assert b.warnings == r.warnings
+
+    def test_pydantic_model_validates(self) -> None:
+        # Confirm the assembled model passes Pydantic validation by round-tripping.
+        b = self._branch()
+        assert PreprocessBranchResponse.model_validate(b.model_dump()) is not None
