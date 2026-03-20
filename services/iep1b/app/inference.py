@@ -19,8 +19,8 @@ monkeypatch without restarting the process):
   IEP1B_MOCK_PAGE_COUNT         "1" or "2"  (default: "1")
   IEP1B_MOCK_CONFIDENCE         float in [0, 1]  (default: "0.92")
   IEP1B_MOCK_TTA_PASSES         int >= 1  (default: "5")
-  IEP1B_MOCK_TTA_AGREEMENT_RATE float in [0, 1]  (default: "1.0")   [Packet 2.4]
-  IEP1B_MOCK_TTA_VARIANCE       float >= 0  (default: "0.001")       [Packet 2.4]
+  IEP1B_MOCK_TTA_AGREEMENT_RATE float in [0, 1]  (default: "1.0")
+  IEP1B_MOCK_TTA_VARIANCE       float >= 0  (default: "0.001")
   IEP1B_MOCK_NOT_READY          "true"  → is_model_ready() returns False
 """
 
@@ -29,6 +29,7 @@ from __future__ import annotations
 import os
 import time
 
+from services.iep1b.app.tta import compute_mock_tta_stats
 from shared.schemas.geometry import GeometryRequest, GeometryResponse, PageRegion
 from shared.schemas.preprocessing import PreprocessError
 
@@ -106,6 +107,7 @@ def run_mock_inference(req: GeometryRequest) -> GeometryResponse:
             )
         )
 
+    tta = compute_mock_tta_stats(tta_passes)
     elapsed_ms = (time.monotonic() - t0) * 1000.0
 
     return GeometryResponse(
@@ -114,10 +116,10 @@ def run_mock_inference(req: GeometryRequest) -> GeometryResponse:
         split_required=split_required,
         split_x=split_x,
         geometry_confidence=confidence,
-        tta_structural_agreement_rate=1.0,  # Packet 2.4 makes this configurable
-        tta_prediction_variance=0.001,  # Packet 2.4 makes this configurable
+        tta_structural_agreement_rate=tta.structural_agreement_rate,
+        tta_prediction_variance=tta.prediction_variance,
         tta_passes=tta_passes,
-        uncertainty_flags=[],
+        uncertainty_flags=tta.uncertainty_flags,
         warnings=[],
         processing_time_ms=elapsed_ms,
     )

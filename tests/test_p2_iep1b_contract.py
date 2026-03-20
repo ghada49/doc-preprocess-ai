@@ -417,3 +417,126 @@ class TestFailureSimulation:
         r = client.post("/v1/geometry", json=VALID_BODY)
         msg = r.json()["error_message"]
         assert isinstance(msg, str) and len(msg) > 0
+
+
+# ---------------------------------------------------------------------------
+# Packet 2.4 — TTA agreement rate and variance
+# ---------------------------------------------------------------------------
+
+
+class TestTTAAgreementRate:
+    def test_default_agreement_rate_is_1(self, client: TestClient) -> None:
+        r = client.post("/v1/geometry", json=VALID_BODY)
+        assert r.status_code == 200
+        assert r.json()["tta_structural_agreement_rate"] == pytest.approx(1.0)
+
+    def test_low_agreement_rate_reflected(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("IEP1B_MOCK_TTA_AGREEMENT_RATE", "0.6")
+        r = client.post("/v1/geometry", json=VALID_BODY)
+        assert r.status_code == 200
+        assert r.json()["tta_structural_agreement_rate"] == pytest.approx(0.6)
+
+    def test_high_agreement_rate_reflected(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("IEP1B_MOCK_TTA_AGREEMENT_RATE", "0.9")
+        r = client.post("/v1/geometry", json=VALID_BODY)
+        assert r.status_code == 200
+        assert r.json()["tta_structural_agreement_rate"] == pytest.approx(0.9)
+
+    def test_agreement_rate_in_range(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("IEP1B_MOCK_TTA_AGREEMENT_RATE", "0.75")
+        r = client.post("/v1/geometry", json=VALID_BODY)
+        val = r.json()["tta_structural_agreement_rate"]
+        assert 0.0 <= val <= 1.0
+
+
+class TestTTAVariance:
+    def test_default_variance_is_low(self, client: TestClient) -> None:
+        r = client.post("/v1/geometry", json=VALID_BODY)
+        assert r.status_code == 200
+        assert r.json()["tta_prediction_variance"] == pytest.approx(0.001)
+
+    def test_high_variance_reflected(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("IEP1B_MOCK_TTA_VARIANCE", "0.5")
+        r = client.post("/v1/geometry", json=VALID_BODY)
+        assert r.status_code == 200
+        assert r.json()["tta_prediction_variance"] == pytest.approx(0.5)
+
+    def test_variance_non_negative(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("IEP1B_MOCK_TTA_VARIANCE", "0.05")
+        r = client.post("/v1/geometry", json=VALID_BODY)
+        assert r.json()["tta_prediction_variance"] >= 0.0
+
+
+class TestUncertaintyFlags:
+    def test_no_flags_by_default(self, client: TestClient) -> None:
+        r = client.post("/v1/geometry", json=VALID_BODY)
+        assert r.status_code == 200
+        assert r.json()["uncertainty_flags"] == []
+
+    def test_low_agreement_adds_flag(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Below threshold of 0.80
+        monkeypatch.setenv("IEP1B_MOCK_TTA_AGREEMENT_RATE", "0.5")
+        r = client.post("/v1/geometry", json=VALID_BODY)
+        assert r.status_code == 200
+        assert "low_structural_agreement" in r.json()["uncertainty_flags"]
+
+    def test_agreement_at_threshold_no_flag(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Exactly at threshold (0.80) → no flag (strict less-than)
+        monkeypatch.setenv("IEP1B_MOCK_TTA_AGREEMENT_RATE", "0.80")
+        r = client.post("/v1/geometry", json=VALID_BODY)
+        assert "low_structural_agreement" not in r.json()["uncertainty_flags"]
+
+    def test_high_variance_adds_flag(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Above threshold of 0.10
+        monkeypatch.setenv("IEP1B_MOCK_TTA_VARIANCE", "0.5")
+        r = client.post("/v1/geometry", json=VALID_BODY)
+        assert r.status_code == 200
+        assert "high_prediction_variance" in r.json()["uncertainty_flags"]
+
+    def test_variance_at_threshold_no_flag(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Exactly at threshold (0.10) → no flag (strict greater-than)
+        monkeypatch.setenv("IEP1B_MOCK_TTA_VARIANCE", "0.10")
+        r = client.post("/v1/geometry", json=VALID_BODY)
+        assert "high_prediction_variance" not in r.json()["uncertainty_flags"]
+
+    def test_both_flags_set_together(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("IEP1B_MOCK_TTA_AGREEMENT_RATE", "0.5")
+        monkeypatch.setenv("IEP1B_MOCK_TTA_VARIANCE", "0.5")
+        r = client.post("/v1/geometry", json=VALID_BODY)
+        flags = r.json()["uncertainty_flags"]
+        assert "low_structural_agreement" in flags
+        assert "high_prediction_variance" in flags
+
+    def test_high_agreement_no_low_flag(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("IEP1B_MOCK_TTA_AGREEMENT_RATE", "1.0")
+        r = client.post("/v1/geometry", json=VALID_BODY)
+        assert "low_structural_agreement" not in r.json()["uncertainty_flags"]
+
+    def test_low_variance_no_high_flag(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("IEP1B_MOCK_TTA_VARIANCE", "0.001")
+        r = client.post("/v1/geometry", json=VALID_BODY)
+        assert "high_prediction_variance" not in r.json()["uncertainty_flags"]
