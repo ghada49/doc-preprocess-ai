@@ -5,7 +5,7 @@ Geometry selection gate for the IEP1 preprocessing pipeline.
 Implements the geometry selection cascade defined in spec Section 6.8.
 
 Packet 3.1: structural agreement check + six per-model sanity checks.
-Packet 3.2: split confidence filter, TTA variance filter, page area preference.  [pending]
+Packet 3.2: split confidence filter, TTA variance filter, page area preference.
 Packet 3.3: confidence-based selection, route-to-human logic, quality_gate_log writes.  [pending]
 
 Exported (Packet 3.1):
@@ -13,11 +13,18 @@ Exported (Packet 3.1):
     SanityCheckResult        — result of the six-check sanity gate
     check_structural_agreement  — mandatory agreement check (spec Section 6.8)
     check_sanity                — six hard sanity checks applied to one GeometryResponse
+
+Exported (Packet 3.2):
+    GeometryCandidate           — (model, response) carrier through the selection cascade
+    apply_split_confidence_filter — remove candidates below split confidence threshold
+    apply_tta_variance_filter     — remove candidates above TTA variance ceiling
+    check_page_area_preference    — signal IEP1B preference for small-page tiebreaker
 """
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Literal
 
 from shared.schemas.eep import MaterialType
 from shared.schemas.geometry import GeometryResponse, PageRegion
@@ -323,3 +330,127 @@ def check_sanity(
                 failed.append("regions_non_overlapping")
 
     return SanityCheckResult(passed=len(failed) == 0, failed_checks=failed)
+
+
+# ---------------------------------------------------------------------------
+# Packet 3.2 — Split confidence filter, TTA variance filter, page area preference
+# ---------------------------------------------------------------------------
+
+#: Valid model name identifiers used throughout the selection cascade.
+ModelName = Literal["iep1a", "iep1b"]
+
+
+@dataclass
+class GeometryCandidate:
+    """
+    A single candidate in the geometry selection cascade.
+
+    Carries the model identity and its GeometryResponse together so that
+    filters can operate on (model, response) pairs without losing provenance.
+
+    Attributes:
+        model    — "iep1a" or "iep1b"
+        response — the GeometryResponse returned by that model
+    """
+
+    model: ModelName
+    response: GeometryResponse
+
+
+def _compute_split_confidence(response: GeometryResponse) -> float:
+    """
+    Compute split confidence for a candidate.
+
+    Spec Section 6.8:
+        split_confidence = min(weakest_instance_confidence,
+                               tta_structural_agreement_rate)
+
+    geometry_confidence is already defined as "min confidence across all
+    detected instances" (spec schema), so it equals weakest_instance_confidence.
+    """
+    return min(response.geometry_confidence, response.tta_structural_agreement_rate)
+
+
+def apply_split_confidence_filter(
+    candidates: list[GeometryCandidate],
+    config: PreprocessingGateConfig,
+) -> list[GeometryCandidate]:
+    """
+    Remove candidates that fail the split confidence check.
+
+    Applied only to candidates where split_required=True.  Candidates where
+    split_required=False pass through unchanged — split confidence is irrelevant
+    for single-page geometry.
+
+    split_confidence = min(geometry_confidence, tta_structural_agreement_rate)
+
+    A candidate is removed when split_confidence < config.split_confidence_threshold.
+
+    If both candidates are removed the caller (Packet 3.3 route-to-human logic)
+    must route to pending_human_correction with review_reasons=["split_confidence_low"].
+
+    Spec reference: Section 6.8 "Split Confidence Filter".
+    """
+    result: list[GeometryCandidate] = []
+    for candidate in candidates:
+        if not candidate.response.split_required:
+            result.append(candidate)
+            continue
+        sc = _compute_split_confidence(candidate.response)
+        if sc >= config.split_confidence_threshold:
+            result.append(candidate)
+    return result
+
+
+def apply_tta_variance_filter(
+    candidates: list[GeometryCandidate],
+    config: PreprocessingGateConfig,
+) -> list[GeometryCandidate]:
+    """
+    Remove candidates whose TTA prediction variance exceeds the ceiling.
+
+    High TTA variance means the model's predictions are unstable across
+    augmented inputs — the geometry is not reliable even if the primary
+    prediction has high confidence.
+
+    A candidate is removed when tta_prediction_variance > config.tta_variance_ceiling.
+
+    If both candidates are removed the caller (Packet 3.3 route-to-human logic)
+    must route to pending_human_correction with review_reasons=["tta_variance_high"].
+
+    Spec reference: Section 6.8 "TTA Variance Filter".
+    """
+    return [
+        c for c in candidates if c.response.tta_prediction_variance <= config.tta_variance_ceiling
+    ]
+
+
+def check_page_area_preference(
+    candidates: list[GeometryCandidate],
+    config: PreprocessingGateConfig,
+) -> bool:
+    """
+    Return True if IEP1B should be preferred as a tiebreaker for small pages.
+
+    When any detected page region across the surviving candidates reports
+    page_area_fraction below config.page_area_preference_threshold, IEP1B is
+    preferred because IEP1A mask resolution degrades for small pages relative
+    to the full image (spec Section 6.8 "Page Area Preference").
+
+    This function only signals the preference — it does NOT select a candidate.
+    Packet 3.3 (confidence selection) applies this preference as a tiebreaker
+    when both candidates survive all preceding filters.
+
+    Returns False when no candidate reports a small page area fraction, or when
+    fewer than two candidates are present (preference is only meaningful as a
+    tiebreaker between both models).
+
+    Spec reference: Section 6.8 "Page Area Preference".
+    """
+    if len(candidates) < 2:
+        return False
+    for candidate in candidates:
+        for region in candidate.response.pages:
+            if region.page_area_fraction < config.page_area_preference_threshold:
+                return True
+    return False

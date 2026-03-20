@@ -21,10 +21,15 @@ from typing import Literal
 import pytest
 
 from services.eep.app.gates.geometry_selection import (
+    GeometryCandidate,
     PreprocessingGateConfig,
     _bbox_iou,
+    _compute_split_confidence,
     _corners_convex_and_valid,
     _quadrilateral_area,
+    apply_split_confidence_filter,
+    apply_tta_variance_filter,
+    check_page_area_preference,
     check_sanity,
     check_structural_agreement,
 )
@@ -646,3 +651,332 @@ class TestSanityCheckResultCombined:
         }
         assert set(SANITY_CHECK_NAMES) == expected
         assert len(SANITY_CHECK_NAMES) == 6
+
+
+# ===========================================================================
+# Packet 3.2 — split confidence filter, TTA variance filter, page area preference
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Helpers for 3.2 tests
+# ---------------------------------------------------------------------------
+
+
+def _candidate(
+    model: Literal["iep1a", "iep1b"] = "iep1a",
+    geometry_confidence: float = 0.9,
+    tta_structural_agreement_rate: float = 0.95,
+    tta_prediction_variance: float = 0.05,
+    split_required: bool = False,
+    split_x: int | None = None,
+    page_count: int = 1,
+    page_area_fraction: float = 0.5,
+) -> GeometryCandidate:
+    """Build a GeometryCandidate with controllable split / variance / confidence."""
+    pages: list[PageRegion] = []
+    for i in range(page_count):
+        pages.append(
+            _region(
+                region_id=f"page_{i}",
+                page_area_fraction=page_area_fraction,
+            )
+        )
+    resp = GeometryResponse(
+        page_count=page_count,
+        pages=pages,
+        split_required=split_required,
+        split_x=split_x,
+        geometry_confidence=geometry_confidence,
+        tta_structural_agreement_rate=tta_structural_agreement_rate,
+        tta_prediction_variance=tta_prediction_variance,
+        tta_passes=5,
+        uncertainty_flags=[],
+        warnings=[],
+        processing_time_ms=50.0,
+    )
+    return GeometryCandidate(model=model, response=resp)
+
+
+# ---------------------------------------------------------------------------
+# _compute_split_confidence
+# ---------------------------------------------------------------------------
+
+
+class TestComputeSplitConfidence:
+    def test_formula_min_of_confidence_and_tta_rate(self) -> None:
+        # min(0.8, 0.9) = 0.8
+        c = _candidate(geometry_confidence=0.8, tta_structural_agreement_rate=0.9)
+        assert _compute_split_confidence(c.response) == pytest.approx(0.8)
+
+    def test_formula_tta_rate_is_lower(self) -> None:
+        # min(0.95, 0.7) = 0.7
+        c = _candidate(geometry_confidence=0.95, tta_structural_agreement_rate=0.7)
+        assert _compute_split_confidence(c.response) == pytest.approx(0.7)
+
+    def test_formula_both_equal(self) -> None:
+        c = _candidate(geometry_confidence=0.85, tta_structural_agreement_rate=0.85)
+        assert _compute_split_confidence(c.response) == pytest.approx(0.85)
+
+
+# ---------------------------------------------------------------------------
+# apply_split_confidence_filter
+# ---------------------------------------------------------------------------
+
+
+class TestApplySplitConfidenceFilter:
+    def test_single_page_passes_through_regardless_of_confidence(self) -> None:
+        """split_required=False → filter never removes the candidate."""
+        c = _candidate("iep1a", geometry_confidence=0.1, split_required=False)
+        result = apply_split_confidence_filter([c], CONFIG)
+        assert len(result) == 1
+        assert result[0].model == "iep1a"
+
+    def test_split_high_confidence_passes(self) -> None:
+        # min(0.9, 0.95) = 0.9 >= threshold 0.75
+        c = _candidate(
+            "iep1a",
+            geometry_confidence=0.9,
+            tta_structural_agreement_rate=0.95,
+            split_required=True,
+            split_x=400,
+            page_count=2,
+        )
+        result = apply_split_confidence_filter([c], CONFIG)
+        assert len(result) == 1
+
+    def test_split_low_confidence_removed(self) -> None:
+        # min(0.5, 0.95) = 0.5 < threshold 0.75
+        c = _candidate(
+            "iep1a",
+            geometry_confidence=0.5,
+            tta_structural_agreement_rate=0.95,
+            split_required=True,
+            split_x=400,
+            page_count=2,
+        )
+        result = apply_split_confidence_filter([c], CONFIG)
+        assert len(result) == 0
+
+    def test_split_low_tta_rate_removed(self) -> None:
+        # min(0.95, 0.6) = 0.6 < threshold 0.75
+        c = _candidate(
+            "iep1b",
+            geometry_confidence=0.95,
+            tta_structural_agreement_rate=0.6,
+            split_required=True,
+            split_x=400,
+            page_count=2,
+        )
+        result = apply_split_confidence_filter([c], CONFIG)
+        assert len(result) == 0
+
+    def test_split_at_threshold_passes(self) -> None:
+        # min(0.75, 0.9) = 0.75 == threshold 0.75 → passes (>=)
+        c = _candidate(
+            "iep1a",
+            geometry_confidence=0.75,
+            tta_structural_agreement_rate=0.9,
+            split_required=True,
+            split_x=400,
+            page_count=2,
+        )
+        result = apply_split_confidence_filter([c], CONFIG)
+        assert len(result) == 1
+
+    def test_both_candidates_one_passes_one_fails(self) -> None:
+        high = _candidate(
+            "iep1a",
+            geometry_confidence=0.9,
+            tta_structural_agreement_rate=0.95,
+            split_required=True,
+            split_x=400,
+            page_count=2,
+        )
+        low = _candidate(
+            "iep1b",
+            geometry_confidence=0.4,
+            tta_structural_agreement_rate=0.95,
+            split_required=True,
+            split_x=400,
+            page_count=2,
+        )
+        result = apply_split_confidence_filter([high, low], CONFIG)
+        assert len(result) == 1
+        assert result[0].model == "iep1a"
+
+    def test_both_candidates_fail_returns_empty(self) -> None:
+        """Empty list signals caller (3.3) to route to pending_human_correction."""
+        low_a = _candidate(
+            "iep1a",
+            geometry_confidence=0.4,
+            tta_structural_agreement_rate=0.9,
+            split_required=True,
+            split_x=400,
+            page_count=2,
+        )
+        low_b = _candidate(
+            "iep1b",
+            geometry_confidence=0.5,
+            tta_structural_agreement_rate=0.6,
+            split_required=True,
+            split_x=400,
+            page_count=2,
+        )
+        result = apply_split_confidence_filter([low_a, low_b], CONFIG)
+        assert result == []
+
+    def test_mixed_split_and_single_page_candidates(self) -> None:
+        """Single-page candidate bypasses filter; split candidate is evaluated."""
+        single = _candidate("iep1a", geometry_confidence=0.1, split_required=False)
+        split_low = _candidate(
+            "iep1b",
+            geometry_confidence=0.3,
+            tta_structural_agreement_rate=0.9,
+            split_required=True,
+            split_x=400,
+            page_count=2,
+        )
+        result = apply_split_confidence_filter([single, split_low], CONFIG)
+        assert len(result) == 1
+        assert result[0].model == "iep1a"
+
+    def test_custom_threshold(self) -> None:
+        cfg = PreprocessingGateConfig(split_confidence_threshold=0.60)
+        # min(0.65, 0.9) = 0.65 >= 0.60 → passes
+        c = _candidate(
+            "iep1a",
+            geometry_confidence=0.65,
+            tta_structural_agreement_rate=0.9,
+            split_required=True,
+            split_x=400,
+            page_count=2,
+        )
+        result = apply_split_confidence_filter([c], cfg)
+        assert len(result) == 1
+
+    def test_empty_candidates_returns_empty(self) -> None:
+        assert apply_split_confidence_filter([], CONFIG) == []
+
+
+# ---------------------------------------------------------------------------
+# apply_tta_variance_filter
+# ---------------------------------------------------------------------------
+
+
+class TestApplyTtaVarianceFilter:
+    def test_low_variance_passes(self) -> None:
+        c = _candidate("iep1a", tta_prediction_variance=0.05)
+        result = apply_tta_variance_filter([c], CONFIG)
+        assert len(result) == 1
+
+    def test_variance_at_ceiling_passes(self) -> None:
+        # <= ceiling → passes (spec: remove if > ceiling)
+        c = _candidate("iep1a", tta_prediction_variance=0.15)
+        result = apply_tta_variance_filter([c], CONFIG)
+        assert len(result) == 1
+
+    def test_variance_above_ceiling_removed(self) -> None:
+        c = _candidate("iep1a", tta_prediction_variance=0.20)
+        result = apply_tta_variance_filter([c], CONFIG)
+        assert len(result) == 0
+
+    def test_one_passes_one_fails(self) -> None:
+        stable = _candidate("iep1a", tta_prediction_variance=0.10)
+        unstable = _candidate("iep1b", tta_prediction_variance=0.25)
+        result = apply_tta_variance_filter([stable, unstable], CONFIG)
+        assert len(result) == 1
+        assert result[0].model == "iep1a"
+
+    def test_both_fail_returns_empty(self) -> None:
+        """Empty list signals caller (3.3) to route to pending_human_correction."""
+        a = _candidate("iep1a", tta_prediction_variance=0.20)
+        b = _candidate("iep1b", tta_prediction_variance=0.30)
+        result = apply_tta_variance_filter([a, b], CONFIG)
+        assert result == []
+
+    def test_both_pass(self) -> None:
+        a = _candidate("iep1a", tta_prediction_variance=0.05)
+        b = _candidate("iep1b", tta_prediction_variance=0.10)
+        result = apply_tta_variance_filter([a, b], CONFIG)
+        assert len(result) == 2
+
+    def test_custom_ceiling(self) -> None:
+        cfg = PreprocessingGateConfig(tta_variance_ceiling=0.25)
+        c = _candidate("iep1a", tta_prediction_variance=0.20)
+        result = apply_tta_variance_filter([c], cfg)
+        assert len(result) == 1
+
+    def test_empty_candidates_returns_empty(self) -> None:
+        assert apply_tta_variance_filter([], CONFIG) == []
+
+
+# ---------------------------------------------------------------------------
+# check_page_area_preference
+# ---------------------------------------------------------------------------
+
+
+class TestCheckPageAreaPreference:
+    def test_both_large_page_area_no_preference(self) -> None:
+        a = _candidate("iep1a", page_area_fraction=0.5)
+        b = _candidate("iep1b", page_area_fraction=0.6)
+        assert check_page_area_preference([a, b], CONFIG) is False
+
+    def test_iep1a_small_page_triggers_preference(self) -> None:
+        # page_area_fraction=0.2 < threshold 0.30 → prefer IEP1B
+        a = _candidate("iep1a", page_area_fraction=0.2)
+        b = _candidate("iep1b", page_area_fraction=0.5)
+        assert check_page_area_preference([a, b], CONFIG) is True
+
+    def test_iep1b_small_page_triggers_preference(self) -> None:
+        a = _candidate("iep1a", page_area_fraction=0.5)
+        b = _candidate("iep1b", page_area_fraction=0.15)
+        assert check_page_area_preference([a, b], CONFIG) is True
+
+    def test_at_threshold_no_preference(self) -> None:
+        # page_area_fraction == threshold (0.30) → not < threshold → no preference
+        a = _candidate("iep1a", page_area_fraction=0.30)
+        b = _candidate("iep1b", page_area_fraction=0.30)
+        assert check_page_area_preference([a, b], CONFIG) is False
+
+    def test_below_threshold_triggers_preference(self) -> None:
+        a = _candidate("iep1a", page_area_fraction=0.29)
+        b = _candidate("iep1b", page_area_fraction=0.5)
+        assert check_page_area_preference([a, b], CONFIG) is True
+
+    def test_single_candidate_no_preference(self) -> None:
+        """Preference is only meaningful as a tiebreaker with two candidates."""
+        c = _candidate("iep1b", page_area_fraction=0.1)
+        assert check_page_area_preference([c], CONFIG) is False
+
+    def test_empty_candidates_no_preference(self) -> None:
+        assert check_page_area_preference([], CONFIG) is False
+
+    def test_custom_threshold(self) -> None:
+        cfg = PreprocessingGateConfig(page_area_preference_threshold=0.40)
+        a = _candidate("iep1a", page_area_fraction=0.35)  # below custom 0.40 → True
+        b = _candidate("iep1b", page_area_fraction=0.5)
+        assert check_page_area_preference([a, b], cfg) is True
+
+    def test_two_page_split_any_region_below_threshold(self) -> None:
+        """For two-page spreads, any single region below threshold triggers preference."""
+        # Build a two-page candidate where page_0 has fraction 0.48 and page_1 has 0.20
+        pages: list[PageRegion] = [
+            _region(region_id="page_0", page_area_fraction=0.48),
+            _region(region_id="page_1", page_area_fraction=0.20),
+        ]
+        resp = GeometryResponse(
+            page_count=2,
+            pages=pages,
+            split_required=True,
+            split_x=400,
+            geometry_confidence=0.9,
+            tta_structural_agreement_rate=0.95,
+            tta_prediction_variance=0.05,
+            tta_passes=5,
+            uncertainty_flags=[],
+            warnings=[],
+            processing_time_ms=50.0,
+        )
+        a = GeometryCandidate(model="iep1a", response=resp)
+        b = _candidate("iep1b", page_area_fraction=0.5)
+        assert check_page_area_preference([a, b], CONFIG) is True

@@ -59,8 +59,8 @@ A phase must never be marked complete if any item in its Definition of Done rema
 
 ### ☐ Phase 3 — Geometry selection + artifact validation
 
-- ☐ Packet 3.1 — structural agreement and sanity checks
-- ☐ Packet 3.2 — split confidence, variance, page area preference
+- ☑ Packet 3.1 — structural agreement and sanity checks
+- ☑ Packet 3.2 — split confidence, variance, page area preference
 - ☐ Packet 3.3 — final selection and route-to-human logic
 - ☐ Packet 3.4 — artifact hard requirements
 - ☐ Packet 3.5 — artifact soft score and threshold logic
