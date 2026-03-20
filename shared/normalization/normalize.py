@@ -7,17 +7,22 @@ Callers (EEP Phase 4 worker) are responsible for:
   - loading the full-resolution image as a numpy array
   - scaling geometry coordinates from proxy-image space to full-res space
     before calling normalize_single_page
-  - writing the result image to storage and constructing processed_image_uri
+  - writing the result image to storage, then calling
+    normalize_result_to_branch_response to obtain the canonical
+    PreprocessBranchResponse
 
 Exported:
-    NormalizeResult       — normalization output dataclass
-    normalize_single_page — main normalization entry point
+    NormalizeResult                   — normalization output dataclass
+    normalize_single_page             — main normalization entry point
+    normalize_result_to_branch_response — assemble PreprocessBranchResponse
+                                          from a completed NormalizeResult
 """
 
 from __future__ import annotations
 
 import time
 from dataclasses import dataclass, field
+from typing import Literal
 
 import numpy as np
 
@@ -25,7 +30,13 @@ from shared.normalization.deskew import apply_affine_deskew, compute_deskew_angl
 from shared.normalization.perspective import four_point_transform
 from shared.normalization.quality import compute_quality_metrics
 from shared.schemas.geometry import GeometryResponse, PageRegion
-from shared.schemas.preprocessing import CropResult, DeskewResult, QualityMetrics, SplitResult
+from shared.schemas.preprocessing import (
+    CropResult,
+    DeskewResult,
+    PreprocessBranchResponse,
+    QualityMetrics,
+    SplitResult,
+)
 from shared.schemas.ucf import BoundingBox, Dimensions, TransformRecord
 
 
@@ -167,4 +178,40 @@ def normalize_single_page(
         transform=transform,
         warnings=warnings,
         processing_time_ms=elapsed_ms,
+    )
+
+
+def normalize_result_to_branch_response(
+    result: NormalizeResult,
+    source_model: Literal["iep1a", "iep1b"],
+    processed_image_uri: str,
+) -> PreprocessBranchResponse:
+    """
+    Assemble a PreprocessBranchResponse from a completed NormalizeResult.
+
+    This is IEP1C's canonical output schema.  The two caller-supplied fields
+    (source_model and processed_image_uri) are not available inside
+    normalize_single_page because they depend on Phase 3 geometry selection
+    and Phase 4 storage write respectively.  The Phase 4 worker calls this
+    function after writing the artifact to storage.
+
+    Args:
+        result             — output of normalize_single_page()
+        source_model       — which geometry model was selected ("iep1a" or "iep1b")
+        processed_image_uri — storage URI of the written artifact
+
+    Returns:
+        PreprocessBranchResponse ready for the artifact validation gate and
+        lineage record.
+    """
+    return PreprocessBranchResponse(
+        processed_image_uri=processed_image_uri,
+        deskew=result.deskew,
+        crop=result.crop,
+        split=result.split,
+        quality=result.quality,
+        transform=result.transform,
+        source_model=source_model,
+        processing_time_ms=result.processing_time_ms,
+        warnings=result.warnings,
     )

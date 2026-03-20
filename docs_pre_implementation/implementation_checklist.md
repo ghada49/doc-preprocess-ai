@@ -53,9 +53,9 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - ☑ Packet 2.6 — split handling
 - ☑ Packet 2.7 — quality metrics
 
-- **Summary:**
-- **Blocked/blocking:**
-- **Relevant spec constraints:**
+- **Summary:** IEP1A and IEP1B mock services (configurable via env vars: page count, confidence, TTA agreement/variance, failure simulation) return real `GeometryResponse` objects. IEP1C normalization is fully real: perspective correction from quadrilateral corners (`four_point_transform`), affine bbox fallback (`apply_affine_deskew`), split normalization (`split_and_normalize`), and four quality metrics (`blur_score`, `border_score`, `foreground_coverage`, `skew_residual`). `normalize_result_to_branch_response` assembles the canonical `PreprocessBranchResponse` from a completed `NormalizeResult` plus caller-supplied `source_model` and `processed_image_uri` (available only after Phase 3 selection and Phase 4 storage write). All 142 Phase 2 tests pass (65 IEP1A contract + 65 IEP1B contract + 62 normalization + 35 quality + 33 split + 12 branch-response adapter = 1325 total suite passing).
+- **Blocked/blocking:** None. Phase 3 may begin (and is already complete).
+- **Relevant spec constraints:** IEP1A and IEP1B are mock only until Phase 12 (Section 1.3); real ML inference is stubbed but all endpoints, schemas, and TTA contracts are real. IEP1C is fully real production code (Section 2.1). `normalize_single_page` returns `NormalizeResult` (contains numpy array; cannot be a Pydantic model); `normalize_result_to_branch_response` produces `PreprocessBranchResponse` once storage URI and source model are known. `split_confidence = min(weakest_instance_confidence, tta_structural_agreement_rate)` per spec Section 6.8.
 
 ### ☑ Phase 3 — Geometry selection + artifact validation
 
