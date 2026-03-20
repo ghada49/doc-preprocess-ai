@@ -9,10 +9,6 @@ Callers (EEP Phase 4 worker) are responsible for:
     before calling normalize_single_page
   - writing the result image to storage and constructing processed_image_uri
 
-Packet 2.5 scope: perspective warp (quadrilateral) + affine deskew (bbox
-fallback).  Quality metrics are placeholder zeros — Packet 2.7 computes real
-values.
-
 Exported:
     NormalizeResult       — normalization output dataclass
     normalize_single_page — main normalization entry point
@@ -27,6 +23,7 @@ import numpy as np
 
 from shared.normalization.deskew import apply_affine_deskew, compute_deskew_angle
 from shared.normalization.perspective import four_point_transform
+from shared.normalization.quality import compute_quality_metrics
 from shared.schemas.geometry import GeometryResponse, PageRegion
 from shared.schemas.preprocessing import CropResult, DeskewResult, QualityMetrics, SplitResult
 from shared.schemas.ucf import BoundingBox, Dimensions, TransformRecord
@@ -42,7 +39,7 @@ class NormalizeResult:
         deskew             — deskew operation record
         crop               — crop operation record
         split              — split metadata derived from the selected geometry
-        quality            — quality metrics (placeholder zeros in Packet 2.5)
+        quality            — artifact quality metrics
         transform          — full geometric transform record
         warnings           — advisory messages
         processing_time_ms — wall-clock elapsed time in ms
@@ -69,6 +66,7 @@ def normalize_single_page(
     Applies perspective correction when corners are available
     (geometry_type == "quadrilateral"), or falls back to affine deskew when
     only a bbox is available (geometry_type "bbox" / "mask_ref").
+    Quality metrics are computed on the normalized output image.
 
     Args:
         image:    H×W×C (or H×W) uint8 numpy array in full-resolution space.
@@ -79,7 +77,6 @@ def normalize_single_page(
 
     Returns:
         NormalizeResult with normalized image + all metadata records.
-        Quality metrics are placeholder zeros (Packet 2.7 computes real values).
     """
     t0 = time.monotonic()
     warnings: list[str] = []
@@ -91,7 +88,6 @@ def normalize_single_page(
     if page.geometry_type == "quadrilateral" and page.corners:
         result_image, source_bbox, _ = four_point_transform(image, page.corners)
         angle_deg = compute_deskew_angle(page.corners)
-        residual_deg = 0.0  # real residual computed in Packet 2.7
         x_min, y_min, x_max, y_max = source_bbox
         method = "geometry_quad"
     else:
@@ -108,10 +104,11 @@ def normalize_single_page(
             warnings.append("no geometry available; using full image extent")
 
         angle_deg = 0.0
-        result_image, residual_deg = apply_affine_deskew(
-            image, angle_deg, (x_min, y_min, x_max, y_max)
-        )
+        result_image, _ = apply_affine_deskew(image, angle_deg, (x_min, y_min, x_max, y_max))
         method = "geometry_bbox"
+
+    # ── Quality metrics on the normalized output ───────────────────────────────
+    qm = compute_quality_metrics(result_image)
 
     # ── Clamp crop box to source image bounds ─────────────────────────────────
     x_min_c = max(0.0, x_min)
@@ -146,12 +143,12 @@ def normalize_single_page(
         image=result_image,
         deskew=DeskewResult(
             angle_deg=angle_deg,
-            residual_deg=residual_deg,
+            residual_deg=qm.skew_residual,
             method=method,
         ),
         crop=CropResult(
             crop_box=crop_box,
-            border_score=0.0,  # placeholder; Packet 2.7 computes real value
+            border_score=qm.border_score,
             method=method,
         ),
         split=SplitResult(
@@ -161,11 +158,11 @@ def normalize_single_page(
             method="instance_boundary" if geometry.split_required else "none",
         ),
         quality=QualityMetrics(
-            skew_residual=residual_deg,
-            blur_score=0.0,  # placeholder; Packet 2.7
-            border_score=0.0,  # placeholder; Packet 2.7
+            skew_residual=qm.skew_residual,
+            blur_score=qm.blur_score,
+            border_score=qm.border_score,
             split_confidence=split_confidence,
-            foreground_coverage=0.0,  # placeholder; Packet 2.7
+            foreground_coverage=qm.foreground_coverage,
         ),
         transform=transform,
         warnings=warnings,

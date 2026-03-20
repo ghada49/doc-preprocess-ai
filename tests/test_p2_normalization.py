@@ -293,8 +293,8 @@ class TestNormalizeSinglePageQuad:
     def test_quality_blur_score_placeholder(self) -> None:
         assert self._run().quality.blur_score == pytest.approx(0.0)
 
-    def test_quality_border_score_placeholder(self) -> None:
-        assert self._run().quality.border_score == pytest.approx(0.0)
+    def test_quality_border_score_in_range(self) -> None:
+        assert 0.0 <= self._run().quality.border_score <= 1.0
 
     def test_quality_foreground_coverage_placeholder(self) -> None:
         assert self._run().quality.foreground_coverage == pytest.approx(0.0)
@@ -511,5 +511,5 @@ class TestNormalizeResultTypes:
         assert r.transform.post_preprocessing_dimensions.width == w
         assert r.transform.post_preprocessing_dimensions.height == h
 
-    def test_crop_border_score_is_zero_placeholder(self) -> None:
-        assert self._result().crop.border_score == pytest.approx(0.0)
+    def test_crop_border_score_in_range(self) -> None:
+        assert 0.0 <= self._result().crop.border_score <= 1.0
