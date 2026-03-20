@@ -45,11 +45,11 @@ A phase must never be marked complete if any item in its Definition of Done rema
 
 ### ☐ Phase 2 — IEP1A/B mocks + IEP1C
 
-- ☐ Packet 2.1 — IEP1A mock service shell
-- ☐ Packet 2.2 — IEP1A TTA mock behavior
-- ☐ Packet 2.3 — IEP1B mock service shell
-- ☐ Packet 2.4 — IEP1B TTA mock behavior
-- ☐ Packet 2.5 — normalization core
+- ☑ Packet 2.1 — IEP1A mock service shell
+- ☑ Packet 2.2 — IEP1A TTA mock behavior
+- ☑ Packet 2.3 — IEP1B mock service shell
+- ☑ Packet 2.4 — IEP1B TTA mock behavior
+- ☑ Packet 2.5 — normalization core
 - ☐ Packet 2.6 — split handling
 - ☐ Packet 2.7 — quality metrics
 
