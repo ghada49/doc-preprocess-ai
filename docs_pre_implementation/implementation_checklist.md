@@ -24,7 +24,7 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - **Blocked/blocking:** None. Phase 1 may begin.
 - **Relevant spec constraints:** PYTHONPATH=/app in all containers (Section 1.5); Redis AOF enabled; IEP services are mock only until Phase 12.
 
-### ☐ Phase 1 — Schemas, DB, storage, Redis, job API
+### ☑ Phase 1 — Schemas, DB, storage, Redis, job API
 
 - ☑ Packet 1.1 — UCF and preprocessing schemas
 - ☑ Packet 1.2 — geometry, normalization, iep1d, layout schemas
@@ -32,16 +32,16 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - ☑ Packet 1.3a — page state machine contract
 - ☑ Packet 1.4 — storage backends
 - ☑ Packet 1.5 — core DB migration
-- ☐ Packet 1.6 — ORM / DB model layer
-- ☐ Packet 1.7 — Redis queue setup
-- ☐ Packet 1.7a — reliable Redis queue contract
-- ☐ Packet 1.7b — presigned upload endpoint
-- ☐ Packet 1.8 — job creation endpoint
-- ☐ Packet 1.9 — job status endpoint
+- ☑ Packet 1.6 — ORM / DB model layer
+- ☑ Packet 1.7 — Redis queue setup
+- ☑ Packet 1.7a — reliable Redis queue contract
+- ☑ Packet 1.7b — presigned upload endpoint
+- ☑ Packet 1.8 — job creation endpoint
+- ☑ Packet 1.9 — job status endpoint
 
-- **Summary:**
-- **Blocked/blocking:**
-- **Relevant spec constraints:**
+- **Summary:** All schemas (UCF, preprocessing, geometry, normalization, EEP, page states), Alembic migration, SQLAlchemy ORM, local+S3 storage backends, Redis queue contract, presigned upload endpoint, job creation endpoint (POST /v1/jobs), and job status endpoint (GET /v1/jobs/{job_id}) are complete and fully tested (819 tests pass).
+- **Blocked/blocking:** None. Phase 2 may begin.
+- **Relevant spec constraints:** DB is source of truth; Redis is execution mechanism only. DB committed before Redis enqueue; Packet 4.7 recovery re-enqueues orphaned tasks. `ptiff_qa_pending` is non-terminal (job stays `running`). Split-parent pages (status=`split`) excluded from job status derivation.
 
 ### ☐ Phase 2 — IEP1A/B mocks + IEP1C
 
