@@ -22,14 +22,25 @@ Covers:
 
 from __future__ import annotations
 
+import uuid
 from collections.abc import Callable
+
+import pytest
 
 from services.eep.app.gates.artifact_validation import (
     ARTIFACT_HARD_CHECK_NAMES,
     ArtifactHardCheckResult,
     ArtifactImageDimensions,
+    ArtifactValidationResult,
+    _normalize_decreasing,
+    _normalize_increasing,
+    _normalize_range,
+    build_artifact_gate_log_record,
     check_artifact_hard_requirements,
+    compute_artifact_soft_score,
+    run_artifact_validation,
 )
+from services.eep.app.gates.geometry_selection import PreprocessingGateConfig
 from shared.schemas.preprocessing import (
     CropResult,
     DeskewResult,
@@ -473,3 +484,400 @@ class TestMultipleFailures:
         assert isinstance(failed, list)
         assert "non_degenerate" in failed
         assert "bounds_consistent" in failed
+
+
+# ===========================================================================
+# Packet 3.5 — soft signal scoring, run_artifact_validation, gate log record
+# ===========================================================================
+
+_CONFIG = PreprocessingGateConfig()
+
+# A quality object with all "good" signals (within good ranges).
+_GOOD_QUALITY = QualityMetrics(
+    skew_residual=0.5,  # good: < 1.0°
+    blur_score=0.2,  # good: < 0.4
+    border_score=0.8,  # good: > 0.5
+    foreground_coverage=0.6,  # good: 0.2–0.9
+)
+
+# A quality object with all "suspicious" signals (at or beyond bad bounds).
+_BAD_QUALITY = QualityMetrics(
+    skew_residual=6.0,  # suspicious: > 5.0°
+    blur_score=0.9,  # suspicious: > 0.7
+    border_score=0.1,  # suspicious: < 0.3
+    foreground_coverage=0.05,  # suspicious: < 0.1
+)
+
+
+def _make_geometry(
+    geometry_confidence: float = 0.9,
+    tta_structural_agreement_rate: float = 0.95,
+) -> object:
+    """Build a minimal GeometryResponse-like object for soft scoring tests."""
+    from shared.schemas.geometry import GeometryResponse, PageRegion
+
+    region = PageRegion(
+        region_id="page_0",
+        geometry_type="quadrilateral",
+        corners=[(50.0, 30.0), (350.0, 30.0), (350.0, 530.0), (50.0, 530.0)],
+        bbox=(50, 30, 350, 530),
+        confidence=geometry_confidence,
+        page_area_fraction=0.5,
+    )
+    return GeometryResponse(
+        page_count=1,
+        pages=[region],
+        split_required=False,
+        split_x=None,
+        geometry_confidence=geometry_confidence,
+        tta_structural_agreement_rate=tta_structural_agreement_rate,
+        tta_prediction_variance=0.05,
+        tta_passes=5,
+        uncertainty_flags=[],
+        warnings=[],
+        processing_time_ms=50.0,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Normalization helpers
+# ---------------------------------------------------------------------------
+
+
+class TestNormalizeDecreasing:
+    def test_at_good_max_returns_one(self) -> None:
+        assert _normalize_decreasing(1.0, 1.0, 5.0) == pytest.approx(1.0)
+
+    def test_below_good_max_returns_one(self) -> None:
+        assert _normalize_decreasing(0.5, 1.0, 5.0) == pytest.approx(1.0)
+
+    def test_at_bad_min_returns_zero(self) -> None:
+        assert _normalize_decreasing(5.0, 1.0, 5.0) == pytest.approx(0.0)
+
+    def test_above_bad_min_returns_zero(self) -> None:
+        assert _normalize_decreasing(7.0, 1.0, 5.0) == pytest.approx(0.0)
+
+    def test_midpoint_returns_half(self) -> None:
+        # midpoint between 1.0 and 5.0 is 3.0 → score = (5-3)/(5-1) = 0.5
+        assert _normalize_decreasing(3.0, 1.0, 5.0) == pytest.approx(0.5)
+
+
+class TestNormalizeIncreasing:
+    def test_at_good_min_returns_one(self) -> None:
+        assert _normalize_increasing(0.9, 0.7, 0.9) == pytest.approx(1.0)
+
+    def test_above_good_min_returns_one(self) -> None:
+        assert _normalize_increasing(0.95, 0.7, 0.9) == pytest.approx(1.0)
+
+    def test_at_bad_max_returns_zero(self) -> None:
+        assert _normalize_increasing(0.7, 0.7, 0.9) == pytest.approx(0.0)
+
+    def test_below_bad_max_returns_zero(self) -> None:
+        assert _normalize_increasing(0.5, 0.7, 0.9) == pytest.approx(0.0)
+
+    def test_midpoint_returns_half(self) -> None:
+        # midpoint between 0.7 and 0.9 is 0.8 → score = (0.8-0.7)/(0.9-0.7) = 0.5
+        assert _normalize_increasing(0.8, 0.7, 0.9) == pytest.approx(0.5)
+
+
+class TestNormalizeRange:
+    def test_in_good_range_returns_one(self) -> None:
+        assert _normalize_range(0.5, 0.1, 0.2, 0.9, 0.95) == pytest.approx(1.0)
+
+    def test_at_good_lo_returns_one(self) -> None:
+        assert _normalize_range(0.2, 0.1, 0.2, 0.9, 0.95) == pytest.approx(1.0)
+
+    def test_at_good_hi_returns_one(self) -> None:
+        assert _normalize_range(0.9, 0.1, 0.2, 0.9, 0.95) == pytest.approx(1.0)
+
+    def test_at_bad_lo_returns_zero(self) -> None:
+        assert _normalize_range(0.1, 0.1, 0.2, 0.9, 0.95) == pytest.approx(0.0)
+
+    def test_below_bad_lo_returns_zero(self) -> None:
+        assert _normalize_range(0.0, 0.1, 0.2, 0.9, 0.95) == pytest.approx(0.0)
+
+    def test_at_bad_hi_returns_zero(self) -> None:
+        assert _normalize_range(0.95, 0.1, 0.2, 0.9, 0.95) == pytest.approx(0.0)
+
+    def test_above_bad_hi_returns_zero(self) -> None:
+        assert _normalize_range(1.0, 0.1, 0.2, 0.9, 0.95) == pytest.approx(0.0)
+
+    def test_low_ramp_midpoint(self) -> None:
+        # midpoint between bad_lo=0.1 and good_lo=0.2 is 0.15 → 0.5
+        assert _normalize_range(0.15, 0.1, 0.2, 0.9, 0.95) == pytest.approx(0.5)
+
+    def test_high_ramp_midpoint(self) -> None:
+        # midpoint between good_hi=0.9 and bad_hi=0.95 is 0.925 → 0.5
+        assert _normalize_range(0.925, 0.1, 0.2, 0.9, 0.95) == pytest.approx(0.5)
+
+
+# ---------------------------------------------------------------------------
+# compute_artifact_soft_score
+# ---------------------------------------------------------------------------
+
+
+class TestComputeArtifactSoftScore:
+    def test_all_good_signals_score_near_one(self) -> None:
+        score, signals = compute_artifact_soft_score(_GOOD_QUALITY, None, _CONFIG)
+        assert score == pytest.approx(1.0)
+
+    def test_all_bad_signals_score_zero(self) -> None:
+        score, signals = compute_artifact_soft_score(_BAD_QUALITY, None, _CONFIG)
+        assert score == pytest.approx(0.0)
+
+    def test_signal_scores_all_keys_present_without_geometry(self) -> None:
+        _, signals = compute_artifact_soft_score(_GOOD_QUALITY, None, _CONFIG)
+        assert set(signals.keys()) == {
+            "skew_residual",
+            "blur_score",
+            "border_score",
+            "foreground_coverage",
+        }
+
+    def test_signal_scores_includes_geometry_signals_when_provided(self) -> None:
+        geo = _make_geometry(geometry_confidence=0.9, tta_structural_agreement_rate=0.95)
+        _, signals = compute_artifact_soft_score(_GOOD_QUALITY, geo, _CONFIG)  # type: ignore[arg-type]
+        assert "geometry_confidence" in signals
+        assert "tta_agreement" in signals
+
+    def test_good_geometry_raises_score(self) -> None:
+        score_no_geo, _ = compute_artifact_soft_score(_GOOD_QUALITY, None, _CONFIG)
+        geo = _make_geometry(geometry_confidence=0.9, tta_structural_agreement_rate=0.95)
+        score_with_geo, _ = compute_artifact_soft_score(_GOOD_QUALITY, geo, _CONFIG)  # type: ignore[arg-type]
+        # Both should be high (near 1.0); the exact value depends on weighting.
+        assert score_no_geo == pytest.approx(1.0)
+        assert score_with_geo == pytest.approx(1.0)
+
+    def test_bad_geometry_lowers_score(self) -> None:
+        # All quality signals are good but geometry is terrible.
+        geo = _make_geometry(geometry_confidence=0.3, tta_structural_agreement_rate=0.6)
+        score, signals = compute_artifact_soft_score(_GOOD_QUALITY, geo, _CONFIG)  # type: ignore[arg-type]
+        # geometry_confidence and tta_agreement both 0.0 → score < 1.0
+        assert score < 1.0
+        assert signals["geometry_confidence"] == pytest.approx(0.0)
+        assert signals["tta_agreement"] == pytest.approx(0.0)
+
+    def test_score_is_weighted_mean(self) -> None:
+        # With equal weights of 1.0 and 4 signals all at score 0.5:
+        # combined = (0.5 * 4) / 4 = 0.5
+        mid_quality = QualityMetrics(
+            skew_residual=3.0,  # midpoint(1.0, 5.0) → 0.5
+            blur_score=0.55,  # midpoint(0.4, 0.7) → 0.5
+            border_score=0.4,  # midpoint(0.3, 0.5) → 0.5
+            foreground_coverage=0.15,  # midpoint(0.1, 0.2) → 0.5
+        )
+        score, _ = compute_artifact_soft_score(mid_quality, None, _CONFIG)
+        assert score == pytest.approx(0.5)
+
+    def test_custom_weights_skew_result(self) -> None:
+        # Only blur_score weight is nonzero → combined score == blur_score signal.
+        cfg = PreprocessingGateConfig(
+            weight_skew_residual=0.0,
+            weight_blur_score=1.0,
+            weight_border_score=0.0,
+            weight_foreground_coverage=0.0,
+        )
+        good_blur = QualityMetrics(
+            skew_residual=10.0,  # terrible (but zero-weighted)
+            blur_score=0.2,  # good → normalized 1.0
+            border_score=0.1,  # terrible (but zero-weighted)
+            foreground_coverage=0.0,  # terrible (but zero-weighted)
+        )
+        score, signals = compute_artifact_soft_score(good_blur, None, cfg)
+        assert score == pytest.approx(1.0)
+        assert signals["blur_score"] == pytest.approx(1.0)
+
+    def test_scores_are_clamped_to_0_1(self) -> None:
+        # Values well outside the ranges must not produce scores outside [0, 1].
+        extreme_quality = QualityMetrics(
+            skew_residual=100.0,
+            blur_score=1.0,
+            border_score=0.0,
+            foreground_coverage=0.0,
+        )
+        score, signals = compute_artifact_soft_score(extreme_quality, None, _CONFIG)
+        assert 0.0 <= score <= 1.0
+        for v in signals.values():
+            assert 0.0 <= v <= 1.0
+
+
+# ---------------------------------------------------------------------------
+# run_artifact_validation
+# ---------------------------------------------------------------------------
+
+
+class TestRunArtifactValidation:
+    def test_hard_fail_skips_soft_scoring(self) -> None:
+        resp = _make_response()
+        result = run_artifact_validation(resp, None, _loader_missing())
+        assert result.passed is False
+        assert result.soft_score is None
+        assert result.signal_scores is None
+        assert result.soft_passed is None
+
+    def test_hard_pass_soft_pass_yields_passed_true(self) -> None:
+        resp = _make_response()
+        result = run_artifact_validation(resp, None, _loader_ok(), _CONFIG)
+        assert result.hard_result.passed is True
+        assert result.passed is True
+        assert result.soft_passed is True
+        assert result.soft_score is not None
+        assert result.soft_score >= _CONFIG.artifact_validation_threshold
+
+    def test_hard_pass_soft_fail_yields_passed_false(self) -> None:
+        resp = _make_response()
+        # Override quality with all-bad signals using model_copy (preserves nested objects).
+        bad_resp = resp.model_copy(update={"quality": _BAD_QUALITY})
+        result = run_artifact_validation(bad_resp, None, _loader_ok(), _CONFIG)
+        assert result.hard_result.passed is True
+        assert result.soft_passed is False
+        assert result.passed is False
+        assert result.soft_score is not None
+        assert result.soft_score < _CONFIG.artifact_validation_threshold
+
+    def test_custom_threshold_zero_always_passes(self) -> None:
+        cfg = PreprocessingGateConfig(artifact_validation_threshold=0.0)
+        resp = _make_response()
+        bad_resp = resp.model_copy(update={"quality": _BAD_QUALITY})
+        result = run_artifact_validation(bad_resp, None, _loader_ok(), cfg)
+        assert result.soft_passed is True
+        assert result.passed is True
+
+    def test_default_config_used_when_none_passed(self) -> None:
+        resp = _make_response()
+        result = run_artifact_validation(resp, None, _loader_ok())
+        assert result.soft_score is not None
+
+
+# ---------------------------------------------------------------------------
+# build_artifact_gate_log_record
+# ---------------------------------------------------------------------------
+
+
+class TestBuildArtifactGateLogRecord:
+    def _accepted_result(self) -> ArtifactValidationResult:
+        resp = _make_response()
+        return run_artifact_validation(resp, None, _loader_ok(), _CONFIG)
+
+    def test_required_keys_present(self) -> None:
+        result = self._accepted_result()
+        record = build_artifact_gate_log_record(
+            result, "job-1", 0, "artifact_validation", "accepted", None, 80.0
+        )
+        required = {
+            "gate_id",
+            "job_id",
+            "page_number",
+            "gate_type",
+            "iep1a_geometry",
+            "iep1b_geometry",
+            "structural_agreement",
+            "selected_model",
+            "selection_reason",
+            "sanity_check_results",
+            "split_confidence",
+            "tta_variance",
+            "artifact_validation_score",
+            "route_decision",
+            "review_reason",
+            "processing_time_ms",
+        }
+        assert required.issubset(record.keys())
+
+    def test_gate_id_is_valid_uuid4(self) -> None:
+        result = self._accepted_result()
+        record = build_artifact_gate_log_record(
+            result, "job-1", 0, "artifact_validation", "accepted", None, 50.0
+        )
+        parsed = uuid.UUID(str(record["gate_id"]))
+        assert parsed.version == 4
+
+    def test_gate_id_unique_per_call(self) -> None:
+        result = self._accepted_result()
+        r1 = build_artifact_gate_log_record(
+            result, "job-1", 0, "artifact_validation", "accepted", None, 50.0
+        )
+        r2 = build_artifact_gate_log_record(
+            result, "job-1", 0, "artifact_validation", "accepted", None, 50.0
+        )
+        assert r1["gate_id"] != r2["gate_id"]
+
+    def test_accepted_route_in_record(self) -> None:
+        result = self._accepted_result()
+        record = build_artifact_gate_log_record(
+            result, "job-1", 0, "artifact_validation", "accepted", None, 60.0
+        )
+        assert record["route_decision"] == "accepted"
+        assert record["review_reason"] is None
+
+    def test_pending_human_route_and_reason(self) -> None:
+        resp = _make_response()
+        hard_fail = run_artifact_validation(resp, None, _loader_missing())
+        record = build_artifact_gate_log_record(
+            hard_fail,
+            "job-2",
+            1,
+            "artifact_validation_final",
+            "pending_human_correction",
+            "artifact_quality_low",
+            100.0,
+        )
+        assert record["route_decision"] == "pending_human_correction"
+        assert record["review_reason"] == "artifact_quality_low"
+
+    def test_soft_score_in_record(self) -> None:
+        result = self._accepted_result()
+        record = build_artifact_gate_log_record(
+            result, "job-1", 0, "artifact_validation", "accepted", None, 50.0
+        )
+        assert record["artifact_validation_score"] is not None
+        score = record["artifact_validation_score"]
+        assert isinstance(score, float)
+        assert 0.0 <= score <= 1.0
+
+    def test_hard_fail_soft_score_none_in_record(self) -> None:
+        resp = _make_response()
+        hard_fail = run_artifact_validation(resp, None, _loader_missing())
+        record = build_artifact_gate_log_record(
+            hard_fail,
+            "job-1",
+            0,
+            "artifact_validation",
+            "pending_human_correction",
+            "file_missing",
+            50.0,
+        )
+        assert record["artifact_validation_score"] is None
+
+    def test_geometry_columns_are_none(self) -> None:
+        result = self._accepted_result()
+        record = build_artifact_gate_log_record(
+            result, "job-1", 0, "artifact_validation", "accepted", None, 50.0
+        )
+        assert record["iep1a_geometry"] is None
+        assert record["iep1b_geometry"] is None
+        assert record["structural_agreement"] is None
+        assert record["selected_model"] is None
+
+    def test_post_rectification_gate_type(self) -> None:
+        result = self._accepted_result()
+        record = build_artifact_gate_log_record(
+            result, "job-1", 0, "artifact_validation_final", "accepted", None, 50.0
+        )
+        assert record["gate_type"] == "artifact_validation_final"
+
+    def test_processing_time_is_int(self) -> None:
+        result = self._accepted_result()
+        record = build_artifact_gate_log_record(
+            result, "job-1", 0, "artifact_validation", "accepted", None, 77.3
+        )
+        assert record["processing_time_ms"] == 77
+
+    def test_sanity_check_results_from_hard_result(self) -> None:
+        result = self._accepted_result()
+        record = build_artifact_gate_log_record(
+            result, "job-1", 0, "artifact_validation", "accepted", None, 50.0
+        )
+        sr = record["sanity_check_results"]
+        assert isinstance(sr, dict)
+        assert sr["passed"] is True

@@ -63,6 +63,29 @@ class PreprocessingGateConfig:
         split_confidence_threshold        — split decisions require higher confidence (3.2)
         tta_variance_ceiling              — models above this variance are unstable (3.2)
         page_area_preference_threshold    — below this fraction prefer IEP1B (3.2)
+
+    Fields added for Packet 3.5 (artifact soft scoring):
+        artifact_validation_threshold  — combined score must meet this to accept (3.5)
+        skew_residual_good_max         — good if residual < this (°)
+        skew_residual_bad_min          — suspicious if residual > this (°)
+        blur_score_good_max            — good if blur_score < this
+        blur_score_bad_min             — suspicious if blur_score > this
+        border_score_bad_max           — suspicious if border_score < this
+        border_score_good_min          — good if border_score > this
+        foreground_good_lo             — good range lower bound for foreground_coverage
+        foreground_good_hi             — good range upper bound for foreground_coverage
+        foreground_bad_lo              — suspicious if foreground_coverage < this
+        foreground_bad_hi              — suspicious if foreground_coverage > this
+        geometry_confidence_good_min   — good if geometry_confidence > this
+        geometry_confidence_bad_max    — suspicious if geometry_confidence < this
+        tta_agreement_good_min         — good if tta_structural_agreement_rate > this
+        tta_agreement_bad_max          — suspicious if tta_structural_agreement_rate < this
+        weight_skew_residual           — weight for skew_residual in weighted sum
+        weight_blur_score              — weight for blur_score in weighted sum
+        weight_border_score            — weight for border_score in weighted sum
+        weight_foreground_coverage     — weight for foreground_coverage in weighted sum
+        weight_geometry_confidence     — weight for geometry_confidence in weighted sum
+        weight_tta_agreement           — weight for tta_structural_agreement_rate in weighted sum
     """
 
     geometry_sanity_area_min_fraction: float = 0.15
@@ -74,6 +97,28 @@ class PreprocessingGateConfig:
     split_confidence_threshold: float = 0.75
     tta_variance_ceiling: float = 0.15
     page_area_preference_threshold: float = 0.30
+    # Packet 3.5 fields — artifact soft signal scoring (spec Section 6.9 + 8.4).
+    artifact_validation_threshold: float = 0.60
+    skew_residual_good_max: float = 1.0
+    skew_residual_bad_min: float = 5.0
+    blur_score_good_max: float = 0.4
+    blur_score_bad_min: float = 0.7
+    border_score_bad_max: float = 0.3
+    border_score_good_min: float = 0.5
+    foreground_good_lo: float = 0.2
+    foreground_good_hi: float = 0.9
+    foreground_bad_lo: float = 0.1
+    foreground_bad_hi: float = 0.95
+    geometry_confidence_good_min: float = 0.8
+    geometry_confidence_bad_max: float = 0.5
+    tta_agreement_good_min: float = 0.9
+    tta_agreement_bad_max: float = 0.7
+    weight_skew_residual: float = 1.0
+    weight_blur_score: float = 1.0
+    weight_border_score: float = 1.0
+    weight_foreground_coverage: float = 1.0
+    weight_geometry_confidence: float = 1.0
+    weight_tta_agreement: float = 1.0
 
 
 # ---------------------------------------------------------------------------
