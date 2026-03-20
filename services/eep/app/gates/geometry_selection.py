@@ -6,7 +6,7 @@ Implements the geometry selection cascade defined in spec Section 6.8.
 
 Packet 3.1: structural agreement check + six per-model sanity checks.
 Packet 3.2: split confidence filter, TTA variance filter, page area preference.
-Packet 3.3: confidence-based selection, route-to-human logic, quality_gate_log writes.  [pending]
+Packet 3.3: confidence-based selection, route-to-human logic, quality_gate_log writes.
 
 Exported (Packet 3.1):
     PreprocessingGateConfig  — policy thresholds (spec Section 8.4 defaults)
@@ -19,10 +19,16 @@ Exported (Packet 3.2):
     apply_split_confidence_filter — remove candidates below split confidence threshold
     apply_tta_variance_filter     — remove candidates above TTA variance ceiling
     check_page_area_preference    — signal IEP1B preference for small-page tiebreaker
+
+Exported (Packet 3.3):
+    GeometrySelectionResult      — full result of the geometry selection cascade
+    run_geometry_selection       — orchestrate the full cascade; returns GeometrySelectionResult
+    build_geometry_gate_log_record — build a quality_gate_log insertion dict (no DB write)
 """
 
 from __future__ import annotations
 
+import uuid as _uuid
 from dataclasses import dataclass, field
 from typing import Literal
 
@@ -454,3 +460,275 @@ def check_page_area_preference(
             if region.page_area_fraction < config.page_area_preference_threshold:
                 return True
     return False
+
+
+# ---------------------------------------------------------------------------
+# Packet 3.3 — Confidence-based selection, route-to-human, gate log record
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class GeometrySelectionResult:
+    """
+    Full result of the geometry selection cascade.
+
+    Attributes:
+        selected                    — winning GeometryCandidate; None if routed to human
+        geometry_trust              — "high" only if both models were provided, both
+                                      survived all filters, and structural agreement held;
+                                      "low" if any dropout or disagreement; None when no
+                                      candidate was selected
+        selection_reason            — short label explaining why this candidate was chosen
+                                      (e.g. "higher_confidence"); None when no candidate
+                                      survived
+        route_decision              — "accepted" (high trust, proceed to normalization),
+                                      "rectification" (low trust, mandatory IEP1D pass),
+                                      or "pending_human_correction" (no usable geometry)
+        review_reason               — canonical reason string when route_decision is
+                                      "pending_human_correction"; None otherwise
+        structural_agreement        — result of check_structural_agreement; None when only
+                                      one model was provided (single-model mode)
+        sanity_results              — per-model SanityCheckResult dicts keyed by model
+                                      name ("iep1a" / "iep1b")
+        split_confidence_per_model  — per-model split confidence scores for models that
+                                      reported split_required=True; None when no model
+                                      reported a split
+        tta_variance_per_model      — per-model tta_prediction_variance values (all
+                                      initial models, before any filtering)
+        page_area_preference_triggered — True if the IEP1B small-page tiebreaker fired
+    """
+
+    selected: GeometryCandidate | None
+    geometry_trust: Literal["high", "low"] | None
+    selection_reason: str | None
+    route_decision: Literal["accepted", "rectification", "pending_human_correction"]
+    review_reason: str | None
+    structural_agreement: bool | None
+    sanity_results: dict[str, dict[str, object]]
+    split_confidence_per_model: dict[str, float] | None
+    tta_variance_per_model: dict[str, float]
+    page_area_preference_triggered: bool
+
+
+def _select_candidate(
+    candidates: list[GeometryCandidate],
+    page_area_preference: bool,
+) -> tuple[GeometryCandidate, str]:
+    """
+    Select the winning candidate from the surviving list.
+
+    Returns (candidate, selection_reason).  Assumes len(candidates) >= 1.
+
+    Priority:
+      1. Sole survivor — only one candidate remains.
+      2. Page area preference — IEP1B preferred for small pages.
+      3. Higher geometry_confidence — pick the more confident model.
+      4. Default IEP1A — explicit tie-breaking default per spec.
+    """
+    if len(candidates) == 1:
+        return candidates[0], "sole_survivor"
+
+    # Page area preference: prefer IEP1B when triggered.
+    if page_area_preference:
+        iep1b = next((c for c in candidates if c.model == "iep1b"), None)
+        if iep1b is not None:
+            return iep1b, "page_area_preference"
+
+    # Confidence tie check (handles exactly-equal floats).
+    confs = [c.response.geometry_confidence for c in candidates]
+    if len(set(confs)) == 1:
+        # All tied — fall back to IEP1A.
+        iep1a = next((c for c in candidates if c.model == "iep1a"), None)
+        return (iep1a if iep1a is not None else candidates[0]), "default_iep1a"
+
+    best = max(candidates, key=lambda c: c.response.geometry_confidence)
+    return best, "higher_confidence"
+
+
+def run_geometry_selection(
+    iep1a_response: GeometryResponse | None,
+    iep1b_response: GeometryResponse | None,
+    material_type: MaterialType,
+    proxy_width: int,
+    proxy_height: int,
+    config: PreprocessingGateConfig | None = None,
+) -> GeometrySelectionResult:
+    """
+    Orchestrate the full geometry selection cascade (spec Section 6.8, Step 3).
+
+    The cascade proceeds in this order:
+      1. Structural agreement check (if both models present).
+      2. Per-model sanity checks — models that fail are dropped.
+      3. Split confidence filter (for split_required candidates).
+      4. TTA variance filter.
+      5. Page area preference signal (tiebreaker hint).
+      6. Confidence-based selection among surviving candidates.
+
+    Geometry trust is HIGH only when both models were provided, both survived
+    all filters, and structural agreement held.  Any dropout or disagreement
+    lowers trust to LOW, triggering mandatory rectification
+    (route_decision="rectification").
+
+    When no candidates survive all filters the result routes to human correction
+    (route_decision="pending_human_correction") with a canonical review_reason.
+
+    Args:
+        iep1a_response — response from IEP1A; pass None for single-model mode
+        iep1b_response — response from IEP1B; pass None for single-model mode
+        material_type  — job material type (book / newspaper / archival_document)
+        proxy_width    — pixel width of the proxy image used for inference
+        proxy_height   — pixel height of the proxy image used for inference
+        config         — policy thresholds; defaults to PreprocessingGateConfig()
+    """
+    if config is None:
+        config = PreprocessingGateConfig()
+
+    # --- Build initial candidate list (preserved for logging) ---
+    all_models: list[GeometryCandidate] = []
+    if iep1a_response is not None:
+        all_models.append(GeometryCandidate(model="iep1a", response=iep1a_response))
+    if iep1b_response is not None:
+        all_models.append(GeometryCandidate(model="iep1b", response=iep1b_response))
+
+    initial_count = len(all_models)
+    both_present = initial_count == 2
+
+    # --- Structural agreement (only meaningful when both models present) ---
+    structural_agreement: bool | None = None
+    if both_present and iep1a_response is not None and iep1b_response is not None:
+        structural_agreement = check_structural_agreement(iep1a_response, iep1b_response)
+
+    # --- Collect TTA variance before any filtering ---
+    tta_variance_per_model: dict[str, float] = {
+        c.model: c.response.tta_prediction_variance for c in all_models
+    }
+
+    # --- Collect split confidence for models that reported a split ---
+    split_confidence_per_model: dict[str, float] | None = None
+    if any(c.response.split_required for c in all_models):
+        split_confidence_per_model = {
+            c.model: _compute_split_confidence(c.response)
+            for c in all_models
+            if c.response.split_required
+        }
+
+    # --- Per-model sanity checks ---
+    sanity_results: dict[str, dict[str, object]] = {}
+    candidates: list[GeometryCandidate] = []
+    for candidate in all_models:
+        sr = check_sanity(candidate.response, material_type, proxy_width, proxy_height, config)
+        sanity_results[candidate.model] = sr.as_dict()
+        if sr.passed:
+            candidates.append(candidate)
+
+    all_failed_sanity = (len(candidates) == 0) and (initial_count > 0)
+    dropped_at_sanity = len(candidates) < initial_count
+
+    # --- Split confidence filter ---
+    post_split = apply_split_confidence_filter(candidates, config)
+    all_failed_split = (len(post_split) == 0) and (len(candidates) > 0)
+    dropped_at_split = len(post_split) < len(candidates)
+    candidates = post_split
+
+    # --- TTA variance filter ---
+    post_tta = apply_tta_variance_filter(candidates, config)
+    all_failed_tta = (len(post_tta) == 0) and (len(candidates) > 0)
+    dropped_at_tta = len(post_tta) < len(candidates)
+    candidates = post_tta
+
+    # --- Page area preference ---
+    page_area_preference_triggered = check_page_area_preference(candidates, config)
+
+    # --- Route to human when no candidates survive ---
+    if not candidates:
+        if all_failed_sanity:
+            review_reason: str | None = "geometry_sanity_failed"
+        elif all_failed_split:
+            review_reason = "split_confidence_low"
+        elif all_failed_tta:
+            review_reason = "tta_variance_high"
+        else:
+            review_reason = "geometry_selection_failed"
+
+        return GeometrySelectionResult(
+            selected=None,
+            geometry_trust=None,
+            selection_reason=None,
+            route_decision="pending_human_correction",
+            review_reason=review_reason,
+            structural_agreement=structural_agreement,
+            sanity_results=sanity_results,
+            split_confidence_per_model=split_confidence_per_model,
+            tta_variance_per_model=tta_variance_per_model,
+            page_area_preference_triggered=page_area_preference_triggered,
+        )
+
+    # --- Select winner ---
+    any_dropped = dropped_at_sanity or dropped_at_split or dropped_at_tta
+    high_trust = both_present and (structural_agreement is True) and not any_dropped
+    geometry_trust: Literal["high", "low"] | None = "high" if high_trust else "low"
+
+    selected, selection_reason = _select_candidate(candidates, page_area_preference_triggered)
+
+    route_decision: Literal["accepted", "rectification", "pending_human_correction"] = (
+        "accepted" if high_trust else "rectification"
+    )
+
+    return GeometrySelectionResult(
+        selected=selected,
+        geometry_trust=geometry_trust,
+        selection_reason=selection_reason,
+        route_decision=route_decision,
+        review_reason=None,
+        structural_agreement=structural_agreement,
+        sanity_results=sanity_results,
+        split_confidence_per_model=split_confidence_per_model,
+        tta_variance_per_model=tta_variance_per_model,
+        page_area_preference_triggered=page_area_preference_triggered,
+    )
+
+
+def build_geometry_gate_log_record(
+    result: GeometrySelectionResult,
+    job_id: str,
+    page_number: int,
+    gate_type: Literal["geometry_selection", "geometry_selection_post_rectification"],
+    iep1a_response: GeometryResponse | None,
+    iep1b_response: GeometryResponse | None,
+    processing_time_ms: float,
+) -> dict[str, object]:
+    """
+    Build a dict ready for insertion into the quality_gate_log table.
+
+    Does NOT write to the database — the caller (EEP worker, Packet 4) performs
+    the actual insert.  A fresh gate_id (UUID4) is generated on each call.
+
+    Columns populated:
+        gate_id, job_id, page_number, gate_type,
+        iep1a_geometry, iep1b_geometry, structural_agreement,
+        selected_model, selection_reason, sanity_check_results,
+        split_confidence, tta_variance, artifact_validation_score,
+        route_decision, review_reason, processing_time_ms
+
+    artifact_validation_score is always None here — it is populated by the
+    artifact validation gate (Packets 3.4–3.5) in the same log row when the
+    worker updates the record after normalization.
+    """
+    return {
+        "gate_id": str(_uuid.uuid4()),
+        "job_id": job_id,
+        "page_number": page_number,
+        "gate_type": gate_type,
+        "iep1a_geometry": iep1a_response.model_dump() if iep1a_response is not None else None,
+        "iep1b_geometry": iep1b_response.model_dump() if iep1b_response is not None else None,
+        "structural_agreement": result.structural_agreement,
+        "selected_model": result.selected.model if result.selected is not None else None,
+        "selection_reason": result.selection_reason,
+        "sanity_check_results": result.sanity_results,
+        "split_confidence": result.split_confidence_per_model,
+        "tta_variance": result.tta_variance_per_model,
+        "artifact_validation_score": None,
+        "route_decision": result.route_decision,
+        "review_reason": result.review_reason,
+        "processing_time_ms": int(processing_time_ms),
+    }

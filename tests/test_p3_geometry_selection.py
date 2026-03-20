@@ -16,22 +16,27 @@ Covers:
 
 from __future__ import annotations
 
+import uuid
 from typing import Literal
 
 import pytest
 
 from services.eep.app.gates.geometry_selection import (
     GeometryCandidate,
+    GeometrySelectionResult,
     PreprocessingGateConfig,
     _bbox_iou,
     _compute_split_confidence,
     _corners_convex_and_valid,
     _quadrilateral_area,
+    _select_candidate,
     apply_split_confidence_filter,
     apply_tta_variance_filter,
+    build_geometry_gate_log_record,
     check_page_area_preference,
     check_sanity,
     check_structural_agreement,
+    run_geometry_selection,
 )
 from shared.schemas.geometry import GeometryResponse, PageRegion
 
@@ -980,3 +985,414 @@ class TestCheckPageAreaPreference:
         a = GeometryCandidate(model="iep1a", response=resp)
         b = _candidate("iep1b", page_area_fraction=0.5)
         assert check_page_area_preference([a, b], CONFIG) is True
+
+
+# ===========================================================================
+# Packet 3.3 — GeometrySelectionResult, run_geometry_selection, gate log record
+# ===========================================================================
+
+# ---------------------------------------------------------------------------
+# Helpers for 3.3 tests
+# ---------------------------------------------------------------------------
+
+
+def _valid_iep1a(
+    geometry_confidence: float = 0.90,
+    tta_prediction_variance: float = 0.05,
+    split_required: bool = False,
+    page_area_fraction: float = 0.5,
+) -> GeometryResponse:
+    """A GeometryResponse that passes all sanity checks (default config)."""
+    return _response(
+        geometry_confidence=geometry_confidence,
+        tta_prediction_variance=tta_prediction_variance,
+        tta_structural_agreement_rate=0.95,
+        split_required=split_required,
+        split_x=400 if split_required else None,
+        page_count=2 if split_required else 1,
+        pages=(
+            [
+                _region(region_id="page_0", page_area_fraction=page_area_fraction),
+                _region(region_id="page_1", page_area_fraction=page_area_fraction),
+            ]
+            if split_required
+            else [_region(page_area_fraction=page_area_fraction)]
+        ),
+    )
+
+
+def _valid_iep1b(
+    geometry_confidence: float = 0.88,
+    tta_prediction_variance: float = 0.05,
+    split_required: bool = False,
+    page_area_fraction: float = 0.5,
+) -> GeometryResponse:
+    """A GeometryResponse that passes all sanity checks (default config)."""
+    return _response(
+        geometry_confidence=geometry_confidence,
+        tta_prediction_variance=tta_prediction_variance,
+        tta_structural_agreement_rate=0.95,
+        split_required=split_required,
+        split_x=400 if split_required else None,
+        page_count=2 if split_required else 1,
+        pages=(
+            [
+                _region(region_id="page_0", page_area_fraction=page_area_fraction),
+                _region(region_id="page_1", page_area_fraction=page_area_fraction),
+            ]
+            if split_required
+            else [_region(page_area_fraction=page_area_fraction)]
+        ),
+    )
+
+
+# ---------------------------------------------------------------------------
+# _select_candidate
+# ---------------------------------------------------------------------------
+
+
+class TestSelectCandidate:
+    def test_sole_survivor_returns_reason_sole_survivor(self) -> None:
+        c = _candidate("iep1a", geometry_confidence=0.8)
+        winner, reason = _select_candidate([c], page_area_preference=False)
+        assert winner.model == "iep1a"
+        assert reason == "sole_survivor"
+
+    def test_page_area_preference_picks_iep1b(self) -> None:
+        a = _candidate("iep1a", geometry_confidence=0.95)
+        b = _candidate("iep1b", geometry_confidence=0.80)
+        winner, reason = _select_candidate([a, b], page_area_preference=True)
+        assert winner.model == "iep1b"
+        assert reason == "page_area_preference"
+
+    def test_higher_confidence_wins(self) -> None:
+        a = _candidate("iep1a", geometry_confidence=0.75)
+        b = _candidate("iep1b", geometry_confidence=0.92)
+        winner, reason = _select_candidate([a, b], page_area_preference=False)
+        assert winner.model == "iep1b"
+        assert reason == "higher_confidence"
+
+    def test_tie_falls_back_to_iep1a(self) -> None:
+        a = _candidate("iep1a", geometry_confidence=0.85)
+        b = _candidate("iep1b", geometry_confidence=0.85)
+        winner, reason = _select_candidate([a, b], page_area_preference=False)
+        assert winner.model == "iep1a"
+        assert reason == "default_iep1a"
+
+    def test_page_area_preference_no_iep1b_falls_to_confidence(self) -> None:
+        """If page_area_preference is True but only iep1a present, use confidence."""
+        a = _candidate("iep1a", geometry_confidence=0.9)
+        # Only one candidate — sole_survivor takes priority before preference check.
+        winner, reason = _select_candidate([a], page_area_preference=True)
+        assert winner.model == "iep1a"
+        assert reason == "sole_survivor"
+
+
+# ---------------------------------------------------------------------------
+# run_geometry_selection — high trust path
+# ---------------------------------------------------------------------------
+
+
+class TestRunGeometrySelectionHighTrust:
+    def test_both_models_agree_and_pass_filters_yields_accepted(self) -> None:
+        a = _valid_iep1a()
+        b = _valid_iep1b()
+        result = run_geometry_selection(a, b, "book", PROXY_W, PROXY_H)
+        assert result.route_decision == "accepted"
+        assert result.geometry_trust == "high"
+        assert result.structural_agreement is True
+        assert result.selected is not None
+        assert result.review_reason is None
+
+    def test_high_trust_selects_higher_confidence(self) -> None:
+        a = _valid_iep1a(geometry_confidence=0.95)
+        b = _valid_iep1b(geometry_confidence=0.80)
+        result = run_geometry_selection(a, b, "book", PROXY_W, PROXY_H)
+        assert result.selected is not None
+        assert result.selected.model == "iep1a"
+        assert result.selection_reason == "higher_confidence"
+
+    def test_sanity_results_populated_for_both_models(self) -> None:
+        a = _valid_iep1a()
+        b = _valid_iep1b()
+        result = run_geometry_selection(a, b, "book", PROXY_W, PROXY_H)
+        assert "iep1a" in result.sanity_results
+        assert "iep1b" in result.sanity_results
+        assert result.sanity_results["iep1a"]["passed"] is True
+        assert result.sanity_results["iep1b"]["passed"] is True
+
+    def test_tta_variance_per_model_populated(self) -> None:
+        a = _valid_iep1a(tta_prediction_variance=0.06)
+        b = _valid_iep1b(tta_prediction_variance=0.09)
+        result = run_geometry_selection(a, b, "book", PROXY_W, PROXY_H)
+        assert result.tta_variance_per_model == pytest.approx({"iep1a": 0.06, "iep1b": 0.09})
+
+    def test_split_confidence_none_when_no_split(self) -> None:
+        a = _valid_iep1a(split_required=False)
+        b = _valid_iep1b(split_required=False)
+        result = run_geometry_selection(a, b, "book", PROXY_W, PROXY_H)
+        assert result.split_confidence_per_model is None
+
+    def test_split_confidence_populated_when_split_required(self) -> None:
+        a = _valid_iep1a(geometry_confidence=0.90, split_required=True)
+        b = _valid_iep1b(geometry_confidence=0.88, split_required=True)
+        result = run_geometry_selection(a, b, "book", PROXY_W, PROXY_H)
+        assert result.split_confidence_per_model is not None
+        assert "iep1a" in result.split_confidence_per_model
+        assert "iep1b" in result.split_confidence_per_model
+
+    def test_page_area_preference_not_triggered_for_normal_pages(self) -> None:
+        a = _valid_iep1a(page_area_fraction=0.5)
+        b = _valid_iep1b(page_area_fraction=0.5)
+        result = run_geometry_selection(a, b, "book", PROXY_W, PROXY_H)
+        assert result.page_area_preference_triggered is False
+
+
+# ---------------------------------------------------------------------------
+# run_geometry_selection — low trust path
+# ---------------------------------------------------------------------------
+
+
+class TestRunGeometrySelectionLowTrust:
+    def test_structural_disagreement_yields_low_trust_rectification(self) -> None:
+        # iep1a says 1 page, iep1b says 2 pages → disagreement
+        a = _valid_iep1a()  # page_count=1, split_required=False
+        b = _response(
+            page_count=2,
+            pages=[
+                _region(region_id="page_0", page_area_fraction=0.48),
+                _region(region_id="page_1", page_area_fraction=0.48),
+            ],
+            split_required=True,
+            split_x=400,
+            geometry_confidence=0.88,
+            tta_structural_agreement_rate=0.95,
+            tta_prediction_variance=0.05,
+        )
+        result = run_geometry_selection(a, b, "book", PROXY_W, PROXY_H)
+        assert result.structural_agreement is False
+        assert result.geometry_trust == "low"
+        assert result.route_decision == "rectification"
+        assert result.selected is not None  # a winner is still selected
+
+    def test_one_model_fails_sanity_yields_low_trust(self) -> None:
+        a = _valid_iep1a()
+        # b has area_fraction_plausible failure (0.01 < 0.15 min)
+        bad_region = _region(page_area_fraction=0.01)
+        b = _response(pages=[bad_region])
+        result = run_geometry_selection(a, b, "book", PROXY_W, PROXY_H)
+        assert result.geometry_trust == "low"
+        assert result.route_decision == "rectification"
+        assert result.selected is not None
+        assert result.selected.model == "iep1a"
+        assert result.selection_reason == "sole_survivor"
+
+    def test_one_model_fails_tta_variance_yields_low_trust(self) -> None:
+        a = _valid_iep1a(tta_prediction_variance=0.05)
+        b = _valid_iep1b(tta_prediction_variance=0.99)  # > ceiling 0.15
+        result = run_geometry_selection(a, b, "book", PROXY_W, PROXY_H)
+        assert result.geometry_trust == "low"
+        assert result.route_decision == "rectification"
+        assert result.selected is not None
+        assert result.selected.model == "iep1a"
+
+    def test_single_model_always_low_trust(self) -> None:
+        a = _valid_iep1a()
+        result = run_geometry_selection(a, None, "book", PROXY_W, PROXY_H)
+        assert result.geometry_trust == "low"
+        assert result.route_decision == "rectification"
+        assert result.structural_agreement is None
+        assert result.selected is not None
+        assert result.selected.model == "iep1a"
+
+    def test_page_area_preference_triggered_still_rectification_when_low_trust(self) -> None:
+        # One model dropped → low trust → rectification even if preference fires
+        a = _valid_iep1a(page_area_fraction=0.2)  # small page → preference fires
+        b_bad = _response(pages=[_region(page_area_fraction=0.01)])  # fails sanity
+        result = run_geometry_selection(a, b_bad, "book", PROXY_W, PROXY_H)
+        assert result.route_decision == "rectification"
+        assert result.geometry_trust == "low"
+
+
+# ---------------------------------------------------------------------------
+# run_geometry_selection — pending_human_correction path
+# ---------------------------------------------------------------------------
+
+
+class TestRunGeometrySelectionPendingHuman:
+    def test_both_fail_sanity_routes_to_human_sanity_reason(self) -> None:
+        bad_a = _response(pages=[_region(page_area_fraction=0.01)])
+        bad_b = _response(pages=[_region(page_area_fraction=0.01)])
+        result = run_geometry_selection(bad_a, bad_b, "book", PROXY_W, PROXY_H)
+        assert result.route_decision == "pending_human_correction"
+        assert result.review_reason == "geometry_sanity_failed"
+        assert result.selected is None
+        assert result.geometry_trust is None
+        assert result.selection_reason is None
+
+    def test_both_fail_split_confidence_routes_to_human_split_reason(self) -> None:
+        # Both pass sanity but fail split confidence filter.
+        # Use non-overlapping bboxes so regions_non_overlapping passes.
+        split_pages = [
+            _region(region_id="page_0", bbox=(10, 10, 390, 590), page_area_fraction=0.48),
+            _region(region_id="page_1", bbox=(410, 10, 790, 590), page_area_fraction=0.48),
+        ]
+        a = _response(
+            split_required=True,
+            split_x=400,
+            page_count=2,
+            pages=split_pages,
+            geometry_confidence=0.3,  # min(0.3, 0.95) = 0.3 < 0.75 → fails filter
+            tta_structural_agreement_rate=0.95,
+            tta_prediction_variance=0.05,
+        )
+        b = _response(
+            split_required=True,
+            split_x=400,
+            page_count=2,
+            pages=list(split_pages),
+            geometry_confidence=0.4,  # min(0.4, 0.95) = 0.4 < 0.75 → fails filter
+            tta_structural_agreement_rate=0.95,
+            tta_prediction_variance=0.05,
+        )
+        result = run_geometry_selection(a, b, "book", PROXY_W, PROXY_H)
+        assert result.route_decision == "pending_human_correction"
+        assert result.review_reason == "split_confidence_low"
+
+    def test_both_fail_tta_variance_routes_to_human_tta_reason(self) -> None:
+        a = _valid_iep1a(tta_prediction_variance=0.99)  # fails TTA filter
+        b = _valid_iep1b(tta_prediction_variance=0.88)  # fails TTA filter
+        result = run_geometry_selection(a, b, "book", PROXY_W, PROXY_H)
+        assert result.route_decision == "pending_human_correction"
+        assert result.review_reason == "tta_variance_high"
+
+    def test_no_models_provided_routes_to_human_fallback_reason(self) -> None:
+        result = run_geometry_selection(None, None, "book", PROXY_W, PROXY_H)
+        assert result.route_decision == "pending_human_correction"
+        assert result.review_reason == "geometry_selection_failed"
+        assert result.selected is None
+        assert result.geometry_trust is None
+
+    def test_pending_human_sanity_results_still_populated(self) -> None:
+        bad_a = _response(pages=[_region(page_area_fraction=0.01)])
+        bad_b = _response(pages=[_region(page_area_fraction=0.01)])
+        result = run_geometry_selection(bad_a, bad_b, "book", PROXY_W, PROXY_H)
+        assert "iep1a" in result.sanity_results
+        assert "iep1b" in result.sanity_results
+        assert result.sanity_results["iep1a"]["passed"] is False
+        assert result.sanity_results["iep1b"]["passed"] is False
+
+
+# ---------------------------------------------------------------------------
+# build_geometry_gate_log_record
+# ---------------------------------------------------------------------------
+
+
+class TestBuildGeometryGateLogRecord:
+    def _accepted_result(
+        self,
+    ) -> tuple[GeometrySelectionResult, GeometryResponse, GeometryResponse]:
+        a = _valid_iep1a()
+        b = _valid_iep1b()
+        result = run_geometry_selection(a, b, "book", PROXY_W, PROXY_H)
+        return result, a, b
+
+    def test_required_keys_present(self) -> None:
+        result, a, b = self._accepted_result()
+        record = build_geometry_gate_log_record(
+            result, "job-1", 0, "geometry_selection", a, b, 120.0
+        )
+        required = {
+            "gate_id",
+            "job_id",
+            "page_number",
+            "gate_type",
+            "iep1a_geometry",
+            "iep1b_geometry",
+            "structural_agreement",
+            "selected_model",
+            "selection_reason",
+            "sanity_check_results",
+            "split_confidence",
+            "tta_variance",
+            "artifact_validation_score",
+            "route_decision",
+            "review_reason",
+            "processing_time_ms",
+        }
+        assert required.issubset(record.keys())
+
+    def test_gate_id_is_valid_uuid(self) -> None:
+        result, a, b = self._accepted_result()
+        record = build_geometry_gate_log_record(
+            result, "job-1", 0, "geometry_selection", a, b, 50.0
+        )
+        gate_id = record["gate_id"]
+        assert isinstance(gate_id, str)
+        # Validate UUID4 format.
+        parsed = uuid.UUID(str(gate_id))
+        assert parsed.version == 4
+
+    def test_gate_id_unique_per_call(self) -> None:
+        result, a, b = self._accepted_result()
+        r1 = build_geometry_gate_log_record(result, "job-1", 0, "geometry_selection", a, b, 50.0)
+        r2 = build_geometry_gate_log_record(result, "job-1", 0, "geometry_selection", a, b, 50.0)
+        assert r1["gate_id"] != r2["gate_id"]
+
+    def test_accepted_route_decision_in_record(self) -> None:
+        result, a, b = self._accepted_result()
+        record = build_geometry_gate_log_record(
+            result, "job-1", 0, "geometry_selection", a, b, 80.0
+        )
+        assert record["route_decision"] == "accepted"
+        assert record["review_reason"] is None
+
+    def test_pending_human_route_decision_in_record(self) -> None:
+        bad_a = _response(pages=[_region(page_area_fraction=0.01)])
+        bad_b = _response(pages=[_region(page_area_fraction=0.01)])
+        result = run_geometry_selection(bad_a, bad_b, "book", PROXY_W, PROXY_H)
+        record = build_geometry_gate_log_record(
+            result, "job-2", 1, "geometry_selection", bad_a, bad_b, 200.0
+        )
+        assert record["route_decision"] == "pending_human_correction"
+        assert record["review_reason"] == "geometry_sanity_failed"
+        assert record["selected_model"] is None
+
+    def test_artifact_validation_score_always_none(self) -> None:
+        result, a, b = self._accepted_result()
+        record = build_geometry_gate_log_record(
+            result, "job-1", 0, "geometry_selection", a, b, 50.0
+        )
+        assert record["artifact_validation_score"] is None
+
+    def test_processing_time_ms_is_int(self) -> None:
+        result, a, b = self._accepted_result()
+        record = build_geometry_gate_log_record(
+            result, "job-1", 0, "geometry_selection", a, b, 99.7
+        )
+        assert record["processing_time_ms"] == 99
+
+    def test_none_model_produces_none_geometry(self) -> None:
+        a = _valid_iep1a()
+        result = run_geometry_selection(a, None, "book", PROXY_W, PROXY_H)
+        record = build_geometry_gate_log_record(
+            result, "job-3", 0, "geometry_selection", a, None, 60.0
+        )
+        assert record["iep1b_geometry"] is None
+        assert isinstance(record["iep1a_geometry"], dict)
+
+    def test_post_rectification_gate_type(self) -> None:
+        result, a, b = self._accepted_result()
+        record = build_geometry_gate_log_record(
+            result, "job-1", 0, "geometry_selection_post_rectification", a, b, 50.0
+        )
+        assert record["gate_type"] == "geometry_selection_post_rectification"
+
+    def test_selected_model_name_matches_winner(self) -> None:
+        a = _valid_iep1a(geometry_confidence=0.95)
+        b = _valid_iep1b(geometry_confidence=0.80)
+        result = run_geometry_selection(a, b, "book", PROXY_W, PROXY_H)
+        record = build_geometry_gate_log_record(
+            result, "job-1", 0, "geometry_selection", a, b, 50.0
+        )
+        assert record["selected_model"] == "iep1a"
