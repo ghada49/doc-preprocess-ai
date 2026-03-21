@@ -124,3 +124,48 @@ This document provides a comprehensive, step-by-step guide for preparing data fo
   - Modern GPUs and training frameworks can efficiently handle 2048px images for most document ML tasks.
   - You can always downscale later if needed, but upscaling loses information.
 
+### 10.1 Detailed Rationale: Why 2048 Is Better Than 1024 for This Project
+
+For LibraryAI, the goal is not only coarse page detection; it is precise page geometry (segmentation polygons + corner keypoints) across difficult historical material, including skew, split pages, and microfilm artifacts. In this context, **2048 on the largest side** is the better default because it preserves the structural cues that these models depend on.
+
+- **1) Geometric precision is the priority (IEP1A + IEP1B):**
+  - Segmentation and keypoint models learn boundary shape and corner location from pixels.
+  - At 1024, curved/weak boundaries become less sharp, and corner locations become less stable.
+  - At 2048, edges remain more faithful to the source, improving mask quality and keypoint localization.
+
+- **2) Split-page spreads need more pixels per page:**
+  - Many images contain two pages in one frame.
+  - With 1024 max-side resizing, each page effectively receives much less resolution.
+  - With 2048, each half-page still retains practical detail for accurate per-page geometry.
+
+- **3) Small and weak visual signals survive better:**
+  - Historical scans often contain faded ink, uneven illumination, gutter shadows, warped paper, and microfilm noise.
+  - Aggressive downscaling can erase those subtle transitions.
+  - 2048 better preserves faint boundaries and texture cues needed for robust detection.
+
+- **4) OCR readiness and downstream flexibility:**
+  - Even if today’s target is geometry, OCR or quality scoring may be added later.
+  - Text strokes and punctuation degrade quickly at lower resolutions.
+  - 2048 keeps higher downstream utility and avoids costly reprocessing.
+
+- **5) Information loss is irreversible:**
+  - Downscaling to 1024 discards a large amount of spatial information.
+  - Upscaling later cannot recover real detail; it only interpolates.
+  - Choosing 2048 as the master preparation size keeps optionality for future experiments.
+
+- **6) Better quality-to-cost balance for modern pipelines:**
+  - 2048 is heavier than 1024 (more memory and compute), but still practical on modern hardware.
+  - For document tasks where quality matters, this trade-off is usually justified.
+  - If speed is needed, teams can run fast experiments at lower training sizes while keeping 2048 source-prepared data.
+
+### 10.2 Decision Guidance
+
+- **Use 2048 by default** when quality, robustness, and long-term dataset value are primary.
+- **Use 1024 only as a constrained-mode option** (limited GPU budget, quick prototyping, or rapid ablation loops).
+- Keep `2048` as the canonical preprocessing standard so lower-resolution experiments remain reversible.
+
+### 10.3 Important Clarification
+
+If you see `208` or `2028` in notes/discussions, treat that as a typo.  
+The intended and approved standard in this specification is **2048 pixels (largest side)**.
+
