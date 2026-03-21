@@ -72,8 +72,8 @@ A phase must never be marked complete if any item in its Definition of Done rema
 
 ### ☐ Phase 4 — Full IEP1 worker orchestration
 
-- ☐ Packet 4.1 — worker concurrency and circuit breaker
-- ☐ Packet 4.2 — page state and lineage DB helpers
+- ☑ Packet 4.1 — worker concurrency and circuit breaker
+- ☑ Packet 4.2 — page state and lineage DB helpers
 - ☐ Packet 4.3a — intake, hash, proxy image derivation
 - ☐ Packet 4.3b — parallel geometry invocation and selection wiring
 - ☐ Packet 4.4 — normalization and first validation
