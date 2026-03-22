@@ -149,7 +149,7 @@ class TestCheckAndReleasePtiffQa:
         ) as mock_advance:
             result = _check_and_release_ptiff_qa(session, job, [page])
 
-        assert result is True
+        assert bool(result) is True  # non-empty list = gate released
         mock_advance.assert_called_once_with(
             session,
             page.page_id,
@@ -168,7 +168,7 @@ class TestCheckAndReleasePtiffQa:
         ) as mock_advance:
             result = _check_and_release_ptiff_qa(session, job, [page])
 
-        assert result is True
+        assert bool(result) is True  # non-empty list = gate released
         mock_advance.assert_called_once_with(
             session,
             page.page_id,
@@ -185,7 +185,7 @@ class TestCheckAndReleasePtiffQa:
         with patch("services.eep.app.correction.ptiff_qa.advance_page_state") as mock_advance:
             result = _check_and_release_ptiff_qa(session, job, [p1, p2])
 
-        assert result is False
+        assert not result  # empty list = gate not released
         mock_advance.assert_not_called()
 
     def test_no_release_when_page_in_correction(self) -> None:
@@ -197,7 +197,7 @@ class TestCheckAndReleasePtiffQa:
         with patch("services.eep.app.correction.ptiff_qa.advance_page_state") as mock_advance:
             result = _check_and_release_ptiff_qa(session, job, [p1, p2])
 
-        assert result is False
+        assert not result  # empty list = gate not released
         mock_advance.assert_not_called()
 
     def test_idempotent_when_no_qa_pages(self) -> None:
@@ -209,7 +209,7 @@ class TestCheckAndReleasePtiffQa:
         with patch("services.eep.app.correction.ptiff_qa.advance_page_state") as mock_advance:
             result = _check_and_release_ptiff_qa(session, job, [page])
 
-        assert result is False
+        assert not result  # empty list = gate not released
         mock_advance.assert_not_called()
 
     def test_releases_multiple_pages(self) -> None:
@@ -224,7 +224,7 @@ class TestCheckAndReleasePtiffQa:
         ) as mock_advance:
             result = _check_and_release_ptiff_qa(session, job, [p1, p2])
 
-        assert result is True
+        assert len(result) == 2  # two pages released
         assert mock_advance.call_count == 2
 
 
@@ -320,6 +320,11 @@ class TestGetPtiffQaStatus:
 class TestApprovePageEndpoint:
     def setup_method(self) -> None:
         self.client = TestClient(app)
+        # Prevent real Redis connections (approve_page enqueues on gate release).
+        from services.eep.app.redis_client import get_redis
+
+        self.mock_redis = MagicMock()
+        app.dependency_overrides[get_redis] = lambda: self.mock_redis
 
     def teardown_method(self) -> None:
         app.dependency_overrides.clear()
@@ -405,6 +410,11 @@ class TestApprovePageEndpoint:
 class TestApproveAllEndpoint:
     def setup_method(self) -> None:
         self.client = TestClient(app)
+        # Prevent real Redis connections (approve_all enqueues on gate release).
+        from services.eep.app.redis_client import get_redis
+
+        self.mock_redis = MagicMock()
+        app.dependency_overrides[get_redis] = lambda: self.mock_redis
 
     def teardown_method(self) -> None:
         app.dependency_overrides.clear()

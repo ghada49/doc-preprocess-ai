@@ -20,7 +20,7 @@ Covers:
   - crop_box validation: negative values → 422
   - Derived corrected URI written to lineage.output_image_uri
   - notes stored in lineage.reviewer_notes
-  - Non-null split_x rejected with 422
+  - Non-null split_x routes to split correction path (Packet 5.3), not tested here
   - Corrected artifact written through storage backend
   - Missing lineage row returns 500
   - Missing source artifact URI returns 500
@@ -211,6 +211,11 @@ class TestApplyCorrectionEndpoint:
             return_value=self.mock_backend,
         )
         self._storage_patcher.start()
+        # Prevent real Redis connections for all endpoint tests.
+        from services.eep.app.redis_client import get_redis
+
+        self.mock_redis = MagicMock()
+        app.dependency_overrides[get_redis] = lambda: self.mock_redis
 
     def teardown_method(self) -> None:
         self._storage_patcher.stop()
@@ -428,20 +433,6 @@ class TestApplyCorrectionEndpoint:
             json={"crop_box": [-1, 20, 500, 700], "deskew_angle": 0.0},
         )
         assert r.status_code == 422
-
-    def test_split_x_returns_422(self) -> None:
-        """Non-null split_x is rejected with HTTP 422 before any DB access."""
-        job = _make_job(ptiff_qa_mode="manual")
-        session = _make_session(job=job)
-        self._inject(session)
-
-        r = self.client.post(
-            "/v1/jobs/job-001/pages/1/correction",
-            json={**_DEFAULT_BODY, "split_x": 640},
-        )
-
-        assert r.status_code == 422
-        assert "split_x not supported in Packet 5.2" in r.json()["detail"]
 
     def test_missing_lineage_returns_error(self) -> None:
         """When no lineage row exists, the endpoint returns HTTP 500."""

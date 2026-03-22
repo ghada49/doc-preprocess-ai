@@ -93,7 +93,7 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - ☑ Packet 5.1 — correction queue read endpoints
 - Note: Auth/RBAC scoping not enforced yet (deferred to Phase 7 Packet 7.1). Current endpoints return all pending_human_correction pages.
 - ☑ Packet 5.2 — single-page correction apply path
-- ☐ Packet 5.3 — split correction apply path
+- ☑ Packet 5.3 — split correction apply path
 - ☐ Packet 5.4 — correction reject path
 - ☐ Packet 5.5 — correction and PTIFF QA tests
 

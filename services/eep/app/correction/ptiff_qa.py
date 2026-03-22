@@ -23,13 +23,19 @@ PTIFF QA semantics (non-negotiable):
       * No page is in pending_human_correction.
   - Gate release is executed in a single DB transaction and is idempotent:
       if no ptiff_qa_pending pages remain, _check_and_release_ptiff_qa
-      returns False without performing any updates.
+      returns an empty list without performing any updates.
   - All state transitions use advance_page_state() (shared/state_machine.py).
   - No transition to layout_detection or accepted is permitted outside gate release.
 
 Gate release targets (spec Section 3.1):
   pipeline_mode == 'preprocess' → accepted
   pipeline_mode == 'layout'     → layout_detection
+
+Post-release side effects (executed within the same DB transaction, before commit):
+  - layout mode: each released page is enqueued to Redis for layout detection.
+  - Any released page that is a split child (sub_page_index is not None) triggers
+    _maybe_close_split_parent, which closes the parent to 'split' if all siblings
+    are now worker-terminal.
 
 Error responses:
   404 — job not found (all endpoints)
@@ -39,13 +45,18 @@ Auth:
   Enforced in Phase 7 (Packet 7.1) — not yet active.
 
 Exported:
-  router — FastAPI APIRouter (mount at app level in main.py)
+  router                      — FastAPI APIRouter (mount at app level in main.py)
+  _WORKER_TERMINAL_STATES     — frozenset used by apply.py split path (Step E)
+  _maybe_close_split_parent   — DB-querying helper used by approve endpoints and
+                                 any caller that does not have pre-loaded children
 """
 
 from __future__ import annotations
 
 import logging
+import uuid
 
+import redis
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -53,10 +64,19 @@ from sqlalchemy.orm import Session
 from services.eep.app.db.models import Job, JobPage
 from services.eep.app.db.page_state import advance_page_state
 from services.eep.app.db.session import get_session
+from services.eep.app.queue import enqueue_page_task
+from services.eep.app.redis_client import get_redis
+from shared.schemas.queue import PageTask
 from shared.state_machine import validate_transition
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# Worker-terminal states: states in which a split child is considered "done"
+# for the purpose of closing the split parent (spec Section 8.6).
+_WORKER_TERMINAL_STATES: frozenset[str] = frozenset(
+    {"accepted", "pending_human_correction", "review", "failed"}
+)
 
 
 # ── Response models ─────────────────────────────────────────────────────────────
@@ -148,7 +168,106 @@ def _is_gate_satisfied(pages: list[JobPage]) -> bool:
     return True
 
 
-def _check_and_release_ptiff_qa(db: Session, job: Job, pages: list[JobPage]) -> bool:
+def _close_parent_if_children_terminal(
+    db: Session,
+    parent: JobPage,
+    children: list[JobPage],
+) -> bool:
+    """
+    Core logic: transition parent to 'split' if all children are worker-terminal.
+
+    Uses pre-loaded JobPage objects; performs no DB queries. This function is
+    called from _apply_split_correction (apply.py) where children are already
+    in memory with their current statuses.
+
+    Args:
+        db:       SQLAlchemy session (caller owns transaction and commit).
+        parent:   The parent JobPage (must be in pending_human_correction).
+        children: Pre-loaded child JobPage objects with current statuses.
+
+    Returns:
+        True if the parent was transitioned to 'split', False otherwise.
+    """
+    if not children:
+        return False
+    if not all(c.status in _WORKER_TERMINAL_STATES for c in children):
+        return False
+
+    advanced = advance_page_state(
+        db,
+        parent.page_id,
+        from_state="pending_human_correction",
+        to_state="split",
+    )
+    if advanced:
+        logger.info(
+            "Split parent closed: job=%s page=%d → split",
+            parent.job_id,
+            parent.page_number,
+        )
+    else:
+        logger.warning(
+            "Split parent close CAS miss: job=%s page_id=%s page=%d",
+            parent.job_id,
+            parent.page_id,
+            parent.page_number,
+        )
+    return bool(advanced)
+
+
+def _maybe_close_split_parent(
+    db: Session,
+    job_id: str,
+    page_number: int,
+) -> bool:
+    """
+    Query DB for parent and children, close parent if all children are worker-terminal.
+
+    Used from PTIFF QA approve endpoints after gate release, where pre-loaded
+    child objects may not be available.  The parent must be in
+    pending_human_correction; if it is not (already closed or never existed),
+    this function is a no-op.
+
+    Relies on the session identity map reflecting current statuses — callers
+    must ensure that any preceding advance_page_state calls have been mirrored
+    onto the in-memory ORM objects (page.status = new_state) before calling
+    this function, so that identity-map lookups return accurate states.
+
+    Args:
+        db:          SQLAlchemy session (caller owns transaction and commit).
+        job_id:      Job identifier.
+        page_number: Page number of the split parent.
+
+    Returns:
+        True if the parent was transitioned to 'split', False otherwise.
+    """
+    parent: JobPage | None = (
+        db.query(JobPage)
+        .filter(
+            JobPage.job_id == job_id,
+            JobPage.page_number == page_number,
+            JobPage.sub_page_index == None,  # noqa: E711
+            JobPage.status == "pending_human_correction",
+        )
+        .first()
+    )
+    if parent is None:
+        return False
+
+    children: list[JobPage] = (
+        db.query(JobPage)
+        .filter(
+            JobPage.job_id == job_id,
+            JobPage.page_number == page_number,
+            JobPage.sub_page_index.isnot(None),
+        )
+        .all()
+    )
+
+    return _close_parent_if_children_terminal(db, parent, children)
+
+
+def _check_and_release_ptiff_qa(db: Session, job: Job, pages: list[JobPage]) -> list[JobPage]:
     """
     Evaluate gate conditions and release the PTIFF QA gate if satisfied.
 
@@ -156,8 +275,12 @@ def _check_and_release_ptiff_qa(db: Session, job: Job, pages: list[JobPage]) -> 
       - pipeline_mode == 'preprocess' → accepted
       - pipeline_mode == 'layout'     → layout_detection
 
+    Released pages have their in-memory status updated (page.status = target_state)
+    so that subsequent identity-map lookups (e.g. in _maybe_close_split_parent)
+    reflect the new states without needing a DB re-query.
+
     This function is idempotent: if there are no ptiff_qa_pending pages,
-    it returns False without performing any DB updates.
+    it returns an empty list without performing any DB updates.
 
     Must be called within an open session transaction. The caller is
     responsible for committing (or rolling back) after this call.
@@ -168,16 +291,16 @@ def _check_and_release_ptiff_qa(db: Session, job: Job, pages: list[JobPage]) -> 
         pages: Current leaf pages for the job (pre-fetched, post-flush).
 
     Returns:
-        True if the gate was released (pages transitioned), False otherwise.
+        List of pages that were released (transitioned). Empty if no release.
     """
     pages_to_release = [p for p in pages if p.status == "ptiff_qa_pending"]
 
     # Idempotent: nothing to release when no QA pages remain.
     if not pages_to_release:
-        return False
+        return []
 
     if not _is_gate_satisfied(pages):
-        return False
+        return []
 
     target_state = "accepted" if job.pipeline_mode == "preprocess" else "layout_detection"
 
@@ -191,7 +314,11 @@ def _check_and_release_ptiff_qa(db: Session, job: Job, pages: list[JobPage]) -> 
             from_state="ptiff_qa_pending",
             to_state=target_state,
         )
-        if not advanced:
+        if advanced:
+            # Mirror new state onto the ORM object so identity-map lookups
+            # (e.g. in _maybe_close_split_parent) see the updated status.
+            page.status = target_state
+        else:
             logger.warning(
                 "PTIFF QA gate release CAS miss: job=%s page_id=%s "
                 "(concurrent update or already transitioned)",
@@ -206,7 +333,7 @@ def _check_and_release_ptiff_qa(db: Session, job: Job, pages: list[JobPage]) -> 
         target_state,
         len(pages_to_release),
     )
-    return True
+    return pages_to_release
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────────
@@ -280,6 +407,7 @@ def approve_page(
     job_id: str,
     page_number: int,
     db: Session = Depends(get_session),
+    r: redis.Redis = Depends(get_redis),
 ) -> ApprovePageResponse:
     """
     Record approval intent for a page in ptiff_qa_pending.
@@ -287,6 +415,12 @@ def approve_page(
     Approval does NOT change the page state immediately. If all gate
     conditions are met after this approval, the gate is released
     (all ptiff_qa_pending pages transition in a single transaction).
+
+    When the gate releases to layout_detection, released pages are enqueued
+    to Redis for downstream layout detection processing.
+
+    If any released page is a split child, the split parent is closed to
+    'split' if all its children are now worker-terminal.
 
     **Error responses**
 
@@ -318,7 +452,28 @@ def approve_page(
     db.flush()
 
     all_pages = _leaf_pages(db, job_id)
-    gate_released = _check_and_release_ptiff_qa(db, job, all_pages)
+    released_pages = _check_and_release_ptiff_qa(db, job, all_pages)
+    gate_released = bool(released_pages)
+
+    if gate_released:
+        # Enqueue released pages for layout detection when pipeline_mode == 'layout'.
+        if job.pipeline_mode != "preprocess":
+            for page in released_pages:
+                enqueue_page_task(
+                    r,
+                    PageTask(
+                        task_id=str(uuid.uuid4()),
+                        job_id=page.job_id,
+                        page_id=page.page_id,
+                        page_number=page.page_number,
+                        sub_page_index=page.sub_page_index,
+                        retry_count=0,
+                    ),
+                )
+
+        # Close any split parent whose children are all now worker-terminal.
+        for pn in {p.page_number for p in released_pages if p.sub_page_index is not None}:
+            _maybe_close_split_parent(db, job_id, pn)
 
     db.commit()
 
@@ -345,6 +500,7 @@ def approve_page(
 def approve_all(
     job_id: str,
     db: Session = Depends(get_session),
+    r: redis.Redis = Depends(get_redis),
 ) -> ApproveAllResponse:
     """
     Approve all pages currently in ptiff_qa_pending for this job.
@@ -352,6 +508,12 @@ def approve_all(
     Only records approval for pages currently in ptiff_qa_pending.
     Already-approved pages are idempotently skipped. If all gate conditions
     are satisfied after recording approvals, the gate is released.
+
+    When the gate releases to layout_detection, released pages are enqueued
+    to Redis for downstream layout detection processing.
+
+    If any released page is a split child, the split parent is closed to
+    'split' if all its children are now worker-terminal.
 
     Calling this endpoint when no ptiff_qa_pending pages exist is a no-op:
     approved_count=0 and gate_released=False (idempotent).
@@ -380,7 +542,28 @@ def approve_all(
     db.flush()
 
     all_pages = _leaf_pages(db, job_id)
-    gate_released = _check_and_release_ptiff_qa(db, job, all_pages)
+    released_pages = _check_and_release_ptiff_qa(db, job, all_pages)
+    gate_released = bool(released_pages)
+
+    if gate_released:
+        # Enqueue released pages for layout detection when pipeline_mode == 'layout'.
+        if job.pipeline_mode != "preprocess":
+            for page in released_pages:
+                enqueue_page_task(
+                    r,
+                    PageTask(
+                        task_id=str(uuid.uuid4()),
+                        job_id=page.job_id,
+                        page_id=page.page_id,
+                        page_number=page.page_number,
+                        sub_page_index=page.sub_page_index,
+                        retry_count=0,
+                    ),
+                )
+
+        # Close any split parent whose children are all now worker-terminal.
+        for pn in {p.page_number for p in released_pages if p.sub_page_index is not None}:
+            _maybe_close_split_parent(db, job_id, pn)
 
     db.commit()
 
