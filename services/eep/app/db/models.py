@@ -123,6 +123,7 @@ class JobPage(Base):
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     output_layout_uri: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    ptiff_qa_approved: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
 
     __table_args__ = (UniqueConstraint("job_id", "page_number", "sub_page_index"),)
 
