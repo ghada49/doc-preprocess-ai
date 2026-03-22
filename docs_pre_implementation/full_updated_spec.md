@@ -2026,13 +2026,13 @@ Full audit trail: every service invocation, geometry selection result, artifact 
 
 **Backend:** `GET /v1/lineage/{job_id}/{page_number}` (admin only).
 
-#### Shadow Models Page
+#### Model Evaluation & Promotion Page
 
-Monitor shadow evaluation pipeline, inspect gate results, manage promotion/rollback lifecycle.
+Monitor offline evaluation results for IEP1 candidate models, inspect per-gate results, and manage the promotion and rollback lifecycle.
 
-**Gate results:** Quality (mean confidence delta ≥ −0.02), Latency (p95 ≤ 1.25× production), Reliability (error rate < 5%), Golden dataset (zero critical failures).
+**Gate results:** Geometry IoU (≥ production − 0.02), Split precision (≥ production − 0.03), Structural agreement rate (≥ production − 0.05), Golden dataset (zero regressions), Latency p95 (≤ production × 1.25). Results sourced from `model_versions.gate_results` populated by the offline evaluation worker.
 
-**Actions:** Refresh stats, Run gate evaluation, Promote with gate check, Force promote (with confirmation), Manual rollback.
+**Actions:** Load evaluation results, Trigger evaluation run, Promote with gate check, Force promote (with confirmation), Manual rollback.
 
 #### Retraining Page
 
@@ -2458,15 +2458,15 @@ CREATE TABLE users (
 - After correction is applied, the page returns to `ptiff_qa_pending`
 - Auth: `require_user` (scoped), admin unrestricted
 
-### Shadow / MLOps
+### Models / MLOps
 
-**`GET /v1/shadow/stats?candidate_tag={tag}`** — shadow stats for candidate
+**`GET /v1/models/evaluation?candidate_tag={tag}`** — offline evaluation results for candidate
 
-**`POST /v1/shadow/evaluate`** — evaluate 4 promotion gates
+**`POST /v1/models/evaluate`** — trigger offline evaluation for a candidate (also runs automatically after retraining completes)
 
-**`POST /v1/shadow/promote`** — promote candidate (with or without force)
+**`POST /v1/models/promote`** — promote candidate (with or without force gate check)
 
-**`POST /v1/shadow/rollback`** — rollback (automated or manual)
+**`POST /v1/models/rollback`** — rollback (automated or manual)
 
 **`POST /v1/retraining/webhook`** — Alertmanager webhook
 
@@ -2576,59 +2576,68 @@ Model artifacts must be baked into container images or mounted from low-latency 
 ---
 
 
-## 16. MLOps: Shadow Evaluation and Auto-Retraining
+## 16. MLOps: Offline Evaluation and Auto-Retraining
 
-### 16.1 Shadow Evaluation Pipeline
+### 16.1 Evaluation Strategy
 
-Asynchronous: candidate model runs in parallel with production on sampled pages, results compared offline.
+IEP1A and IEP1B (preprocessing geometry models) are the primary retraining targets. All candidate model evaluation is **offline**: evaluation runs asynchronously against stored artifact datasets and held-out test sets. Live shadow evaluation on production traffic is **not used in the current version**. The system architecture is designed to be extensible for future shadow support without schema changes to Phases 0–7 tables, the state machine, worker orchestration, or queue semantics.
 
-**Shadow task enqueue conditions (all three must be true):**
-1. Sampling: `sha256(f"{job_id}:{page_number}") % 100 < shadow_fraction * 100` (deterministic per page)
-2. `job.shadow_mode == True`
-3. Staging candidate exists in MLflow (background-refreshed cache, updated every 60 seconds)
+IEP2A and IEP2B (layout models) are pretrained and are **not** part of the automated retraining or shadow pipeline. They are monitored operationally via drift detection (Section 16.4). Operational alerts are raised when IEP2 performance degrades, but no automated retraining is triggered for IEP2 in the current version.
 
-Shadow tasks pushed to Redis queue `libraryai:shadow_tasks`. Failure to enqueue must not affect live routing.
+### 16.2 Offline Evaluation Pipeline (IEP1 Candidates)
 
-**Shadow Worker** processes tasks asynchronously: dequeues task, runs candidate inference (IEP2A only — shadow evaluation is layout-only), computes quality delta, writes to `shadow_results`.
+Candidate IEP1A and IEP1B models are evaluated asynchronously after training completes. The live pipeline is never affected by evaluation runs.
 
-**Scope limitation:** The shadow pipeline evaluates IEP2A (layout) candidates only. IEP1A and IEP1B (preprocessing geometry models) are never run as shadow candidates on the live pipeline. Their promotion uses an offline evaluation path (see Section 16.4).
+**Prerequisites for a valid candidate:**
+- Candidate training job must log `dataset_version` and `dataset_checksum` to MLflow. A run without these params is invalid and must not promote.
 
-**Promotion gates (after 50 shadow samples):**
-1. Quality: candidate mean_conf ≥ production mean_conf − 0.02
-2. Latency: candidate p95 ≤ production p95 × 1.25
-3. Reliability: candidate error rate < 5%
-4. Golden dataset: zero critical failures
+**Evaluation data sources (all offline — no live traffic is ever touched):**
+1. Held-out labeled validation and test sets (artifact images + ground-truth annotations).
+2. Stored production artifact replay: newly arriving production data may be collected and admitted into the offline evaluation set after storage, but candidate models are **never run inline with live routing**.
+3. Labeled corrections collected from the correction workflow (optional, when available).
 
-**`POST /v1/shadow/promote`:**
-- `force=false`: re-checks all 4 gates; blocked with 409 if any fail
-- `force=true`: promotes without gate check (logged as forced)
-- On success: updates `model_versions`, transitions MLflow stages (staging→production, production→archived), publishes reload signal to Redis `libraryai:model_reload:iep2a`
+**Isolation rule:** Candidate IEP1A/IEP1B models are never executed on live production traffic. Evaluation runs only against stored datasets in an isolated offline context.
 
-**`POST /v1/shadow/rollback`:**
-- Automated path (Alertmanager `PostPromotionAcceptRateCollapse`): acts only within 2h of promotion
-- Manual path: `{"reason": "manual"}`; no window check
-- Restores most recent archived model version
+**Evaluation suite (required for all IEP1 candidates):**
+1. Geometry accuracy (IoU) per collection
+2. Split accuracy (precision + recall) per collection
+3. Structural agreement rate (candidate vs. production partner model)
+4. Review rate and bad auto-accept rate on labeled validation pages
+5. p95 inference latency
 
-### 16.2 Auto-Retraining Triggers
+**Evaluation execution:**
+- Triggered **automatically** when a retraining job completes (primary path).
+- May also be triggered **independently** by admin via `POST /v1/models/evaluate?candidate_tag=...`.
+- Evaluation runs within the retraining worker against stored offline datasets.
+- Results written to `model_versions.gate_results` (JSON column).
+- No live traffic is touched during evaluation.
 
-| Trigger | Condition | Persistence |
-|---------|-----------|-------------|
-| `layout_confidence_degradation` | Median IEP2A confidence drops >15% from baseline | 48h |
-| `drift_alert_persistence` | Any drift detector alert firing | 48h |
-| `escalation_rate_anomaly` | Rectification fallback rate exceeds 25% | 24h |
-| `auto_accept_rate_collapse` | Auto-accept rate drops below 40% | 24h |
-| `structural_agreement_degradation` | IEP1A/IEP1B structural agreement rate drops >20% from baseline | 48h |
+**Promotion gates:**
+- Geometry IoU ≥ current production − 0.02 on all collections
+- Split precision ≥ current production − 0.03 (split is highest-risk decision)
+- Structural agreement rate ≥ current production − 0.05
+- Zero regression on golden test set (pre-defined cases that must not degrade)
+- p95 inference latency ≤ current production × 1.25
 
-Cooldown: 7 days per trigger type after firing.
+### 16.3 Auto-Retraining Triggers
 
-Pipeline mapping per trigger type:
-- `layout_confidence_degradation` → [layout_detection, doclayout_yolo]
-- `drift_alert_persistence` → [layout_detection]
-- `escalation_rate_anomaly` → [rectification, preprocessing]
-- `auto_accept_rate_collapse` → [layout_detection, doclayout_yolo, rectification, preprocessing]
-- `structural_agreement_degradation` → [preprocessing]
+Triggers fire asynchronously and record an entry in `retraining_triggers`. Cooldown: 7 days per trigger type after firing.
 
-### 16.3 Drift Detection
+| Trigger | Condition | Persistence | Action |
+|---------|-----------|-------------|--------|
+| `escalation_rate_anomaly` | Rectification fallback rate exceeds 25% | 24h | Enqueue IEP1 retraining: `[rectification, preprocessing]` |
+| `auto_accept_rate_collapse` | Auto-accept rate drops below 40% | 24h | Enqueue IEP1 retraining: `[rectification, preprocessing]` |
+| `structural_agreement_degradation` | IEP1A/IEP1B structural agreement rate drops >20% from baseline | 48h | Enqueue IEP1 retraining: `[preprocessing]` |
+| `drift_alert_persistence` | Any IEP1 drift detector alert firing continuously | 48h | Enqueue IEP1 retraining: `[preprocessing, rectification]` |
+| `layout_confidence_degradation` | Median IEP2A/IEP2B confidence drops >15% from baseline | 48h | Operational alert only — no automated retraining |
+
+Pipeline mapping:
+- `[preprocessing]` → triggers IEP1A and/or IEP1B retraining job
+- `[rectification]` → triggers IEP1D evaluation review (manual)
+- `[preprocessing, rectification]` → triggers IEP1A/B retraining and IEP1D review
+- `layout_confidence_degradation` → monitoring alert only; IEP2 retraining is not automated
+
+### 16.4 Drift Detection
 
 `DriftDetector` class with sliding window (default size 200) and baseline comparison. Returns True if current window mean deviates more than `threshold_std` standard deviations from baseline.
 
@@ -2653,26 +2662,27 @@ Baselines loaded from `monitoring/baselines.json` at startup.
 
 ---
 
-### 16.4 Preprocessing Model Promotion (Offline Path)
+### 16.5 IEP1 Model Promotion and Rollback
 
-IEP1A and IEP1B (preprocessing geometry models) are not evaluated via the live shadow pipeline. Candidate geometry models are promoted through an offline evaluation-gated manual process.
+**`POST /v1/models/promote`:**
+- `service=iep1a|iep1b`, `force=false`: re-checks all offline evaluation gates from `model_versions.gate_results`; blocked with 409 if any fail.
+- `force=true`: promotes without gate check (logged as forced); available for admin manual override after offline gate review.
+- On success: updates `model_versions`, transitions MLflow stages (staging→production, production→archived), publishes reload signal to Redis `libraryai:model_reload:{service}`.
 
-**Candidate training:** Train candidate IEP1A or IEP1B model on updated dataset (extended annotations, active learning additions, or corrected labels). Log `dataset_version` and `dataset_checksum` to MLflow. A run without these params is invalid and must not promote.
+**`POST /v1/models/rollback`:**
+- Automated path (Alertmanager `PostPromotionAcceptRateCollapse`): acts only within 2h of promotion.
+- Manual path: `{"reason": "manual"}`; no window check.
+- Restores most recent archived model version immediately.
 
-**Offline evaluation:** Run the full evaluation suite (Section 10.3) on the candidate model against the held-out test set:
-- Geometry accuracy (IoU) per collection
-- Split accuracy (precision + recall) per collection
-- Structural agreement rate (candidate vs. production IEP1A/IEP1B pair)
-- Review rate and bad auto-accept rate
+**Post-promotion monitoring:** 48h monitoring window after promotion. Rollback is available throughout the window if structural agreement rate or review rate degrades.
 
-**Promotion gates:**
-- Geometry IoU ≥ current production − 0.02 on all collections
-- Split precision ≥ current production − 0.03 (split is highest-risk decision)
-- Structural agreement rate ≥ current production − 0.05
-- Zero regression on golden test set (pre-defined cases that must not degrade)
-- p95 inference latency ≤ current production × 1.25
+**IEP2 is excluded from the automated promotion pipeline.** IEP2A and IEP2B promotion is a fully manual offline process outside the current automated pipeline and is not implemented in Phase 8.
 
-**Promotion process:** All gate results reviewed by admin. Promotion is manual: admin invokes `POST /v1/shadow/promote` with `service=iep1a` or `service=iep1b` and `force=true` (since no live shadow data exists for preprocessing candidates). Promotion is logged with justification in `model_versions`. A post-promotion monitoring window of 48h is required; rollback is available if structural agreement rate or review rate degrades.
+---
+
+### 16.6 Extensibility Note
+
+Shadow evaluation on live production traffic is not implemented in the current version. The process skeletons (`shadow_worker`, `shadow_recovery`) created in Phase 0 are dormant and reserved for future activation. Adding live shadow evaluation for any service in a future phase requires no schema changes to Phases 0–7 tables and no changes to the state machine, worker orchestration, queue semantics, or PTIFF QA logic.
 
 ---
 
@@ -2871,7 +2881,7 @@ This section supersedes the previous high-level acceptance checklist and aligns 
 6. Phase 5 — correction workflow + PTIFF QA workflow.
 7. Phase 6 — IEP2 services + layout consensus gate.
 8. Phase 7 — auth/RBAC/admin-user APIs + lineage.
-9. Phase 8 — MLOps plumbing (shadow/retraining workers + recovery + policy/promote/rollback/retraining hooks).
+9. Phase 8 — MLOps plumbing (offline evaluation pipeline, retraining workers + recovery + policy/promote/rollback/retraining hooks).
 10. Phase 9 — metrics, policy-threshold wiring, drift skeleton, observability hardening, golden-dataset tests.
 11. Phase 10 — frontend (user/admin/PTIFF QA/correction/MLOps screens).
 12. Phase 11 — cloud deployment (Kubernetes, Runpod backend support, CI/CD, in-cluster observability).
@@ -2909,7 +2919,7 @@ This section supersedes the previous high-level acceptance checklist and aligns 
   - IEP1A/B (Phase 2)
   - EEP worker queue + IEP1D (Phase 4)
   - IEP2A/B (Phase 6)
-  - shadow/retraining workers (Phase 8).
+  - retraining workers and offline evaluation (Phase 8).
 - Simulation tests (Phase 4):
   - first/second-pass disagreement
   - timeout/cold-start timeout

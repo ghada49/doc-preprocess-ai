@@ -244,7 +244,7 @@ Implement in dependency order so the system becomes usable end-to-end as early a
 - Phase 5 — correction workflow + PTIFF QA + split lifecycle
 - Phase 6 — IEP2 services + layout consensus gate
 - Phase 7 — admin/user APIs + RBAC + lineage
-- Phase 8 — MLOps plumbing + shadow + retraining hooks
+- Phase 8 — MLOps plumbing + offline evaluation + retraining hooks
 - Phase 9 — metrics, policy loading, drift skeleton, hardening
 - Phase 10 — frontend
 - Phase 11 — cloud deployment, Kubernetes, Runpod, CI/CD, observability stack
@@ -276,8 +276,7 @@ Section 7 defines mandatory test tracks (contract tests, simulation tests, golde
   - EEP worker queue contract tests → Phase 4 (Packet 4.8)
   - IEP1D contract tests → Phase 4 (Packet 4.8, covering the rescue path)
   - IEP2A, IEP2B contract tests → Phase 6 (Packet 6.6)
-  - shadow worker contract tests → Phase 8 (Packet 8.4)
-  - retraining worker contract tests → Phase 8 (Packet 8.7)
+  - retraining worker contract tests → Phase 8 (Packet 8.5)
 
 - **Simulation tests** must be implemented in Phase 4, Packet 4.8. This packet already requires happy path, rescue path, split path, failure classification, worker restart, Redis reconnect, and abandoned task reconciliation tests. The simulation test track formalizes these requirements.
 
@@ -1450,18 +1449,13 @@ Done when:
 
 #### Goals
 
-Implement shadow pipeline, promotion/rollback metadata, retraining triggers, policy endpoints.
+Implement offline evaluation pipeline for IEP1 candidates, promotion/rollback API, retraining triggers, retraining workers, and policy endpoints. Shadow evaluation on live traffic is **not implemented** in this phase; shadow process skeletons from Phase 0 remain dormant and reserved for future activation.
 
 #### Files / modules
 
-- `services/eep/app/shadow_enqueue.py`
 - `services/eep/app/promotion_api.py`
 - `services/eep/app/retraining_webhook.py`
 - `services/eep/app/policy_api.py`
-- `services/shadow_worker/app/main.py`
-- `services/shadow_worker/app/task.py`
-- `services/shadow_recovery/app/main.py`
-- `services/shadow_recovery/app/reconcile.py`
 - `services/retraining_worker/app/main.py`
 - `services/retraining_worker/app/task.py`
 - `services/retraining_recovery/app/main.py`
@@ -1471,7 +1465,6 @@ Implement shadow pipeline, promotion/rollback metadata, retraining triggers, pol
 
 The below MLOps tables must be introduced in a separate migration created and applied in Phase 8. Phase 1 must not pre-create these tables. They belong to the Phase 8 migration only.
 
-- `shadow_results`
 - `model_versions`
 - `policy_versions`
 - `task_retry_states`
@@ -1484,7 +1477,7 @@ The below MLOps tables must be introduced in a separate migration created and ap
 **Packet 8.1 — Phase 8 migration**
 
 Implement:
-- migration for all MLOps tables only
+- migration for all Phase 8 MLOps tables only
 
 Done when:
 - Phase 8 tables exist and Phase 1 tables remain separate
@@ -1497,67 +1490,54 @@ Implement:
 Done when:
 - policy read/update works
 
-**Packet 8.3 — shadow enqueue path**
-
-Implement:
-- `services/eep/app/shadow_enqueue.py`
-
-Done when:
-- eligible pages can enqueue shadow tasks
-
-**Packet 8.4 — shadow worker and recovery service**
-
-Implement:
-- `services/shadow_worker/app/main.py`
-- `services/shadow_worker/app/task.py`
-- `services/shadow_recovery/app/main.py`
-- `services/shadow_recovery/app/reconcile.py`
-
-Done when:
-- shadow tasks are processed and recorded
-- shadow recovery can reconcile abandoned shadow work safely
-- shadow worker contract tests validate request/response and error behavior
-
-**Packet 8.5 — promotion / rollback API**
+**Packet 8.3 — promotion / rollback API**
 
 Implement:
 - `services/eep/app/promotion_api.py`
 - promotion and rollback execution wiring for model-version state changes
+- offline gate evaluation: re-checks all gate results recorded in `model_versions.gate_results` before allowing promotion
+- `force=false`: blocked with 409 if any gate fails; `force=true`: promotes without gate check (logged as forced)
+- rollback: restores most recent archived model version immediately; no window restriction for manual rollback
 
 Done when:
-- promote/rollback metadata path works
+- `POST /v1/models/promote` checks offline evaluation gates for IEP1 candidates
+- `POST /v1/models/rollback` restores prior archived version
+- promote/rollback metadata written correctly to `model_versions`
 - rollback can change the active deployed model/version state without schema changes
 
-**Packet 8.6 — retraining webhook and trigger recording**
+**Packet 8.4 — retraining webhook and trigger recording**
 
 Implement:
 - `services/eep/app/retraining_webhook.py`
 
 Done when:
-- retraining triggers can be stored correctly
+- retraining triggers can be received and stored in `retraining_triggers` correctly
 
-**Packet 8.7 — retraining worker and recovery service**
+**Packet 8.5 — retraining worker, offline evaluation, and recovery service**
 
 Implement:
 - `services/retraining_worker/app/main.py`
 - `services/retraining_worker/app/task.py`
 - `services/retraining_recovery/app/main.py`
 - `services/retraining_recovery/app/reconcile.py`
+- offline evaluation suite execution within retraining worker: after training completes, worker runs evaluation suite (geometry IoU, split accuracy, structural agreement rate, review rate, p95 latency) against held-out stored datasets and writes gate results to `model_versions`
 
 Done when:
 - retraining tasks can be executed asynchronously
+- offline evaluation results recorded in `model_versions.gate_results` after training completes
 - retraining recovery can reconcile abandoned retraining work safely
 - retraining worker contract tests validate request/response and error behavior
 
 #### Phase definition of done
 
-- shadow tasks enqueue and process
-- shadow recovery service works
-- promote/rollback endpoints work
-- retraining triggers can be recorded
-- retraining worker and recovery service work
+- Phase 8 migration applied; all MLOps tables exist; Phase 1 tables unchanged
 - policy endpoints work
-- shadow worker and retraining worker contract tests pass
+- `POST /v1/models/promote` enforces offline evaluation gates for IEP1 candidates
+- `POST /v1/models/rollback` restores prior version immediately
+- retraining triggers can be recorded
+- retraining worker executes asynchronously; offline evaluation results written after training
+- retraining recovery service works
+- retraining worker contract tests pass
 
 ---
 
@@ -2161,8 +2141,7 @@ Contract tests must validate request/response compatibility, error behavior, and
 - IEP1D → Phase 4 (Packet 4.8)
 - IEP2A → Phase 6 (Packet 6.6)
 - IEP2B → Phase 6 (Packet 6.6)
-- shadow worker paths → Phase 8 (Packet 8.4)
-- retraining worker paths → Phase 8 (Packet 8.7)
+- retraining worker paths → Phase 8 (Packet 8.5)
 
 ### 7.2 Simulation tests
 

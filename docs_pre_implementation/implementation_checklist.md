@@ -130,11 +130,9 @@ A phase must never be marked complete if any item in its Definition of Done rema
 
 - ☐ Packet 8.1 — Phase 8 migration
 - ☐ Packet 8.2 — policy endpoints
-- ☐ Packet 8.3 — shadow enqueue path
-- ☐ Packet 8.4 — shadow worker and recovery service
-- ☐ Packet 8.5 — promotion / rollback API
-- ☐ Packet 8.6 — retraining webhook and trigger recording
-- ☐ Packet 8.7 — retraining worker and recovery service
+- ☐ Packet 8.3 — promotion / rollback API (offline gate evaluation for IEP1)
+- ☐ Packet 8.4 — retraining webhook and trigger recording
+- ☐ Packet 8.5 — retraining worker, offline evaluation, and recovery service
 
 - **Summary:**
 - **Blocked/blocking:**

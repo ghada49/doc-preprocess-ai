@@ -164,7 +164,7 @@ A system overseer, MLOps engineer, or senior operator with full access to all pi
 |-------|---------|
 | Page ID | Internal page identifier |
 | Job ID | Linkable to job detail |
-| Material type | `book` / `newspaper` / `manuscript` |
+| Material type | `book` / `newspaper` / `archival_document` |
 | Review reason(s) | E.g. "preprocessing_disagreement", "layout_disagreement", "single_model_layout" |
 | Best output thumbnail | Thumbnail of the best available preprocessing output URI (if available) |
 | Waiting since | Duration since the page entered `pending_human_correction` |
@@ -270,9 +270,9 @@ A system overseer, MLOps engineer, or senior operator with full access to all pi
 
 ---
 
-### 3.6 Shadow Models Page
+### 3.6 Model Evaluation & Promotion Page
 
-**Purpose:** Allows admins to monitor the shadow evaluation pipeline for staging candidate models, inspect gate results, and manage the promotion and rollback lifecycle.
+**Purpose:** Allows admins to monitor offline evaluation results for IEP1 candidate models (IEP1A, IEP1B), inspect per-gate results, trigger evaluation runs, and manage the promotion and rollback lifecycle.
 
 **Access:** Admin only (`require_admin`).
 
@@ -282,32 +282,32 @@ A system overseer, MLOps engineer, or senior operator with full access to all pi
 |---------|---------|
 | Production model | Current version tag, `promoted_at` timestamp, `model_versions` DB entry |
 | Staging candidate | Current candidate version tag; "No candidate" if MLflow Staging is empty |
-| Sample accumulation | Count of `shadow_results` rows for the current candidate vs the 50-sample minimum; progress bar |
-| Gate results | Quality gate (mean confidence delta ≥ -0.02), Latency gate (p95 ≤ 1.25× production), Reliability gate (error rate < 5%), Golden dataset gate (zero critical failures) — shown after evaluation is run |
+| Evaluation status | Last evaluation run timestamp; "Not yet evaluated" if no gate results exist; "Evaluation in progress" if worker is running |
+| Gate results | Geometry IoU (≥ production − 0.02), Split precision (≥ production − 0.03), Structural agreement rate (≥ production − 0.05), Golden dataset (zero regressions), Latency p95 (≤ production × 1.25) — sourced from `model_versions.gate_results` |
 | Promotion window | "Active" (within 2h post-promotion) or "Closed" (no recent promotion); shows pre-promotion accept rate and current accept rate for rollback decision support |
 | Retraining history | Link to the Retraining page for context on when this candidate was trained |
 
 **User actions:**
-- Refresh shadow stats
-- Run gate evaluation (`POST /v1/shadow/evaluate?candidate_tag=...`) — shows per-gate pass/fail with details
-- Promote with gate check (`POST /v1/shadow/promote?force=false`) — blocked with 409 if gates fail; shows failure details
-- Force promote (`POST /v1/shadow/promote?force=true`) — shown with a confirmation dialog warning "Gate checks will be bypassed"
-- Manual rollback (`POST /v1/shadow/rollback` with `{"reason": "manual"}`) — shown with confirmation dialog; only enabled when an Archived version is available
+- Load evaluation results (`GET /v1/models/evaluation?candidate_tag=...`) — shows per-gate pass/fail with details
+- Trigger evaluation run (`POST /v1/models/evaluate?candidate_tag=...`) — evaluation runs asynchronously; page polls for completion
+- Promote with gate check (`POST /v1/models/promote?force=false`) — blocked with 409 if any gate fails; shows per-gate failure details
+- Force promote (`POST /v1/models/promote?force=true`) — shown with a confirmation dialog warning "Gate checks will be bypassed"
+- Manual rollback (`POST /v1/models/rollback` with `{"reason": "manual"}`) — shown with confirmation dialog; only enabled when an Archived version is available
 
 **Required backend endpoints:**
-- `GET /v1/shadow/stats?candidate_tag=...` (existing)
-- `POST /v1/shadow/evaluate?candidate_tag=...&golden_samples=true` (existing)
-- `POST /v1/shadow/promote?candidate_tag=...&force=false|true` (existing)
-- `POST /v1/shadow/rollback` (existing)
+- `GET /v1/models/evaluation?candidate_tag=...`
+- `POST /v1/models/evaluate?candidate_tag=...`
+- `POST /v1/models/promote?candidate_tag=...&force=false|true`
+- `POST /v1/models/rollback`
 
-**Loading state:** Stats panel shows skeleton until `GET /v1/shadow/stats` responds. Gate result panel is hidden until evaluation is run.
+**Loading state:** Gate results panel shows skeleton until `GET /v1/models/evaluation` responds. Panel shows "No evaluation data" if `gate_results` is null in `model_versions`.
 
-**Empty state:** "No staging candidate available in MLflow. A retraining job must complete and register a candidate before shadow evaluation can begin." Shown when `GET /v1/shadow/stats` returns zero samples and no candidate tag is active.
+**Empty state:** "No staging candidate available in MLflow. A retraining job must complete and register a candidate before evaluation can begin." Shown when no candidate tag is active in MLflow Staging.
 
 **Error states:**
-- Gate evaluation with insufficient samples (409): show sample count progress bar with "X of 50 samples accumulated"
 - Promote with failing gates (409): show per-gate failure detail; offer force promote as fallback
 - Rollback with no Archived version (409): "No archived version is available to restore"
+- Evaluation already in progress (409): show spinner with "Evaluation is running — results will appear when complete"
 
 ---
 
@@ -473,10 +473,10 @@ The regular user portal is a distinct routing subtree from the admin console. It
 | Correction Workspace | Submit correction | `POST /v1/jobs/{job_id}/pages/{page_number}/correction` | Existing |
 | Correction Workspace | Reject page | `POST /v1/jobs/{job_id}/pages/{page_number}/correction-reject` | Existing |
 | Lineage | Load lineage detail | `GET /v1/lineage/{job_id}/{page_number}` | Existing (admin only) |
-| Shadow Models | Load stats | `GET /v1/shadow/stats?candidate_tag=...` | Existing |
-| Shadow Models | Run evaluation | `POST /v1/shadow/evaluate` | Existing |
-| Shadow Models | Promote candidate | `POST /v1/shadow/promote` | Existing |
-| Shadow Models | Rollback | `POST /v1/shadow/rollback` | Existing |
+| Model Evaluation | Load evaluation results | `GET /v1/models/evaluation?candidate_tag=...` | **NEW** |
+| Model Evaluation | Trigger evaluation | `POST /v1/models/evaluate` | **NEW** |
+| Model Evaluation | Promote candidate | `POST /v1/models/promote` | **NEW** |
+| Model Evaluation | Rollback | `POST /v1/models/rollback` | **NEW** |
 | Retraining | Load status | `GET /v1/retraining/status` | Existing |
 | Settings | Load policy | `GET /v1/policy` | Existing (admin only) |
 | Settings | Save policy changes | `PATCH /v1/policy` | Existing (admin only) |
@@ -504,10 +504,10 @@ These endpoints are fully specified in `pre-implementation_spec.md` v2.1 and A.1
 | `POST /v1/jobs/{job_id}/pages/{page_number}/correction` | Correction workspace | `require_user` |
 | `POST /v1/jobs/{job_id}/pages/{page_number}/correction-reject` | Correction workspace | `require_user` |
 | `GET /v1/lineage/{job_id}/{page_number}` | Lineage page | `require_admin` |
-| `GET /v1/shadow/stats` | Shadow models page | `require_admin` |
-| `POST /v1/shadow/evaluate` | Shadow models page | `require_admin` |
-| `POST /v1/shadow/promote` | Shadow models page | `require_admin` |
-| `POST /v1/shadow/rollback` | Shadow models page | `require_admin` |
+| `GET /v1/models/evaluation` | Model evaluation page | `require_admin` |
+| `POST /v1/models/evaluate` | Model evaluation page | `require_admin` |
+| `POST /v1/models/promote` | Model evaluation page | `require_admin` |
+| `POST /v1/models/rollback` | Model evaluation page | `require_admin` |
 | `GET /v1/retraining/status` | Retraining page | `require_admin` |
 | `GET /v1/policy` | Settings page | `require_admin` |
 | `PATCH /v1/policy` | Settings page | `require_admin` |

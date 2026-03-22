@@ -134,8 +134,7 @@ class ProxyConfig:
         default_factory=lambda: {
             "book": 1024,
             "newspaper": 1024,
-            "manuscript": 1024,
-            "document": 1024,
+            "archival_document": 1024,
         }
     )
 
@@ -260,7 +259,7 @@ def derive_proxy(
     Args:
         image:         Full-resolution uint8 BGR numpy array (H×W×C).
         material_type: One of ``'book'``, ``'newspaper'``,
-                       ``'manuscript'``, ``'document'``.
+                       ``'archival_document'``.
         config:        ProxyConfig instance.  Uses a default-constructed
                        ``ProxyConfig()`` when ``None``.
 
