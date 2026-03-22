@@ -60,7 +60,7 @@ Exports
 
   get_processing_tasks(r)                 — reconciliation hook: list in-flight
   requeue_task(r, task)                   — reconciliation hook: re-enqueue
-  rebuild_queue_from_db(r, get_fn)        — reconciliation hook: stub
+  rebuild_queue_from_db(r, get_fn)        — reconciliation hook: DB-driven queue rebuild
 """
 
 from __future__ import annotations
@@ -69,6 +69,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import cast
+from uuid import uuid4
 
 import redis
 
@@ -350,8 +351,7 @@ def move_to_dead_letter(r: redis.Redis, claimed: ClaimedTask) -> None:
 
 
 # ---------------------------------------------------------------------------
-# Reconciliation entry points
-# (stubs — full implementation deferred to Phase 4 Packet 4.7)
+# Reconciliation entry points (Packet 4.7)
 # ---------------------------------------------------------------------------
 
 
@@ -408,27 +408,72 @@ def requeue_task(r: redis.Redis, task: PageTask) -> None:
 def rebuild_queue_from_db(
     r: redis.Redis,
     get_queued_pages_fn: object,
-) -> None:
+) -> int:
     """
     Rebuild the main queue from DB state after a Redis restart.
 
-    This is a stub.  Phase 4 Packet 4.7 will implement the full logic:
+    Designed to be called at worker / recovery-service startup when the main
+    queue may be empty because Redis lost its data (AOF replay failed or Redis
+    was freshly started).  It is safe to call at any time: pages already
+    present in either queue are skipped.
 
-    1. Call get_queued_pages_fn() to obtain all job_pages rows whose status
-       is 'queued' and which have no live worker ownership.
-    2. For each such page, construct a PageTask and call requeue_task() if
-       it is not already present in the main or processing queues.
-    3. Clear stale processing-list entries whose DB state is not
-       'preprocessing' (i.e., tasks abandoned before DB state was updated).
+    Algorithm
+    ---------
+    1. Scan QUEUE_PAGE_TASKS and QUEUE_PAGE_TASKS_PROCESSING to collect the
+       set of page_ids already present in Redis.
+    2. Call get_queued_pages_fn() to obtain all job_pages rows whose DB
+       status is 'queued'.  Each row must expose:
+         .page_id        (str)
+         .job_id         (str)
+         .page_number    (int, >= 1)
+         .sub_page_index (int | None)
+    3. For each such page whose page_id is absent from both Redis queues,
+       enqueue a new PageTask with retry_count=0 and a fresh task_id.
 
     Args:
         r:
             Redis client (decode_responses=True).
         get_queued_pages_fn:
-            Callable → Iterable[job_pages row].  Signature and return type
-            are defined in Packet 4.7.  Must be a DB-authoritative query.
+            Callable[[], Iterable[row]] — DB-authoritative query returning
+            only pages with status='queued'.  Must not mutate DB state.
+
+    Returns:
+        Number of pages re-enqueued.
     """
-    # TODO(Packet 4.7): implement full DB-driven queue rebuild.
-    logger.warning(
-        "rebuild_queue_from_db: stub called — full implementation deferred to Packet 4.7"
+    # ── Step 1: collect page_ids already present in Redis ────────────────────
+    existing_page_ids: set[str] = set()
+    for queue_key in (QUEUE_PAGE_TASKS, QUEUE_PAGE_TASKS_PROCESSING):
+        raw_items: list[str] = cast(list[str], r.lrange(queue_key, 0, -1))
+        for raw in raw_items:
+            try:
+                existing_page_ids.add(PageTask.model_validate_json(raw).page_id)
+            except Exception:
+                logger.warning(
+                    "rebuild_queue_from_db: unparseable entry in %s — skipped",
+                    queue_key,
+                )
+
+    # ── Step 2: re-enqueue any orphaned queued pages ─────────────────────────
+    pages = get_queued_pages_fn()  # type: ignore[operator]
+    enqueued = 0
+    for page in pages:
+        if page.page_id in existing_page_ids:
+            continue
+        task = PageTask(
+            task_id=str(uuid4()),
+            job_id=page.job_id,
+            page_id=page.page_id,
+            page_number=page.page_number,
+            sub_page_index=getattr(page, "sub_page_index", None),
+            retry_count=0,
+        )
+        requeue_task(r, task)
+        existing_page_ids.add(page.page_id)  # prevent double-enqueue within this call
+        enqueued += 1
+
+    logger.info(
+        "rebuild_queue_from_db: re-enqueued %d orphaned page(s) from DB " "(already_in_redis=%d)",
+        enqueued,
+        len(existing_page_ids) - enqueued,
     )
+    return enqueued

@@ -70,21 +70,21 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - **Blocked/blocking:** None. Phase 4 may begin.
 - **Relevant spec constraints:** Spec Sections 6.8–6.9; geometry trust HIGH only when both models present + structural agreement + zero dropouts; route_decision never equals "failed"; soft scoring skipped when any hard check fails.
 
-### ☐ Phase 4 — Full IEP1 worker orchestration
+### ☑ Phase 4 — Full IEP1 worker orchestration
 
-- ☐ Packet 4.1 — worker concurrency and circuit breaker
-- ☐ Packet 4.2 — page state and lineage DB helpers
-- ☐ Packet 4.3a — intake, hash, proxy image derivation
-- ☐ Packet 4.3b — parallel geometry invocation and selection wiring
-- ☐ Packet 4.4 — normalization and first validation
-- ☐ Packet 4.5 — rescue flow (rectification, second geometry pass, second normalization, final validation)
-- ☐ Packet 4.6 — split handling, PTIFF QA routing, and preprocess-only stop path
-- ☐ Packet 4.7 — watchdog and recovery service
-- ☐ Packet 4.8 — worker integration tests
+- ☑ Packet 4.1 — worker concurrency and circuit breaker
+- ☑ Packet 4.2 — page state and lineage DB helpers (state machine unified with shared.state_machine)
+- ☑ Packet 4.3a — intake, hash, proxy image derivation
+- ☑ Packet 4.3b — parallel geometry invocation and selection wiring
+- ☑ Packet 4.4 — normalization and first validation
+- ☑ Packet 4.5 — rescue flow (rectification, second geometry pass, second normalization, final validation) + IEP1D pass-through mock endpoint
+- ☑ Packet 4.6 — split handling, PTIFF QA routing, and preprocess-only stop path
+- ☑ Packet 4.7 — watchdog loop started at worker startup; reconciliation loop started at recovery startup; rebuild_queue_from_db implemented
+- ☑ Packet 4.8 — worker integration tests + IEP1D HTTP contract tests (test_p4_iep1d_contract.py)
 
-- **Summary:**
-- **Blocked/blocking:**
-- **Relevant spec constraints:**
+- **Summary:** Full IEP1 worker orchestration is complete end-to-end with six audit-identified defects resolved: (1) IEP1D /v1/rectify pass-through mock endpoint added (services/iep1d/app/rectify.py); (2) rebuild_queue_from_db() implemented (services/eep/app/queue.py); (3) TaskWatchdog loop started via FastAPI lifespan in eep_worker/app/main.py; (4) run_reconciliation_loop started via FastAPI lifespan in eep_recovery/app/main.py; (5) page_state.py VALID_TRANSITIONS unified with shared/state_machine.py ALLOWED_TRANSITIONS — advance_page_state() now delegates to validate_transition(); (6) test_p4_db_page_state.py corrected to match authoritative transitions (queued→{preprocessing,failed}; rectification→{ptiff_qa_pending,pending_human_correction,split,failed}; pending_human_correction→{ptiff_qa_pending,review,split}); IEP1D HTTP contract tests added (22 tests covering schema, material type, validation errors, failure simulation, configurable confidence).
+- **Blocked/blocking:** None. Phase 5 may begin.
+- **Relevant spec constraints:** `ptiff_qa_pending` is non-terminal; reconciler never mutates page state (DB authoritative); IEP1D retry=0 (spec Section 8.4); second-pass structural disagreement routes to `pending_human_correction`; `failed` is only for unrecoverable infrastructure/data integrity failures (content failures must not route to `failed`); `pending_human_correction → layout_detection` and `pending_human_correction → accepted` are NOT valid (would bypass PTIFF QA gate — spec Section 1.6); corrections always return to `ptiff_qa_pending` first.
 
 ### ☐ Phase 5 — Human correction workflow + PTIFF QA
 
