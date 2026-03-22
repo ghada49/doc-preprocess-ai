@@ -13,6 +13,7 @@ Real implementations:
 
 from fastapi import FastAPI
 
+from services.eep.app.correction.apply import router as correction_apply_router
 from services.eep.app.correction.ptiff_qa import router as ptiff_qa_router
 from services.eep.app.correction.queue import router as correction_queue_router
 from services.eep.app.jobs.create import router as jobs_router
@@ -44,6 +45,7 @@ app.include_router(job_status_router)
 # ── Phase 5 routers ────────────────────────────────────────────────────────────
 app.include_router(ptiff_qa_router)
 app.include_router(correction_queue_router)
+app.include_router(correction_apply_router)
 
 # ── Phase 0 placeholder endpoints ─────────────────────────────────────────────
 # These stubs satisfy the Phase 0 definition of done ("EEP placeholder endpoints
