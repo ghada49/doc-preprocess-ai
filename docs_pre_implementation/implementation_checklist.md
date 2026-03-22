@@ -88,7 +88,7 @@ A phase must never be marked complete if any item in its Definition of Done rema
 
 ### ☐ Phase 5 — Human correction workflow + PTIFF QA
 
-- ☐ Packet 5.0 — correction workspace response schema and data assembly
+- ☑ Packet 5.0 — correction workspace response schema and data assembly
 - ☐ Packet 5.0a — PTIFF QA workflow (job-level review gate)
 - ☐ Packet 5.1 — correction queue read endpoints
 - ☐ Packet 5.2 — single-page correction apply path
@@ -96,9 +96,9 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - ☐ Packet 5.4 — correction reject path
 - ☐ Packet 5.5 — correction and PTIFF QA tests
 
-- **Summary:**
-- **Blocked/blocking:**
-- **Relevant spec constraints:**
+- **Summary:** Packet 5.0 complete. CorrectionWorkspaceResponse schema (GeometrySummary, BranchOutputs, CorrectionWorkspaceResponse) and assemble_correction_workspace() data assembly service implemented. 84 new tests pass (schema validation, original-only, original+branch-artifacts, missing optional branches, split vs non-split, human_correction_fields priority, malformed gate JSONB tolerance, iep1d URI retrieval). No apply/write logic; no state transitions. Known limitations: current_deskew_angle=None for fresh corrections (IEP1C deskew angle not stored in DB); iep1d_rectified=None until rescue_step stores metrics.
+- **Blocked/blocking:** Packet 5.0a (PTIFF QA) may begin. Packet 5.1 (correction queue list endpoint) may begin.
+- **Relevant spec constraints:** page status guard: page must be in pending_human_correction; corrections always return to ptiff_qa_pending later (not implemented here); PTIFF QA not bypassed; no write/apply actions in this packet.
 
 ### ☐ Phase 6 — IEP2 + layout consensus
 
