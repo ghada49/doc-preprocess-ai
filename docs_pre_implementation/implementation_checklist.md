@@ -79,7 +79,7 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - ☑ Packet 4.4 — normalization and first validation
 - ☑ Packet 4.5 — rescue flow (rectification, second geometry pass, second normalization, final validation)
 - ☑ Packet 4.6 — split handling, PTIFF QA routing, and preprocess-only stop path
-- ☐ Packet 4.7 — watchdog and recovery service
+- ☑ Packet 4.7 — watchdog and recovery service
 - ☐ Packet 4.8 — worker integration tests
 
 - **Summary:**

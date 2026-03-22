@@ -4,13 +4,17 @@ services/eep_worker/app/main.py
 EEP Worker — page-processing background worker.
 Phase 0 skeleton: health/ready/metrics are live.
 
-Real implementation:
-  Worker loop and task processing  → Phase 4 (Packets 4.1–4.6)
-  Watchdog                         → Phase 4 (Packet 4.7)
+Packet 4.1–4.6: worker pipeline modules implemented.
+Packet 4.7: in-process watchdog wired up via TaskWatchdog.
 """
 
 from fastapi import FastAPI
 
+from services.eep_worker.app.watchdog import (  # noqa: F401 — exported for Phase 8 wiring
+    StaleTaskReport,
+    TaskWatchdog,
+    WatchdogConfig,
+)
 from shared.logging_config import setup_logging
 from shared.middleware import configure_observability
 
@@ -28,5 +32,3 @@ app = FastAPI(
 )
 
 configure_observability(app, service_name="eep_worker")
-
-# Worker loop and task processing implemented in Phase 4 (Packets 4.1–4.6)
