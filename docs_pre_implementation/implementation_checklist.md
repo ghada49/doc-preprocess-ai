@@ -89,8 +89,9 @@ A phase must never be marked complete if any item in its Definition of Done rema
 ### ☐ Phase 5 — Human correction workflow + PTIFF QA
 
 - ☑ Packet 5.0 — correction workspace response schema and data assembly
-- ☐ Packet 5.0a — PTIFF QA workflow (job-level review gate)
-- ☐ Packet 5.1 — correction queue read endpoints
+- ☑ Packet 5.0a — PTIFF QA workflow (job-level review gate)
+- ☑ Packet 5.1 — correction queue read endpoints
+- Note: Auth/RBAC scoping not enforced yet (deferred to Phase 7 Packet 7.1). Current endpoints return all pending_human_correction pages.
 - ☐ Packet 5.2 — single-page correction apply path
 - ☐ Packet 5.3 — split correction apply path
 - ☐ Packet 5.4 — correction reject path
