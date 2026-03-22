@@ -112,8 +112,8 @@ class TestValidTransitions:
         assert "pending_human_correction" in TERMINAL_PAGE_STATES
         assert len(VALID_TRANSITIONS["pending_human_correction"]) > 0
 
-    def test_queued_only_to_preprocessing(self) -> None:
-        assert VALID_TRANSITIONS["queued"] == frozenset({"preprocessing"})
+    def test_queued_targets(self) -> None:
+        assert VALID_TRANSITIONS["queued"] == frozenset({"preprocessing", "failed"})
 
     def test_preprocessing_targets(self) -> None:
         assert VALID_TRANSITIONS["preprocessing"] == frozenset(
@@ -122,7 +122,7 @@ class TestValidTransitions:
 
     def test_rectification_targets(self) -> None:
         assert VALID_TRANSITIONS["rectification"] == frozenset(
-            {"ptiff_qa_pending", "pending_human_correction", "failed"}
+            {"ptiff_qa_pending", "pending_human_correction", "split", "failed"}
         )
 
     def test_ptiff_qa_pending_targets(self) -> None:
@@ -131,8 +131,12 @@ class TestValidTransitions:
         )
 
     def test_pending_human_correction_targets(self) -> None:
+        # After human correction, the page returns to ptiff_qa_pending (spec Section 1.6).
+        # Direct transitions to layout_detection or accepted are not valid —
+        # they would bypass the mandatory PTIFF QA gate.
+        # split is valid when the human decides to split the corrected page.
         assert VALID_TRANSITIONS["pending_human_correction"] == frozenset(
-            {"ptiff_qa_pending", "layout_detection", "accepted", "review"}
+            {"ptiff_qa_pending", "review", "split"}
         )
 
     def test_layout_detection_targets(self) -> None:
