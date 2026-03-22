@@ -357,7 +357,7 @@ The regular user portal is a distinct routing subtree from the admin console. It
 | Field | Type | Notes |
 |-------|------|-------|
 | Page files | File upload (multi-select) | Accept `.tiff`, `.tif` only; max 1000 files per submission |
-| Material type | Select: `book` / `newspaper` / `manuscript` | Required |
+| Material type | Select: `book` / `newspaper` / `archival_document` | Required |
 | Pipeline mode | Select: `preprocess` / `layout` | Default: `layout` |
 | Collection label | Text input | Optional; stored as job metadata |
 | Shadow mode | Toggle (on/off) | Default: off |

@@ -599,7 +599,7 @@ Do this in 3 files:
                     </tr>
                     <tr class="hover:bg-primary/5 transition-colors">
                       <td class="px-6 py-4 font-mono text-xs">JOB-22481</td>
-                      <td class="px-6 py-4 text-sm font-medium">Manuscript Fragments</td>
+                      <td class="px-6 py-4 text-sm font-medium">archival_document Fragments</td>
                       <td class="px-6 py-4 text-xs font-medium">failed</td>
                       <td class="px-6 py-4">
                         <span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-bold bg-rose-100 text-rose-700">
@@ -1044,7 +1044,7 @@ Do this in 3 files:
             <tbody class="divide-y divide-primary/5">
               <tr class="hover:bg-primary/[0.02] transition-colors group">
                 <td class="px-6 py-4"><div class="size-14 bg-slate-100 rounded border border-primary/5"></div></td>
-                <td class="px-6 py-4"><div class="flex flex-col"><span class="text-sm font-bold">PAGE-9842</span><span class="text-[10px] text-slate-500 uppercase font-medium">Manuscript Collection</span></div></td>
+                <td class="px-6 py-4"><div class="flex flex-col"><span class="text-sm font-bold">PAGE-9842</span><span class="text-[10px] text-slate-500 uppercase font-medium">archival_document Collection</span></div></td>
                 <td class="px-6 py-4 text-sm font-mono">JOB-22483</td>
                 <td class="px-6 py-4 text-sm">preprocessing_consensus_failed</td>
                 <td class="px-6 py-4 text-xs text-slate-500">IEP1C selected</td>
@@ -1343,7 +1343,7 @@ Do this in 3 files:
           <div class="flex items-center justify-between text-[11px]"><span class="text-slate-500">Format</span><span class="font-mono bg-slate-50 px-1.5 py-0.5 rounded">OTIFF</span></div>
           <div class="flex items-center justify-between text-[11px]"><span class="text-slate-500">Size</span><span class="font-mono bg-slate-50 px-1.5 py-0.5 rounded">2480 × 3508</span></div>
           <div class="flex items-center justify-between text-[11px]"><span class="text-slate-500">DPI</span><span class="font-mono bg-slate-50 px-1.5 py-0.5 rounded">300</span></div>
-          <div class="flex items-center justify-between text-[11px]"><span class="text-slate-500">Material Type</span><span class="font-mono bg-slate-50 px-1.5 py-0.5 rounded">manuscript</span></div>
+          <div class="flex items-center justify-between text-[11px]"><span class="text-slate-500">Material Type</span><span class="font-mono bg-slate-50 px-1.5 py-0.5 rounded">archival_document</span></div>
         </div>
       </div>
 

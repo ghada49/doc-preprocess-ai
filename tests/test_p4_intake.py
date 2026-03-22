@@ -265,7 +265,7 @@ class TestDeriveProxy:
 
     def test_preserves_aspect_ratio_landscape(self) -> None:
         img = _make_image(500, 2000)  # ratio = 0.25
-        result = derive_proxy(img, "manuscript")
+        result = derive_proxy(img, "archival_document")
         h, w = result.shape[:2]
         original_ratio = 500 / 2000
         result_ratio = h / w
@@ -273,7 +273,7 @@ class TestDeriveProxy:
 
     def test_preserves_aspect_ratio_portrait(self) -> None:
         img = _make_image(2000, 500)  # ratio = 4.0
-        result = derive_proxy(img, "document")
+        result = derive_proxy(img, "archival_document")
         h, w = result.shape[:2]
         original_ratio = 2000 / 500
         result_ratio = h / w
@@ -308,7 +308,12 @@ class TestDeriveProxy:
 
     def test_per_material_type_config_respected(self) -> None:
         config = ProxyConfig(
-            max_long_edge_px={"book": 512, "newspaper": 1024, "manuscript": 1024, "document": 1024}
+            max_long_edge_px={
+                "book": 512,
+                "newspaper": 1024,
+                "archival_document": 1024,
+                "document": 1024,
+            }
         )
         img = _make_image(600, 2000)
         result = derive_proxy(img, "book", config=config)
@@ -317,7 +322,7 @@ class TestDeriveProxy:
 
     def test_custom_config_newspaper_higher_limit(self) -> None:
         config = ProxyConfig(
-            max_long_edge_px={"book": 512, "newspaper": 2048, "manuscript": 1024, "document": 1024}
+            max_long_edge_px={"book": 512, "newspaper": 2048, "archival_document": 1024}
         )
         img = _make_image(600, 2000)  # within 2048 limit for newspaper
         result = derive_proxy(img, "newspaper", config=config)
@@ -325,7 +330,7 @@ class TestDeriveProxy:
 
     def test_all_four_material_types_accepted_by_default(self) -> None:
         img = _make_image(100, 100)
-        for mt in ("book", "newspaper", "manuscript", "document"):
+        for mt in ("book", "newspaper", "archival_document"):
             derive_proxy(img, mt)  # must not raise
 
     def test_very_small_image_not_upscaled(self) -> None:
