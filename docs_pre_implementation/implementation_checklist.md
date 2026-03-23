@@ -94,7 +94,7 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - Note: Auth/RBAC scoping not enforced yet (deferred to Phase 7 Packet 7.1). Current endpoints return all pending_human_correction pages.
 - ☑ Packet 5.2 — single-page correction apply path
 - ☑ Packet 5.3 — split correction apply path
-- ☐ Packet 5.4 — correction reject path
+- ☑ Packet 5.4 — correction reject path
 - ☐ Packet 5.5 — correction and PTIFF QA tests
 
 - **Summary:** Packet 5.0 complete. CorrectionWorkspaceResponse schema (GeometrySummary, BranchOutputs, CorrectionWorkspaceResponse) and assemble_correction_workspace() data assembly service implemented. 84 new tests pass (schema validation, original-only, original+branch-artifacts, missing optional branches, split vs non-split, human_correction_fields priority, malformed gate JSONB tolerance, iep1d URI retrieval). No apply/write logic; no state transitions. Known limitations: current_deskew_angle=None for fresh corrections (IEP1C deskew angle not stored in DB); iep1d_rectified=None until rescue_step stores metrics.
