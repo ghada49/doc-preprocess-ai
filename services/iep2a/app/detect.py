@@ -3,14 +3,15 @@ services/iep2a/app/detect.py
 -----------------------------
 IEP2A POST /v1/layout-detect router.
 
-Mock stub implementation (Packet 6.1).
+Mock stub implementation (Packets 6.1 / 6.2).
 Real Detectron2 Faster R-CNN inference is deferred to Phase 12.
 
 The stub:
   - Accepts a valid LayoutDetectRequest and returns a valid LayoutDetectResponse.
   - Returns deterministic mock regions covering all 5 canonical region types.
+  - Runs the full postprocessing pipeline (NMS, recalibration, column inference,
+    ID reassignment) via postprocess_regions (Packet 6.2).
   - detector_type is always "detectron2".
-  - column_structure is None (DBSCAN inference deferred to Packet 6.2).
   - Supports failure simulation via IEP2A_MOCK_FAIL env var.
 
 Configurable env vars (read at call time so tests can monkeypatch freely):
@@ -26,6 +27,7 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
+from services.iep2a.app.postprocess import postprocess_regions
 from shared.schemas.layout import (
     LayoutConfSummary,
     LayoutDetectRequest,
@@ -132,13 +134,16 @@ def layout_detect(body: LayoutDetectRequest) -> LayoutDetectResponse:
     except ValueError:
         confidence = _DEFAULT_CONFIDENCE
 
-    regions = [
+    raw_regions = [
         Region(id=rid, type=rtype, bbox=bbox, confidence=confidence)
         for rid, rtype, bbox in _MOCK_REGION_TEMPLATES
     ]
 
-    mean_conf = sum(r.confidence for r in regions) / len(regions)
-    low_conf_frac = sum(1 for r in regions if r.confidence < 0.5) / len(regions)
+    regions, col_struct = postprocess_regions(raw_regions)
+
+    n = len(regions)
+    mean_conf = sum(r.confidence for r in regions) / n if n else 0.0
+    low_conf_frac = sum(1 for r in regions if r.confidence < 0.5) / n if n else 0.0
 
     histogram: dict[str, int] = {rt.value: 0 for rt in RegionType}
     for r in regions:
@@ -154,7 +159,7 @@ def layout_detect(body: LayoutDetectRequest) -> LayoutDetectResponse:
             low_conf_frac=round(low_conf_frac, 6),
         ),
         region_type_histogram=histogram,
-        column_structure=None,
+        column_structure=col_struct,
         model_version="mock-stub-6.1",
         detector_type="detectron2",
         processing_time_ms=elapsed_ms,
