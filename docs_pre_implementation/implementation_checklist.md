@@ -103,7 +103,7 @@ A phase must never be marked complete if any item in its Definition of Done rema
 
 ### ☐ Phase 6 — IEP2 + layout consensus
 
-- ☐ Packet 6.1 — IEP2A service shell and detect path
+- ☑ Packet 6.1 — IEP2A service shell and detect path
 - ☐ Packet 6.2 — IEP2A postprocessing
 - ☐ Packet 6.3 — IEP2B service shell and detect path
 - ☐ Packet 6.4 — IEP2B canonical class mapping and postprocessing
