@@ -3,17 +3,19 @@ services/iep2b/app/detect.py
 -----------------------------
 IEP2B POST /v1/layout-detect router.
 
-Mock stub implementation (Packet 6.3).
-Native-to-canonical class mapping and postprocessing are added in Packet 6.4.
+Mock stub implementation (Packets 6.3 / 6.4).
 Real DocLayout-YOLO inference is deferred to Phase 12.
 
 The stub:
   - Accepts a valid LayoutDetectRequest and returns a valid LayoutDetectResponse.
-  - Returns deterministic mock regions already in the canonical 5-class schema
-    (class mapping is a no-op at the stub stage; Packet 6.4 wires the real
-    native-to-canonical mapping for the DocStructBench class vocabulary).
+  - Returns deterministic mock regions already in the canonical 5-class schema.
+    In the stub the mock bypasses the native-to-canonical class mapping step
+    (class_mapping.map_native_class) because there is no real model output to
+    map; regions are constructed directly with RegionType values.
+  - Runs the IEP2B postprocessing pipeline (NMS + ID reassignment) via
+    postprocess_regions (Packet 6.4).
   - detector_type is always "doclayout_yolo".
-  - column_structure is None (postprocessing deferred to Packet 6.4).
+  - column_structure is None (IEP2B does not infer column structure).
   - Supports failure simulation via IEP2B_MOCK_FAIL env var.
 
 Configurable env vars (read at call time so tests can monkeypatch freely):
@@ -29,6 +31,7 @@ import time
 
 from fastapi import APIRouter, HTTPException
 
+from services.iep2b.app.postprocess import postprocess_regions
 from shared.schemas.layout import (
     LayoutConfSummary,
     LayoutDetectRequest,
@@ -138,14 +141,16 @@ def layout_detect(body: LayoutDetectRequest) -> LayoutDetectResponse:
     except ValueError:
         confidence = _DEFAULT_CONFIDENCE
 
-    regions = [
+    raw_regions = [
         Region(id=rid, type=rtype, bbox=bbox, confidence=confidence)
         for rid, rtype, bbox in _MOCK_REGION_TEMPLATES
     ]
 
+    regions = postprocess_regions(raw_regions)
+
     n = len(regions)
-    mean_conf = sum(r.confidence for r in regions) / n
-    low_conf_frac = sum(1 for r in regions if r.confidence < 0.5) / n
+    mean_conf = sum(r.confidence for r in regions) / n if n else 0.0
+    low_conf_frac = sum(1 for r in regions if r.confidence < 0.5) / n if n else 0.0
 
     histogram: dict[str, int] = {rt.value: 0 for rt in RegionType}
     for r in regions:
@@ -162,7 +167,7 @@ def layout_detect(body: LayoutDetectRequest) -> LayoutDetectResponse:
         ),
         region_type_histogram=histogram,
         column_structure=None,
-        model_version="mock-stub-6.3",
+        model_version="mock-stub-6.4",
         detector_type="doclayout_yolo",
         processing_time_ms=elapsed_ms,
         warnings=[],
