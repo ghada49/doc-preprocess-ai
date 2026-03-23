@@ -133,6 +133,81 @@ class TestIsGateSatisfied:
         p2 = _make_page(status="accepted", ptiff_qa_approved=False)
         assert _is_gate_satisfied([p1, p2]) is True
 
+    def test_split_parent_in_pending_correction_does_not_block_gate(self) -> None:
+        """
+        Regression: split parent in pending_human_correction must NOT block
+        the PTIFF QA gate when its children are approved.
+
+        The parent (sub_page_index=None, page_number=3) is a split parent
+        because children (sub_page_index=0/1, page_number=3) are present.
+        Gate must be satisfied so children can be released.
+        """
+        parent = _make_page(
+            page_id="parent",
+            page_number=3,
+            sub_page_index=None,
+            status="pending_human_correction",
+            ptiff_qa_approved=False,
+        )
+        child_0 = _make_page(
+            page_id="c0",
+            page_number=3,
+            sub_page_index=0,
+            status="ptiff_qa_pending",
+            ptiff_qa_approved=True,
+        )
+        child_1 = _make_page(
+            page_id="c1",
+            page_number=3,
+            sub_page_index=1,
+            status="ptiff_qa_pending",
+            ptiff_qa_approved=True,
+        )
+        assert _is_gate_satisfied([parent, child_0, child_1]) is True
+
+    def test_split_child_in_pending_correction_still_blocks_gate(self) -> None:
+        """
+        A split CHILD sent back for correction (sub_page_index IS NOT None)
+        must still block the PTIFF QA gate — only the parent is exempt.
+        """
+        parent = _make_page(
+            page_id="parent",
+            page_number=3,
+            sub_page_index=None,
+            status="pending_human_correction",
+        )
+        child_in_correction = _make_page(
+            page_id="c0",
+            page_number=3,
+            sub_page_index=0,
+            status="pending_human_correction",
+        )
+        child_approved = _make_page(
+            page_id="c1",
+            page_number=3,
+            sub_page_index=1,
+            status="ptiff_qa_pending",
+            ptiff_qa_approved=True,
+        )
+        assert _is_gate_satisfied([parent, child_in_correction, child_approved]) is False
+
+    def test_regular_page_in_pending_correction_still_blocks_gate(self) -> None:
+        """
+        An ordinary (non-split) page in pending_human_correction still blocks
+        the gate — only split parents are exempt.
+        """
+        p_qa = _make_page(
+            page_id="p1", page_number=1, status="ptiff_qa_pending", ptiff_qa_approved=True
+        )
+        p_correction = _make_page(
+            page_id="p2",
+            page_number=2,
+            sub_page_index=None,
+            status="pending_human_correction",
+        )
+        # page_number=2 has no children → not a split parent → blocks gate
+        assert _is_gate_satisfied([p_qa, p_correction]) is False
+
 
 # ── Unit tests: _check_and_release_ptiff_qa ────────────────────────────────────
 

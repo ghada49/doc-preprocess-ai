@@ -152,18 +152,35 @@ def _is_gate_satisfied(pages: list[JobPage]) -> bool:
 
     Gate is satisfied only if:
       - No ptiff_qa_pending page has ptiff_qa_approved == False.
-      - No page is in pending_human_correction.
+      - No page is in pending_human_correction, EXCEPT split parents.
+
+    A split parent is a page with sub_page_index IS None whose page_number
+    also appears among the children (sub_page_index IS NOT None) in the list.
+    Split parents must not block the gate: they can only exit
+    pending_human_correction after their children become worker-terminal,
+    which only happens after the gate releases — including them would create
+    a circular deadlock in manual PTIFF QA mode for split corrections.
 
     Args:
-        pages: Leaf pages for the job (split-parent records excluded).
+        pages: Leaf pages for the job (may include split-parent records).
 
     Returns:
         True when gate conditions are met, False otherwise.
     """
+    # Page numbers that have at least one child (sub_page_index IS NOT None).
+    # These correspond to split parents still awaiting child completion.
+    child_page_numbers: frozenset[int] = frozenset(
+        p.page_number for p in pages if p.sub_page_index is not None
+    )
+
     for p in pages:
         if p.status == "ptiff_qa_pending" and not p.ptiff_qa_approved:
             return False
         if p.status == "pending_human_correction":
+            # Split parent: managed by _maybe_close_split_parent; must not
+            # block the PTIFF QA gate for its children.
+            if p.sub_page_index is None and p.page_number in child_page_numbers:
+                continue
             return False
     return True
 
