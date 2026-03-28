@@ -141,7 +141,7 @@ A phase must never be marked complete if any item in its Definition of Done rema
 
 ### ☐ Phase 9 — Metrics, policy loading, drift skeleton, hardening
 
-- ☐ Packet 9.1 — metrics registration
+- ☑ Packet 9.1 — metrics registration
 - ☐ Packet 9.2 — policy loading and threshold wiring
 - ☐ Packet 9.3 — drift detector skeleton
 - ☐ Packet 9.4 — placeholder baselines file
