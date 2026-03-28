@@ -132,11 +132,11 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - ☑ Packet 8.1 — Phase 8 migration
 - ☑ Packet 8.2 — policy endpoints
 - ☑ Packet 8.3 — promotion / rollback API (offline gate evaluation for IEP1)
-- ☐ Packet 8.4 — retraining webhook and trigger recording
+- ☑ Packet 8.4 — retraining webhook and trigger recording
 - ☐ Packet 8.5 — retraining worker, offline evaluation, and recovery service
 
-- **Summary:** Packet 8.1 complete. Migration `0003_p8_mlops_tables.py` (revision 0003, down_revision 0002) creates all 6 MLOps tables: `model_versions`, `policy_versions`, `task_retry_states`, `retraining_triggers`, `retraining_jobs`, `slo_audit_samples`. ORM models added to `services/eep/app/db/models.py`. Phase 1 tables untouched. 67 new tests in `tests/test_p8_migration.py`; `test_p1_models.py` updated for subset check (Base now has 12 tables). 2245 passing, 3 pre-existing failures unchanged.
-- **Blocked/blocking:** None. Packet 8.2 may begin.
+- **Summary:** Packets 8.1–8.4 complete. 8.1: Migration `0003_p8_mlops_tables.py` creates all 6 MLOps tables. 8.2: policy read/update endpoints. 8.3: `POST /v1/models/promote` and `POST /v1/models/rollback` with offline gate enforcement and cooldown-safe rollback. 8.4: `POST /v1/retraining/webhook` receives Alertmanager payloads; records triggers in `retraining_triggers` with correct `persistence_hours`, `cooldown_until = now+7d`, `status='pending'`; cooldown check suppresses duplicates within 7 days; 36 tests in `test_p8_retraining_webhook.py` all pass.
+- **Blocked/blocking:** None. Packet 8.5 may begin.
 - **Relevant spec constraints:** Phase 8 tables must not appear in Phase 1 migration (separation invariant). `model_versions.gate_results` is JSONB (populated by offline evaluation worker, not migration). `task_retry_states` uses plain TEXT for page_id/job_id (no FK to Phase 1 tables).
 
 ### ☐ Phase 9 — Metrics, policy loading, drift skeleton, hardening

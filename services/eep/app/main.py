@@ -19,6 +19,7 @@ Real implementations:
   PATCH /v1/policy                        → LIVE (Packet 8.2)
   POST /v1/models/promote                 → LIVE (Packet 8.3)
   POST /v1/models/rollback                → LIVE (Packet 8.3)
+  POST /v1/retraining/webhook             → LIVE (Packet 8.4)
 """
 
 from fastapi import FastAPI
@@ -26,6 +27,7 @@ from fastapi import FastAPI
 from services.eep.app.auth import router as auth_router
 from services.eep.app.policy_api import router as policy_router
 from services.eep.app.promotion_api import router as promotion_router
+from services.eep.app.retraining_webhook import router as retraining_webhook_router
 from services.eep.app.admin.dashboard import router as admin_dashboard_router
 from services.eep.app.admin.users import router as admin_users_router
 from services.eep.app.correction.apply import router as correction_apply_router
@@ -72,6 +74,7 @@ app.include_router(lineage_router)
 # ── Phase 8 routers ────────────────────────────────────────────────────────────
 app.include_router(policy_router)
 app.include_router(promotion_router)
+app.include_router(retraining_webhook_router)
 
 # ── Phase 5 routers ────────────────────────────────────────────────────────────
 app.include_router(ptiff_qa_router)
