@@ -68,11 +68,14 @@ def _unique_constraints(model: Any) -> list[UniqueConstraint]:
 
 
 class TestBase:
-    def test_base_metadata_has_six_tables(self) -> None:
-        assert len(Base.metadata.tables) == 6
+    def test_base_metadata_has_phase1_tables(self) -> None:
+        # Phase 8 (Packet 8.1) added 6 MLOps models to the same Base; the
+        # count is no longer exactly 6. Assert Phase 1 tables are present.
+        assert _ALL_TABLE_NAMES.issubset(set(Base.metadata.tables.keys()))
 
     def test_base_metadata_table_names(self) -> None:
-        assert set(Base.metadata.tables.keys()) == _ALL_TABLE_NAMES
+        # Phase 8 MLOps tables share the same Base; use a subset check.
+        assert _ALL_TABLE_NAMES.issubset(set(Base.metadata.tables.keys()))
 
     def test_all_models_share_same_base(self) -> None:
         for model in (User, Job, JobPage, PageLineage, ServiceInvocation, QualityGateLog):

@@ -46,6 +46,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
+from services.eep.app.auth import CurrentUser, require_user
 from services.eep.app.db.models import Job, JobPage
 from services.eep.app.db.session import get_session
 from services.eep.app.queue import enqueue_page_task
@@ -68,6 +69,7 @@ def create_job(
     body: JobCreateRequest,
     db: Session = Depends(get_session),
     r: redis.Redis = Depends(get_redis),
+    user: CurrentUser = Depends(require_user),
 ) -> JobCreateResponse:
     """
     Create a new processing job.
@@ -96,7 +98,7 @@ def create_job(
         shadow_mode=body.shadow_mode,
         status="queued",
         page_count=len(body.pages),
-        created_by=None,  # populated in Phase 7 (Packet 7.1)
+        created_by=user.user_id,
     )
     db.add(job)
 

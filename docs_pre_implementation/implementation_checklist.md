@@ -115,44 +115,44 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - **Blocked/blocking:** None. Phase 7 may begin.
 - **Relevant spec constraints:** Spec Section 7.4: IEP2A regions are canonical output when agreed=True; single-model auto-acceptance is prohibited. `ptiff_qa_pending` is non-terminal; layout must not execute until PTIFF QA gate releases. `layout_detection → accepted` only when agreed=True AND consensus_confidence ≥ 0.6; `layout_detection → review` for all consensus failures. Layout JSON artifact path: `{page_number}.json` (unsplit) / `{page_number}_{sub_index}.json` (split) — Phase 6 layout worker (not yet implemented) must write this artifact before transitioning to `accepted`.
 
-### ☐ Phase 7 — Auth, RBAC, admin/user APIs, lineage
+### ☑ Phase 7 — Auth, RBAC, admin/user APIs, lineage
 
-- ☐ Packet 7.1 — auth and JWT issuance
-- ☐ Packet 7.2 — RBAC helpers and enforcement
-- ☐ Packet 7.3 — job list endpoint
-- ☐ Packet 7.4 — admin dashboard endpoints
-- ☐ Packet 7.5 — lineage endpoint
-- ☐ Packet 7.6 — user management endpoints
+- ☑ Packet 7.1 — auth and JWT issuance
+- ☑ Packet 7.2 — RBAC helpers and enforcement
+- ☑ Packet 7.3 — job list endpoint
+- ☑ Packet 7.4 — admin dashboard endpoints
+- ☑ Packet 7.5 — lineage endpoint
+- ☑ Packet 7.6 — user management endpoints
 
-- **Summary:**
-- **Blocked/blocking:**
-- **Relevant spec constraints:**
+- **Summary:** Packets 7.1–7.6 complete. Phase 7 definition of done satisfied: JWT works ☑, RBAC works ☑, job list scoped for users / global for admins ☑, lineage response correct and complete ☑, admin user management works ☑. Packet 7.6: `POST /v1/users` (create with bcrypt hash, 409 on duplicate username, 201), `GET /v1/users` (list all, ordered by created_at ASC), `PATCH /v1/users/{user_id}/deactivate` (sets is_active=False, idempotent, 404 on unknown user_id). hashed_password never returned in any response. Implementation in `services/eep/app/admin/users.py`; 24 new tests in `test_p7_user_management.py`. Suite: 2044 passing, 137 failing (all pre-existing P4 integration test failures — unchanged).
+- **Blocked/blocking:** None. Phase 8 may begin.
+- **Relevant spec constraints:** JWT `sub` claim = user_id; `require_admin` for all three user management endpoints; `hashed_password` must never appear in any response; `IntegrityError` from DB unique constraint maps to 409; `PATCH .../deactivate` is idempotent.
 
-### ☐ Phase 8 — MLOps plumbing
+### ☑ Phase 8 — MLOps plumbing
 
-- ☐ Packet 8.1 — Phase 8 migration
-- ☐ Packet 8.2 — policy endpoints
-- ☐ Packet 8.3 — promotion / rollback API (offline gate evaluation for IEP1)
-- ☐ Packet 8.4 — retraining webhook and trigger recording
-- ☐ Packet 8.5 — retraining worker, offline evaluation, and recovery service
+- ☑ Packet 8.1 — Phase 8 migration
+- ☑ Packet 8.2 — policy endpoints
+- ☑ Packet 8.3 — promotion / rollback API (offline gate evaluation for IEP1)
+- ☑ Packet 8.4 — retraining webhook and trigger recording
+- ☑ Packet 8.5 — retraining worker, offline evaluation, and recovery service
 
-- **Summary:**
-- **Blocked/blocking:**
-- **Relevant spec constraints:**
+- **Summary:** All Phase 8 packets complete. 8.1: Migration `0003_p8_mlops_tables.py` creates all 6 MLOps tables. 8.2: policy read/update endpoints. 8.3: `POST /v1/models/promote` and `POST /v1/models/rollback` with offline gate enforcement and cooldown-safe rollback. 8.4: `POST /v1/retraining/webhook` receives Alertmanager payloads; records triggers in `retraining_triggers` with correct `persistence_hours`, `cooldown_until = now+7d`, `status='pending'`; 36 tests pass. 8.5: `services/retraining_worker/app/task.py` — `execute_retraining_task` creates RetrainingJob, runs stub MLflow training, runs stub offline evaluation, writes gate_results to ModelVersion (stage=staging) for iep1a+iep1b; `services/retraining_worker/app/main.py` — lifespan poll loop (30s interval, claims pending triggers, calls task, marks failed on exception); `services/retraining_recovery/app/reconcile.py` — `reconcile_once` recovers stuck running jobs and orphaned processing triggers; `services/retraining_recovery/app/main.py` — lifespan reconciliation loop (60s interval); 39 tests in `test_p8_retraining_worker.py` all pass. Phase 8 definition of done fully satisfied.
+- **Blocked/blocking:** None. Phase 9 may begin.
+- **Relevant spec constraints:** Phase 8 tables must not appear in Phase 1 migration (separation invariant). `model_versions.gate_results` is JSONB (populated by offline evaluation worker, not migration). `task_retry_states` uses plain TEXT for page_id/job_id (no FK to Phase 1 tables).
 
-### ☐ Phase 9 — Metrics, policy loading, drift skeleton, hardening
+### ☑ Phase 9 — Metrics, policy loading, drift skeleton, hardening
 
-- ☐ Packet 9.1 — metrics registration
-- ☐ Packet 9.2 — policy loading and threshold wiring
-- ☐ Packet 9.3 — drift detector skeleton
-- ☐ Packet 9.4 — placeholder baselines file
-- ☐ Packet 9.5 — observability hardening and golden-dataset tests
-- ☐ Packet 9.6 — Prometheus and alerting configuration
-- ☐ Packet 9.7 — Grafana dashboards
+- ☑ Packet 9.1 — metrics registration
+- ☑ Packet 9.2 — policy loading and threshold wiring
+- ☑ Packet 9.3 — drift detector skeleton
+- ☑ Packet 9.4 — placeholder baselines file
+- ☑ Packet 9.5 — observability hardening and golden-dataset tests
+- ☑ Packet 9.6 — Prometheus and alerting configuration
+- ☑ Packet 9.7 — Grafana dashboards
 
-- **Summary:**
-- **Blocked/blocking:**
-- **Relevant spec constraints:**
+- **Summary:** All metrics, policy loading, drift detection, Prometheus/Alertmanager configuration, and Grafana dashboards are complete. Four dashboards provisioned: API service health, workers & queue, gate decisions, model signals. Golden-dataset test suite (42 tests) covers geometry gate routing, artifact validation, IEP1C normalization, lineage writes, and state transitions.
+- **Blocked/blocking:** None. Phase 10 may begin.
+- **Relevant spec constraints:** Dashboards are provisioned via Grafana's filesystem provider (monitoring/grafana/provisioning/). Alert rules in alert_rules/ are loaded by Prometheus rule_files glob. Alertmanager routes retraining_trigger → POST /v1/retraining/webhook and rollback_trigger → POST /v1/models/rollback.
 
 ### ☐ Phase 10 — Frontend
 

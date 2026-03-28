@@ -39,6 +39,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from services.eep.app.auth import CurrentUser, assert_job_ownership, require_user
 from services.eep.app.db.models import Job, JobPage, PageLineage
 from services.eep.app.db.page_state import advance_page_state
 from services.eep.app.db.session import get_session
@@ -100,6 +101,7 @@ def reject_correction(
     page_number: int,
     body: CorrectionRejectRequest = CorrectionRejectRequest(),
     db: Session = Depends(get_session),
+    user: CurrentUser = Depends(require_user),
 ) -> CorrectionRejectResponse:
     """
     Permanently route a page in pending_human_correction to the 'review' state.
@@ -115,7 +117,8 @@ def reject_correction(
     - ``500`` — data-integrity failure: lineage row missing
     """
     # Step 1 — Load job and page
-    _fetch_job_or_404(db, job_id)
+    job = _fetch_job_or_404(db, job_id)
+    assert_job_ownership(job, user)
 
     page: JobPage | None = (
         db.query(JobPage)

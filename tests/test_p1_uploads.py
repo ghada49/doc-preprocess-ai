@@ -29,6 +29,7 @@ from fastapi.testclient import TestClient
 from moto import mock_aws
 
 import services.eep.app.uploads as uploads_mod
+from services.eep.app.auth import CurrentUser, require_user
 from services.eep.app.uploads import router
 
 # ---------------------------------------------------------------------------
@@ -48,11 +49,15 @@ _URL_RE = re.compile(r"^https?://")
 # ---------------------------------------------------------------------------
 
 
+_MOCK_ADMIN = CurrentUser(user_id="test-admin", role="admin")
+
+
 @pytest.fixture(scope="module")
 def client() -> TestClient:
-    app = FastAPI()
-    app.include_router(router)
-    return TestClient(app)
+    _app = FastAPI()
+    _app.include_router(router)
+    _app.dependency_overrides[require_user] = lambda: _MOCK_ADMIN
+    return TestClient(_app)
 
 
 @pytest.fixture(autouse=True)

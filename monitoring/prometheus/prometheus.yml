@@ -8,8 +8,11 @@ alerting:
         - targets:
             - alertmanager:9093
 
-# Rule files are added in Phase 9
-rule_files: []
+# Packet 9.6 — alert rule files loaded from the rules directory.
+# In Docker/Kubernetes the alert_rules/ directory is mounted at
+# /etc/prometheus/rules/ (see docker-compose / Helm values).
+rule_files:
+  - "/etc/prometheus/rules/*.yml"
 
 scrape_configs:
   # ── Prometheus self-scrape ────────────────────────────────────────────────
