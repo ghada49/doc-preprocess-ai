@@ -1,16 +1,95 @@
+# monitoring/alertmanager/alertmanager.yml
+# -----------------------------------------
+# Packet 9.6 — Alertmanager routing configuration.
+#
+# Two automated webhook receivers:
+#   retraining-webhook  → POST /v1/retraining/webhook  (Packet 8.4)
+#   rollback-webhook    → POST /v1/models/rollback      (Packet 8.3)
+#
+# Routing:
+#   category="retraining_trigger" → retraining-webhook
+#   category="rollback_trigger"   → rollback-webhook
+#   all others                    → default (null receiver; extend in Phase 11)
+#
+# Notes:
+# - send_resolved: false for both webhooks — resolved status is not consumed
+#   by the EEP webhook or rollback endpoints.
+# - repeat_interval for retraining alerts is set to 25h to avoid re-sending
+#   within the 24h/48h persistence window.
+# - repeat_interval for rollback alerts is 3h (outside the 2h window the
+#   rollback API silently rejects the call anyway).
+# ---------------------------------------------------------------------------
+
 global:
   resolve_timeout: 5m
 
 route:
-  group_by: ["alertname", "job"]
+  receiver: default
+  group_by: ["alertname", "category"]
   group_wait: 30s
   group_interval: 5m
   repeat_interval: 12h
-  receiver: default
+
+  routes:
+    # ── Retraining-trigger alerts → POST /v1/retraining/webhook ─────────────
+    - matchers:
+        - category = "retraining_trigger"
+      receiver: retraining-webhook
+      group_by: ["alertname"]
+      group_wait: 1m
+      group_interval: 5m
+      # repeat_interval > longest persistence window (48h) to avoid duplicate
+      # triggers between cooldowns; the retraining webhook handles dedup via
+      # its 7-day cooldown but extra suppression is harmless.
+      repeat_interval: 25h
+      continue: false
+
+    # ── Rollback-trigger alerts → POST /v1/models/rollback ──────────────────
+    - matchers:
+        - category = "rollback_trigger"
+      receiver: rollback-webhook
+      group_by: ["alertname"]
+      group_wait: 1m
+      group_interval: 5m
+      # repeat after 3h — outside the 2h post-promotion window the rollback
+      # API will reject the call; the alert firing again is harmless.
+      repeat_interval: 3h
+      continue: false
 
 receivers:
+  # ── Default: null receiver (no channel for local dev; extend in Phase 11) ─
   - name: default
-    # No notification channel configured for local development.
-    # Add Slack/PagerDuty/email receivers here for production (Phase 11).
 
-inhibit_rules: []
+  # ── Retraining webhook (Packet 8.4) ───────────────────────────────────────
+  # Receives standard Alertmanager v4 webhook payloads.
+  # Extracts trigger_type / metric_name / metric_value / threshold_value from
+  # alert labels and records a row in retraining_triggers.
+  # No authentication required (internal endpoint).
+  - name: retraining-webhook
+    webhook_configs:
+      - url: "http://eep:8000/v1/retraining/webhook"
+        send_resolved: false
+        http_config:
+          follow_redirects: false
+
+  # ── Rollback webhook (Packet 8.3) ─────────────────────────────────────────
+  # Receives Alertmanager v4 payload.
+  # The rollback API enforces the 2h post-promotion window internally;
+  # requests outside the window are rejected with 409.
+  # No authentication required (internal endpoint, isolated network).
+  - name: rollback-webhook
+    webhook_configs:
+      - url: "http://eep:8000/v1/models/rollback"
+        send_resolved: false
+        http_config:
+          follow_redirects: false
+
+inhibit_rules:
+  # Suppress ServiceDown for a service when a higher-severity ServiceDown
+  # alert already fires for the same job (prevents fan-out on restart storms).
+  - source_matchers:
+      - alertname = "ServiceDown"
+      - severity = "critical"
+    target_matchers:
+      - alertname = "HighHTTPErrorRate"
+    equal: ["job"]

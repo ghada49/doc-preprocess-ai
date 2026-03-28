@@ -1,0 +1,243 @@
+# monitoring/alert_rules/libraryai-alerts.yml
+# -------------------------------------------
+# Packet 9.6 — LibraryAI alert rules.
+#
+# Three groups:
+#   libraryai.retraining_triggers — alerts that enqueue IEP1/IEP2 retraining
+#   libraryai.rollback_triggers   — alerts that trigger automated rollback
+#   libraryai.operational         — infrastructure health alerts (no automation)
+#
+# Retraining-trigger alerts carry labels consumed by the retraining webhook
+# (Packet 8.4 — POST /v1/retraining/webhook):
+#   trigger_type   — one of the five trigger types in spec Section 16.3
+#   metric_name    — the monitored metric that breached its threshold
+#   threshold_value — the threshold that was crossed (string, parsed downstream)
+#
+# Rollback-trigger alerts carry:
+#   category: rollback_trigger   — Alertmanager routes to POST /v1/models/rollback
+#
+# Thresholds (spec Section 16.3):
+#   escalation_rate_anomaly          : rectification fallback rate > 25%
+#   auto_accept_rate_collapse        : auto-accept rate < 40%
+#   structural_agreement_degradation : structural agreement rate dropped >20% from
+#                                      baseline (~0.88) → threshold 0.70
+#   drift_alert_persistence          : IEP1 confidence median below 0.70 for 48h
+#   layout_confidence_degradation    : IEP2 confidence median dropped >15% from
+#                                      baseline (~0.82) → threshold 0.70
+# ---------------------------------------------------------------------------
+
+groups:
+
+  # ── Retraining triggers (spec Section 16.3) ────────────────────────────────
+
+  - name: libraryai.retraining_triggers
+    interval: 5m
+    rules:
+
+      # Rectification fallback rate exceeds 25% — persistence 24h
+      - alert: EscalationRateAnomaly
+        expr: |
+          rate(iep1d_rectification_triggered_total[1h])
+          / rate(eep_requests_total[1h]) > 0.25
+        for: 24h
+        labels:
+          category: retraining_trigger
+          trigger_type: escalation_rate_anomaly
+          metric_name: iep1d_rectification_triggered_rate
+          threshold_value: "0.25"
+        annotations:
+          summary: "Rectification fallback rate exceeds 25%"
+          description: >
+            IEP1D rectification was triggered for more than 25% of EEP requests
+            over the past hour, sustained for 24h.
+            Action: enqueue IEP1 retraining [rectification, preprocessing].
+
+      # Auto-accept rate drops below 40% — persistence 24h
+      - alert: AutoAcceptRateCollapse
+        expr: eep_auto_accept_rate < 0.40
+        for: 24h
+        labels:
+          category: retraining_trigger
+          trigger_type: auto_accept_rate_collapse
+          metric_name: eep_auto_accept_rate
+          threshold_value: "0.40"
+        annotations:
+          summary: "EEP auto-accept rate collapsed below 40%"
+          description: >
+            The eep_auto_accept_rate gauge has been below 0.40 for 24h.
+            Action: enqueue IEP1 retraining [rectification, preprocessing].
+
+      # IEP1A/IEP1B structural agreement rate dropped >20% from baseline — persistence 48h
+      # Baseline ~0.88; 20% relative drop → threshold 0.70.
+      - alert: StructuralAgreementDegradation
+        expr: eep_structural_agreement_rate < 0.70
+        for: 48h
+        labels:
+          category: retraining_trigger
+          trigger_type: structural_agreement_degradation
+          metric_name: eep_structural_agreement_rate
+          threshold_value: "0.70"
+        annotations:
+          summary: "IEP1A/IEP1B structural agreement degraded"
+          description: >
+            eep_structural_agreement_rate has been below 0.70 for 48h
+            (>20% drop from baseline ~0.88).
+            Action: enqueue IEP1 retraining [preprocessing].
+
+      # Any IEP1 drift detector alert firing continuously — persistence 48h
+      # Expressed as: median IEP1A or IEP1B geometry confidence below 0.70.
+      - alert: DriftAlertPersistence
+        expr: |
+          histogram_quantile(0.5, rate(iep1a_geometry_confidence_bucket[6h])) < 0.70
+          or
+          histogram_quantile(0.5, rate(iep1b_geometry_confidence_bucket[6h])) < 0.70
+        for: 48h
+        labels:
+          category: retraining_trigger
+          trigger_type: drift_alert_persistence
+          metric_name: iep1_geometry_confidence_p50
+          threshold_value: "0.70"
+        annotations:
+          summary: "IEP1 drift persisting for 48h"
+          description: >
+            Median IEP1A or IEP1B geometry confidence has been below 0.70
+            continuously for 48h — sustained drift in the IEP1 pipeline.
+            Action: enqueue IEP1 retraining [preprocessing, rectification].
+
+      # Median IEP2A/IEP2B confidence drops >15% from baseline — persistence 48h
+      # Baseline ~0.82; 15% relative drop → threshold 0.70.
+      - alert: LayoutConfidenceDegradation
+        expr: |
+          histogram_quantile(0.5, rate(iep2a_mean_page_confidence_bucket[1h])) < 0.70
+          or
+          histogram_quantile(0.5, rate(iep2b_mean_page_confidence_bucket[1h])) < 0.70
+        for: 48h
+        labels:
+          category: retraining_trigger
+          trigger_type: layout_confidence_degradation
+          metric_name: iep2_mean_page_confidence_p50
+          threshold_value: "0.70"
+        annotations:
+          summary: "IEP2A/IEP2B layout confidence degraded"
+          description: >
+            Median IEP2A or IEP2B mean page confidence has dropped >15% from
+            baseline (~0.82) and been below 0.70 for 48h.
+            Action: operational alert only — IEP2 retraining is not automated.
+
+  # ── Rollback triggers (spec Section 16.5) ─────────────────────────────────
+
+  - name: libraryai.rollback_triggers
+    interval: 1m
+    rules:
+
+      # Post-promotion auto-accept rate collapse — triggers automated rollback
+      # within the 2h post-promotion window (window check is enforced by the
+      # rollback API itself, not by this alert).
+      - alert: PostPromotionAcceptRateCollapse
+        expr: eep_auto_accept_rate < 0.40
+        for: 30m
+        labels:
+          category: rollback_trigger
+          metric_name: eep_auto_accept_rate
+          threshold_value: "0.40"
+        annotations:
+          summary: "Post-promotion auto-accept rate collapse — rollback candidate"
+          description: >
+            eep_auto_accept_rate has been below 0.40 for 30m.
+            POST /v1/models/rollback will act only if within 2h of the last
+            promotion (window enforced by the rollback API).
+
+  # ── Operational health (informational; no automated action) ───────────────
+
+  - name: libraryai.operational
+    interval: 1m
+    rules:
+
+      # Any Prometheus scrape target has been unreachable for 2 minutes
+      - alert: ServiceDown
+        expr: up == 0
+        for: 2m
+        labels:
+          category: operational
+          severity: critical
+        annotations:
+          summary: "Service {{ $labels.job }} is down"
+          description: >
+            Prometheus target {{ $labels.job }} ({{ $labels.instance }})
+            has been unreachable for 2 minutes.
+
+      # HTTP 5xx error rate exceeds 5% on any service
+      - alert: HighHTTPErrorRate
+        expr: |
+          rate(http_requests_total{status_code=~"5.."}[5m])
+          / rate(http_requests_total[5m]) > 0.05
+        for: 5m
+        labels:
+          category: operational
+          severity: warning
+        annotations:
+          summary: "High 5xx error rate on {{ $labels.service }}"
+          description: >
+            {{ $labels.service }} has a >5% HTTP 5xx error rate over the
+            past 5 minutes.
+
+      # IEP1 GPU inference p95 latency exceeds 60s (spec max ~60s warm path)
+      - alert: HighIEP1InferenceLatency
+        expr: |
+          histogram_quantile(0.95, rate(iep1a_gpu_inference_seconds_bucket[5m])) > 60
+          or
+          histogram_quantile(0.95, rate(iep1b_gpu_inference_seconds_bucket[5m])) > 60
+        for: 10m
+        labels:
+          category: operational
+          severity: warning
+        annotations:
+          summary: "IEP1 GPU inference p95 latency exceeds 60s"
+          description: >
+            p95 GPU inference latency for IEP1A or IEP1B exceeds 60s,
+            sustained for 10 minutes.
+
+      # IEP1D rectification failure rate — informational (not a retraining trigger threshold)
+      - alert: HighRectificationFailureRate
+        expr: |
+          rate(iep1d_rectification_triggered_total[30m])
+          / rate(eep_requests_total[30m]) > 0.15
+        for: 30m
+        labels:
+          category: operational
+          severity: warning
+        annotations:
+          summary: "IEP1D rectification triggered for >15% of requests"
+          description: >
+            Rectification fallback rate has exceeded 15% for 30 minutes —
+            approaching the 25% retraining trigger threshold.
+
+      # Shadow evaluation backlog growing faster than processing
+      - alert: ShadowWorkerBacklogGrowing
+        expr: |
+          rate(shadow_tasks_enqueued_total[5m])
+          > rate(shadow_tasks_processed_total[5m]) * 1.5
+        for: 15m
+        labels:
+          category: operational
+          severity: warning
+        annotations:
+          summary: "Shadow evaluation task backlog growing"
+          description: >
+            Shadow tasks are being enqueued 50% faster than processed
+            for 15 minutes.
+
+      # Shadow task failure rate exceeds 10%
+      - alert: HighShadowTaskFailureRate
+        expr: |
+          rate(shadow_tasks_failed_total[5m])
+          / rate(shadow_tasks_processed_total[5m]) > 0.10
+        for: 10m
+        labels:
+          category: operational
+          severity: warning
+        annotations:
+          summary: "Shadow evaluation task failure rate exceeds 10%"
+          description: >
+            More than 10% of shadow evaluation tasks are failing over
+            the past 5 minutes.
