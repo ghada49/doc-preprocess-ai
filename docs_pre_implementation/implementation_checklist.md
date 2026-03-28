@@ -139,19 +139,19 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - **Blocked/blocking:** None. Phase 9 may begin.
 - **Relevant spec constraints:** Phase 8 tables must not appear in Phase 1 migration (separation invariant). `model_versions.gate_results` is JSONB (populated by offline evaluation worker, not migration). `task_retry_states` uses plain TEXT for page_id/job_id (no FK to Phase 1 tables).
 
-### ☐ Phase 9 — Metrics, policy loading, drift skeleton, hardening
+### ☑ Phase 9 — Metrics, policy loading, drift skeleton, hardening
 
-- ☐ Packet 9.1 — metrics registration
-- ☐ Packet 9.2 — policy loading and threshold wiring
-- ☐ Packet 9.3 — drift detector skeleton
-- ☐ Packet 9.4 — placeholder baselines file
-- ☐ Packet 9.5 — observability hardening and golden-dataset tests
-- ☐ Packet 9.6 — Prometheus and alerting configuration
-- ☐ Packet 9.7 — Grafana dashboards
+- ☑ Packet 9.1 — metrics registration
+- ☑ Packet 9.2 — policy loading and threshold wiring
+- ☑ Packet 9.3 — drift detector skeleton
+- ☑ Packet 9.4 — placeholder baselines file
+- ☑ Packet 9.5 — observability hardening and golden-dataset tests
+- ☑ Packet 9.6 — Prometheus and alerting configuration
+- ☑ Packet 9.7 — Grafana dashboards
 
-- **Summary:**
-- **Blocked/blocking:**
-- **Relevant spec constraints:**
+- **Summary:** All metrics, policy loading, drift detection, Prometheus/Alertmanager configuration, and Grafana dashboards are complete. Four dashboards provisioned: API service health, workers & queue, gate decisions, model signals. Golden-dataset test suite (42 tests) covers geometry gate routing, artifact validation, IEP1C normalization, lineage writes, and state transitions.
+- **Blocked/blocking:** None. Phase 10 may begin.
+- **Relevant spec constraints:** Dashboards are provisioned via Grafana's filesystem provider (monitoring/grafana/provisioning/). Alert rules in alert_rules/ are loaded by Prometheus rule_files glob. Alertmanager routes retraining_trigger → POST /v1/retraining/webhook and rollback_trigger → POST /v1/models/rollback.
 
 ### ☐ Phase 10 — Frontend
 

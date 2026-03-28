@@ -40,6 +40,7 @@ from typing import Any
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
 
+from monitoring.drift_observer import observe_and_check
 from services.eep.app.db.models import ServiceInvocation
 from services.eep.app.gates.geometry_selection import (
     GeometrySelectionResult,
@@ -348,6 +349,46 @@ async def _invoke_one(
         )
 
 
+# ── Drift observation ─────────────────────────────────────────────────────────
+
+
+def _observe_geometry_metrics(
+    iep1a: GeometryResponse | None,
+    iep1b: GeometryResponse | None,
+    route_decision: str,
+    session: Session,
+) -> None:
+    """
+    Feed geometry and selection-gate metrics into the drift detector.
+
+    Called once per successful ``invoke_geometry_services`` invocation.
+    Each ``observe_and_check`` call is already wrapped in a try/except inside
+    drift_observer — any individual failure is logged and suppressed, so this
+    helper can never break the caller.
+
+    Metrics observed:
+      iep1a.geometry_confidence, iep1a.tta_structural_agreement_rate,
+      iep1a.tta_prediction_variance, iep1a.split_detection_rate  (if IEP1A succeeded)
+      iep1b.*  (same four fields, if IEP1B succeeded)
+      eep.geometry_selection_route.accepted_fraction  (binary: 1.0 = accepted)
+    """
+    if iep1a is not None:
+        observe_and_check("iep1a.geometry_confidence", iep1a.geometry_confidence, session)
+        observe_and_check("iep1a.tta_structural_agreement_rate", iep1a.tta_structural_agreement_rate, session)
+        observe_and_check("iep1a.tta_prediction_variance", iep1a.tta_prediction_variance, session)
+        observe_and_check("iep1a.split_detection_rate", float(iep1a.split_required), session)
+    if iep1b is not None:
+        observe_and_check("iep1b.geometry_confidence", iep1b.geometry_confidence, session)
+        observe_and_check("iep1b.tta_structural_agreement_rate", iep1b.tta_structural_agreement_rate, session)
+        observe_and_check("iep1b.tta_prediction_variance", iep1b.tta_prediction_variance, session)
+        observe_and_check("iep1b.split_detection_rate", float(iep1b.split_required), session)
+    observe_and_check(
+        "eep.geometry_selection_route.accepted_fraction",
+        1.0 if route_decision == "accepted" else 0.0,
+        session,
+    )
+
+
 # ── Main entry point ───────────────────────────────────────────────────────────
 
 
@@ -452,6 +493,14 @@ async def invoke_geometry_services(
         proxy_width=proxy_width,
         proxy_height=proxy_height,
         config=gate_config,
+    )
+
+    # ── Drift observation (best-effort; never blocks return) ─────────────────
+    _observe_geometry_metrics(
+        iep1a=outcome_a.response,
+        iep1b=outcome_b.response,
+        route_decision=selection_result.route_decision,
+        session=session,
     )
 
     return GeometryInvocationResult(
