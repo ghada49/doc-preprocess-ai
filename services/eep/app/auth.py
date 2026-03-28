@@ -139,11 +139,11 @@ class CurrentUser(BaseModel):
 
 # ── FastAPI security dependencies (wired to endpoints in Packet 7.2) ───────────
 
-_bearer_scheme = HTTPBearer()
+_bearer_scheme = HTTPBearer(auto_error=False)
 
 
 def _extract_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(_bearer_scheme),
+    credentials: HTTPAuthorizationCredentials | None = Depends(_bearer_scheme),
 ) -> CurrentUser:
     """
     FastAPI dependency: decode the Bearer token and return verified claims.
@@ -152,6 +152,12 @@ def _extract_current_user(
         HTTPException 401 — missing or invalid token.
         HTTPException 401 — expired token.
     """
+    if credentials is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Not authenticated",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
     payload = decode_token(credentials.credentials)
     user_id: str | None = payload.get("sub")
     role: str | None = payload.get("role")

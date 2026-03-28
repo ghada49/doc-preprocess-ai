@@ -9,11 +9,14 @@ Real implementations:
   POST /v1/jobs                → LIVE (Packet 1.8)
   GET  /v1/jobs/{job_id}       → LIVE (Packet 1.9)
   GET  /v1/jobs                → LIVE (Packet 7.3)
+  GET  /v1/admin/dashboard-summary → LIVE (Packet 7.4)
+  GET  /v1/admin/service-health    → LIVE (Packet 7.4)
 """
 
 from fastapi import FastAPI
 
 from services.eep.app.auth import router as auth_router
+from services.eep.app.admin.dashboard import router as admin_dashboard_router
 from services.eep.app.correction.apply import router as correction_apply_router
 from services.eep.app.correction.ptiff_qa import router as ptiff_qa_router
 from services.eep.app.correction.queue import router as correction_queue_router
@@ -48,6 +51,9 @@ app.include_router(uploads_router)
 app.include_router(jobs_router)
 app.include_router(job_list_router)
 app.include_router(job_status_router)
+
+# ── Phase 7 admin routers ──────────────────────────────────────────────────────
+app.include_router(admin_dashboard_router)
 
 # ── Phase 5 routers ────────────────────────────────────────────────────────────
 app.include_router(ptiff_qa_router)
