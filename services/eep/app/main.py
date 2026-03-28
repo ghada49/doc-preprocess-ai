@@ -11,6 +11,7 @@ Real implementations:
   GET  /v1/jobs                → LIVE (Packet 7.3)
   GET  /v1/admin/dashboard-summary → LIVE (Packet 7.4)
   GET  /v1/admin/service-health    → LIVE (Packet 7.4)
+  GET  /v1/lineage/{job_id}/{page_number} → LIVE (Packet 7.5)
 """
 
 from fastapi import FastAPI
@@ -18,6 +19,7 @@ from fastapi import FastAPI
 from services.eep.app.auth import router as auth_router
 from services.eep.app.admin.dashboard import router as admin_dashboard_router
 from services.eep.app.correction.apply import router as correction_apply_router
+from services.eep.app.lineage_api import router as lineage_router
 from services.eep.app.correction.ptiff_qa import router as ptiff_qa_router
 from services.eep.app.correction.queue import router as correction_queue_router
 from services.eep.app.correction.reject import router as correction_reject_router
@@ -54,6 +56,7 @@ app.include_router(job_status_router)
 
 # ── Phase 7 admin routers ──────────────────────────────────────────────────────
 app.include_router(admin_dashboard_router)
+app.include_router(lineage_router)
 
 # ── Phase 5 routers ────────────────────────────────────────────────────────────
 app.include_router(ptiff_qa_router)
