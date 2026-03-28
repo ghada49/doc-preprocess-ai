@@ -117,15 +117,15 @@ A phase must never be marked complete if any item in its Definition of Done rema
 ### [~] Phase 7 — Auth, RBAC, admin/user APIs, lineage
 
 - ☑ Packet 7.1 — auth and JWT issuance
-- ☐ Packet 7.2 — RBAC helpers and enforcement
+- ☑ Packet 7.2 — RBAC helpers and enforcement
 - ☐ Packet 7.3 — job list endpoint
 - ☐ Packet 7.4 — admin dashboard endpoints
 - ☐ Packet 7.5 — lineage endpoint
 - ☐ Packet 7.6 — user management endpoints
 
-- **Summary:** Packet 7.1 complete. `services/eep/app/auth.py` implemented: `get_password_hash`/`verify_password` (bcrypt direct), `create_access_token`/`decode_token` (python-jose HS256), `TokenRequest`/`TokenResponse`/`CurrentUser` schemas, `require_user`/`require_admin` FastAPI dependencies (defined but not yet wired to endpoints — Packet 7.2), `POST /v1/auth/token` router (validates username+password against `users` table, issues JWT with `sub`=user_id + `role` + `exp`). Placeholder stub in `main.py` replaced with real router. 28 new tests pass. Production deps added: `python-jose[cryptography]>=3.3`, `bcrypt>=4.0`, `prometheus-client>=0.24.1`. Note: `passlib` removed — bcrypt used directly due to passlib 1.7.4 incompatibility with bcrypt>=4.0.
-- **Blocked/blocking:** None. Packet 7.2 may begin.
-- **Relevant spec constraints:** JWT `sub` claim = user_id (used as `caller_id` for rate limiting — spec Section 14); `require_user`/`require_admin` guard wiring deferred to Packet 7.2; `POST /v1/auth/token` is the only endpoint that does not require auth (spec Section 14); rate limiting on this endpoint uses client IP as fallback (Packet 7.2).
+- **Summary:** Packets 7.1 and 7.2 complete. Packet 7.1: `services/eep/app/auth.py` implemented with `get_password_hash`/`verify_password` (bcrypt direct), `create_access_token`/`decode_token` (python-jose HS256), `TokenRequest`/`TokenResponse`/`CurrentUser` schemas, `require_user`/`require_admin` FastAPI dependencies, `assert_job_ownership` helper, `POST /v1/auth/token` router. Packet 7.2: `require_user` wired to all 9 protected endpoints (uploads, jobs/create, jobs/status, correction/queue×2, correction/apply, correction/reject, ptiff_qa×4); `assert_job_ownership` added to all endpoints that load a job; `Job.created_by` populated from JWT `sub` in `create.py`; `GET /v1/correction-queue` scoped to `created_by == user.user_id` for non-admin users. Tests: 6 new RBAC contract tests in `test_p7_rbac.py`; `tests/conftest.py` autouse fixture bypasses `require_user` on main app for P5 tests; P1 mini-app tests updated with explicit `require_user` override; `test_created_by_is_none` renamed to `test_created_by_is_set_from_jwt`. Production deps added: `python-jose[cryptography]>=3.3`, `bcrypt>=4.0`, `prometheus-client>=0.24.1`, `pythonpath = ["."]` added to pytest config. Suite: 2092 passing, 3 failing (pre-existing P1 stale stub tests — unchanged).
+- **Blocked/blocking:** None. Packet 7.3 may begin.
+- **Relevant spec constraints:** JWT `sub` claim = user_id; `require_admin` reserved for admin-only endpoints (Packets 7.3–7.6); rate limiting deferred (Packet 7.3+); `POST /v1/auth/token` requires no auth.
 
 ### ☐ Phase 8 — MLOps plumbing
 

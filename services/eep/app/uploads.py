@@ -40,8 +40,10 @@ import uuid
 from typing import Any
 
 import boto3
-from fastapi import APIRouter, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
+
+from services.eep.app.auth import CurrentUser, require_user
 
 router = APIRouter()
 
@@ -106,7 +108,9 @@ class PresignUploadResponse(BaseModel):
     tags=["uploads"],
     summary="Generate a presigned S3 PUT URL for raw OTIFF upload",
 )
-async def presign_otiff_upload() -> PresignUploadResponse:
+async def presign_otiff_upload(
+    _user: CurrentUser = Depends(require_user),
+) -> PresignUploadResponse:
     """
     Generate a presigned S3 PUT URL that the frontend uses to upload a raw
     OTIFF file directly to object storage.

@@ -198,6 +198,30 @@ def require_admin(current_user: CurrentUser = Depends(_extract_current_user)) ->
     return current_user
 
 
+# ── Ownership guard ────────────────────────────────────────────────────────────
+
+
+def assert_job_ownership(job: Any, user: CurrentUser) -> None:
+    """
+    Raise HTTP 403 if *user* does not own *job* and is not an admin.
+
+    Args:
+        job:  Any object with a ``created_by`` attribute (Job ORM row).
+        user: The verified token claims from the incoming request.
+
+    Raises:
+        HTTPException 403 — authenticated as a non-admin user who does not own
+                            the job (``job.created_by != user.user_id``).
+    """
+    if user.role == "admin":
+        return
+    if job.created_by != user.user_id:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Not authorized to access this job",
+        )
+
+
 # ── Router ─────────────────────────────────────────────────────────────────────
 
 router = APIRouter(tags=["auth"])

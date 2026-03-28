@@ -70,3 +70,4 @@ plugins = ["sqlalchemy.ext.mypy.plugin"]
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+pythonpath = ["."]

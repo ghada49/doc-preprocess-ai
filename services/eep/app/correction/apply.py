@@ -74,6 +74,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
+from services.eep.app.auth import CurrentUser, assert_job_ownership, require_user
 from services.eep.app.correction.ptiff_qa import (
     _WORKER_TERMINAL_STATES,
     _check_and_release_ptiff_qa,
@@ -455,6 +456,7 @@ def apply_correction(
     body: CorrectionApplyRequest,
     db: Session = Depends(get_session),
     r: redis.Redis = Depends(get_redis),
+    user: CurrentUser = Depends(require_user),
 ) -> CorrectionApplyResponse:
     """
     Apply human correction inputs for a page in pending_human_correction.
@@ -485,6 +487,7 @@ def apply_correction(
     """
     # Step 1 — Load job and page
     job = _fetch_job_or_404(db, job_id)
+    assert_job_ownership(job, user)
 
     page: JobPage | None = (
         db.query(JobPage)
