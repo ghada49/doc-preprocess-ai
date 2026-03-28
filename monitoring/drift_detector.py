@@ -213,6 +213,8 @@ class DriftDetector:
 
         baselines: dict[str, Baseline] = {}
         for key, entry in raw.items():
+            if key.startswith("_"):
+                continue  # skip metadata/comment keys (e.g. _placeholder_note)
             if not isinstance(entry, dict):
                 raise ValueError(
                     f"baselines.json: entry for {key!r} must be an object, got {type(entry).__name__}"
