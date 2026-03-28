@@ -2,10 +2,9 @@
 services/eep/app/main.py
 ------------------------
 EEP — Execution Engine Pipeline API service.
-Phase 0 skeleton: health/ready/metrics are live; all business logic is stubbed.
 
 Real implementations:
-  POST /v1/auth/token          → Phase 7 (Packet 7.1)
+  POST /v1/auth/token          → LIVE (Packet 7.1)
   POST /v1/uploads/jobs/presign → LIVE (Packet 1.7b)
   POST /v1/jobs                → LIVE (Packet 1.8)
   GET  /v1/jobs/{job_id}       → LIVE (Packet 1.9)
@@ -13,6 +12,7 @@ Real implementations:
 
 from fastapi import FastAPI
 
+from services.eep.app.auth import router as auth_router
 from services.eep.app.correction.apply import router as correction_apply_router
 from services.eep.app.correction.ptiff_qa import router as ptiff_qa_router
 from services.eep.app.correction.queue import router as correction_queue_router
@@ -38,6 +38,9 @@ app = FastAPI(
 
 configure_observability(app, service_name="eep")
 
+# ── Phase 7 routers ────────────────────────────────────────────────────────────
+app.include_router(auth_router)
+
 # ── Phase 1 routers ────────────────────────────────────────────────────────────
 app.include_router(uploads_router)
 app.include_router(jobs_router)
@@ -48,12 +51,3 @@ app.include_router(ptiff_qa_router)
 app.include_router(correction_queue_router)
 app.include_router(correction_apply_router)
 app.include_router(correction_reject_router)
-
-# ── Phase 0 placeholder endpoints ─────────────────────────────────────────────
-# These stubs satisfy the Phase 0 definition of done ("EEP placeholder endpoints
-# exist"). They are replaced with real implementations in the phases listed above.
-
-
-@app.post("/v1/auth/token", tags=["auth"], summary="[stub] Issue JWT token")
-async def auth_token_placeholder() -> dict[str, str]:
-    return {"detail": "not implemented — Phase 7 (Packet 7.1)"}

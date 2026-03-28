@@ -114,18 +114,18 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - **Blocked/blocking:**
 - **Relevant spec constraints:**
 
-### ☐ Phase 7 — Auth, RBAC, admin/user APIs, lineage
+### [~] Phase 7 — Auth, RBAC, admin/user APIs, lineage
 
-- ☐ Packet 7.1 — auth and JWT issuance
+- ☑ Packet 7.1 — auth and JWT issuance
 - ☐ Packet 7.2 — RBAC helpers and enforcement
 - ☐ Packet 7.3 — job list endpoint
 - ☐ Packet 7.4 — admin dashboard endpoints
 - ☐ Packet 7.5 — lineage endpoint
 - ☐ Packet 7.6 — user management endpoints
 
-- **Summary:**
-- **Blocked/blocking:**
-- **Relevant spec constraints:**
+- **Summary:** Packet 7.1 complete. `services/eep/app/auth.py` implemented: `get_password_hash`/`verify_password` (bcrypt direct), `create_access_token`/`decode_token` (python-jose HS256), `TokenRequest`/`TokenResponse`/`CurrentUser` schemas, `require_user`/`require_admin` FastAPI dependencies (defined but not yet wired to endpoints — Packet 7.2), `POST /v1/auth/token` router (validates username+password against `users` table, issues JWT with `sub`=user_id + `role` + `exp`). Placeholder stub in `main.py` replaced with real router. 28 new tests pass. Production deps added: `python-jose[cryptography]>=3.3`, `bcrypt>=4.0`, `prometheus-client>=0.24.1`. Note: `passlib` removed — bcrypt used directly due to passlib 1.7.4 incompatibility with bcrypt>=4.0.
+- **Blocked/blocking:** None. Packet 7.2 may begin.
+- **Relevant spec constraints:** JWT `sub` claim = user_id (used as `caller_id` for rate limiting — spec Section 14); `require_user`/`require_admin` guard wiring deferred to Packet 7.2; `POST /v1/auth/token` is the only endpoint that does not require auth (spec Section 14); rate limiting on this endpoint uses client IP as fallback (Packet 7.2).
 
 ### ☐ Phase 8 — MLOps plumbing
 
