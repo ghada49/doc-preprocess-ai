@@ -127,16 +127,16 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - **Blocked/blocking:** None. Phase 8 may begin.
 - **Relevant spec constraints:** JWT `sub` claim = user_id; `require_admin` for all three user management endpoints; `hashed_password` must never appear in any response; `IntegrityError` from DB unique constraint maps to 409; `PATCH .../deactivate` is idempotent.
 
-### [~] Phase 8 — MLOps plumbing
+### ☑ Phase 8 — MLOps plumbing
 
 - ☑ Packet 8.1 — Phase 8 migration
 - ☑ Packet 8.2 — policy endpoints
 - ☑ Packet 8.3 — promotion / rollback API (offline gate evaluation for IEP1)
 - ☑ Packet 8.4 — retraining webhook and trigger recording
-- ☐ Packet 8.5 — retraining worker, offline evaluation, and recovery service
+- ☑ Packet 8.5 — retraining worker, offline evaluation, and recovery service
 
-- **Summary:** Packets 8.1–8.4 complete. 8.1: Migration `0003_p8_mlops_tables.py` creates all 6 MLOps tables. 8.2: policy read/update endpoints. 8.3: `POST /v1/models/promote` and `POST /v1/models/rollback` with offline gate enforcement and cooldown-safe rollback. 8.4: `POST /v1/retraining/webhook` receives Alertmanager payloads; records triggers in `retraining_triggers` with correct `persistence_hours`, `cooldown_until = now+7d`, `status='pending'`; cooldown check suppresses duplicates within 7 days; 36 tests in `test_p8_retraining_webhook.py` all pass.
-- **Blocked/blocking:** None. Packet 8.5 may begin.
+- **Summary:** All Phase 8 packets complete. 8.1: Migration `0003_p8_mlops_tables.py` creates all 6 MLOps tables. 8.2: policy read/update endpoints. 8.3: `POST /v1/models/promote` and `POST /v1/models/rollback` with offline gate enforcement and cooldown-safe rollback. 8.4: `POST /v1/retraining/webhook` receives Alertmanager payloads; records triggers in `retraining_triggers` with correct `persistence_hours`, `cooldown_until = now+7d`, `status='pending'`; 36 tests pass. 8.5: `services/retraining_worker/app/task.py` — `execute_retraining_task` creates RetrainingJob, runs stub MLflow training, runs stub offline evaluation, writes gate_results to ModelVersion (stage=staging) for iep1a+iep1b; `services/retraining_worker/app/main.py` — lifespan poll loop (30s interval, claims pending triggers, calls task, marks failed on exception); `services/retraining_recovery/app/reconcile.py` — `reconcile_once` recovers stuck running jobs and orphaned processing triggers; `services/retraining_recovery/app/main.py` — lifespan reconciliation loop (60s interval); 39 tests in `test_p8_retraining_worker.py` all pass. Phase 8 definition of done fully satisfied.
+- **Blocked/blocking:** None. Phase 9 may begin.
 - **Relevant spec constraints:** Phase 8 tables must not appear in Phase 1 migration (separation invariant). `model_versions.gate_results` is JSONB (populated by offline evaluation worker, not migration). `task_retry_states` uses plain TEXT for page_id/job_id (no FK to Phase 1 tables).
 
 ### ☐ Phase 9 — Metrics, policy loading, drift skeleton, hardening
