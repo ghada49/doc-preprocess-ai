@@ -43,6 +43,8 @@ from services.eep.app.correction.apply import CorrectionApplyRequest, _derive_co
 from services.eep.app.db.session import get_session
 from services.eep.app.main import app
 
+pytestmark = pytest.mark.usefixtures("_bypass_require_user")
+
 # ── Factories ──────────────────────────────────────────────────────────────────
 
 

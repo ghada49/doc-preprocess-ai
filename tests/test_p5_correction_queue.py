@@ -41,6 +41,8 @@ from services.eep.app.correction.workspace_schema import BranchOutputs, Correcti
 from services.eep.app.db.session import get_session
 from services.eep.app.main import app
 
+pytestmark = pytest.mark.usefixtures("_bypass_require_user")
+
 # ── Factories ──────────────────────────────────────────────────────────────────
 
 

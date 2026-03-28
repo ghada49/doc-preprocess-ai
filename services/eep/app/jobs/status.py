@@ -50,6 +50,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 
+from services.eep.app.auth import CurrentUser, assert_job_ownership, require_user
 from services.eep.app.db.models import Job, JobPage
 from services.eep.app.db.session import get_session
 from shared.schemas.eep import (
@@ -122,6 +123,7 @@ def _derive_job_status(leaf_pages: list[JobPage]) -> JobStatus:
 def get_job_status(
     job_id: str,
     db: Session = Depends(get_session),
+    user: CurrentUser = Depends(require_user),
 ) -> JobStatusResponse:
     """
     Return the current status of a processing job.
@@ -145,6 +147,8 @@ def get_job_status(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Job {job_id!r} not found.",
         )
+
+    assert_job_ownership(job, user)
 
     all_pages: list[JobPage] = db.query(JobPage).filter(JobPage.job_id == job_id).all()
 

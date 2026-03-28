@@ -114,18 +114,18 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - **Blocked/blocking:**
 - **Relevant spec constraints:**
 
-### ☐ Phase 7 — Auth, RBAC, admin/user APIs, lineage
+### ☑ Phase 7 — Auth, RBAC, admin/user APIs, lineage
 
-- ☐ Packet 7.1 — auth and JWT issuance
-- ☐ Packet 7.2 — RBAC helpers and enforcement
-- ☐ Packet 7.3 — job list endpoint
-- ☐ Packet 7.4 — admin dashboard endpoints
-- ☐ Packet 7.5 — lineage endpoint
-- ☐ Packet 7.6 — user management endpoints
+- ☑ Packet 7.1 — auth and JWT issuance
+- ☑ Packet 7.2 — RBAC helpers and enforcement
+- ☑ Packet 7.3 — job list endpoint
+- ☑ Packet 7.4 — admin dashboard endpoints
+- ☑ Packet 7.5 — lineage endpoint
+- ☑ Packet 7.6 — user management endpoints
 
-- **Summary:**
-- **Blocked/blocking:**
-- **Relevant spec constraints:**
+- **Summary:** Packets 7.1–7.6 complete. Phase 7 definition of done satisfied: JWT works ☑, RBAC works ☑, job list scoped for users / global for admins ☑, lineage response correct and complete ☑, admin user management works ☑. Packet 7.6: `POST /v1/users` (create with bcrypt hash, 409 on duplicate username, 201), `GET /v1/users` (list all, ordered by created_at ASC), `PATCH /v1/users/{user_id}/deactivate` (sets is_active=False, idempotent, 404 on unknown user_id). hashed_password never returned in any response. Implementation in `services/eep/app/admin/users.py`; 24 new tests in `test_p7_user_management.py`. Suite: 2044 passing, 137 failing (all pre-existing P4 integration test failures — unchanged).
+- **Blocked/blocking:** None. Phase 8 may begin.
+- **Relevant spec constraints:** JWT `sub` claim = user_id; `require_admin` for all three user management endpoints; `hashed_password` must never appear in any response; `IntegrityError` from DB unique constraint maps to 409; `PATCH .../deactivate` is idempotent.
 
 ### ☐ Phase 8 — MLOps plumbing
 

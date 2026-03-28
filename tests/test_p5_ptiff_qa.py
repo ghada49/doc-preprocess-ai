@@ -24,11 +24,14 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 
 from services.eep.app.correction.ptiff_qa import _check_and_release_ptiff_qa, _is_gate_satisfied
 from services.eep.app.db.session import get_session
 from services.eep.app.main import app
+
+pytestmark = pytest.mark.usefixtures("_bypass_require_user")
 
 # ── Factories ──────────────────────────────────────────────────────────────────
 

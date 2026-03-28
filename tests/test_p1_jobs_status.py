@@ -31,6 +31,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from services.eep.app.auth import CurrentUser, require_user
 from services.eep.app.db.models import Job, JobPage
 from services.eep.app.db.session import get_session
 from services.eep.app.jobs.status import _derive_job_status, router
@@ -109,10 +110,14 @@ def _mock_db(job: Job | None, pages: list[JobPage]) -> MagicMock:
 # ---------------------------------------------------------------------------
 
 
+_MOCK_ADMIN = CurrentUser(user_id="test-admin", role="admin")
+
+
 @pytest.fixture()
 def test_app() -> FastAPI:
     _app = FastAPI()
     _app.include_router(router)
+    _app.dependency_overrides[require_user] = lambda: _MOCK_ADMIN
     return _app
 
 

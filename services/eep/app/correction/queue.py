@@ -41,6 +41,7 @@ from pydantic import BaseModel
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from services.eep.app.auth import CurrentUser, assert_job_ownership, require_user
 from services.eep.app.correction.workspace_assembly import (
     PageNotInCorrectionError,
     assemble_correction_workspace,
@@ -115,6 +116,7 @@ def list_correction_queue(
     offset: int = Query(default=0, ge=0, description="Number of items to skip"),
     limit: int = Query(default=50, ge=1, le=200, description="Maximum items to return"),
     db: Session = Depends(get_session),
+    user: CurrentUser = Depends(require_user),
 ) -> CorrectionQueueResponse:
     """
     Return a paginated list of pages currently in pending_human_correction.
@@ -135,6 +137,10 @@ def list_correction_queue(
         .join(Job, Job.job_id == JobPage.job_id)
         .filter(JobPage.status == "pending_human_correction")
     )
+
+    # Scope to the authenticated user's own jobs unless they are admin.
+    if user.role != "admin":
+        q = q.filter(Job.created_by == user.user_id)
 
     if job_id is not None:
         q = q.filter(JobPage.job_id == job_id)
@@ -183,6 +189,7 @@ def get_correction_workspace(
         ),
     ),
     db: Session = Depends(get_session),
+    user: CurrentUser = Depends(require_user),
 ) -> CorrectionWorkspaceResponse:
     """
     Return the full correction workspace for a page in pending_human_correction.
@@ -198,6 +205,15 @@ def get_correction_workspace(
     - ``409`` — page exists but is not in 'pending_human_correction'
     - ``422`` — multiple sub-pages pending; re-request with sub_page_index
     """
+    # Ownership check: look up job first, return 404 if missing, 403 if not owned.
+    _job: Job | None = db.get(Job, job_id)
+    if _job is None:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Job {job_id!r} not found.",
+        )
+    assert_job_ownership(_job, user)
+
     resolved_sub: int | None = sub_page_index
 
     if resolved_sub is None:

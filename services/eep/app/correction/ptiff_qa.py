@@ -61,6 +61,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from services.eep.app.auth import CurrentUser, assert_job_ownership, require_user
 from services.eep.app.db.models import Job, JobPage
 from services.eep.app.db.page_state import advance_page_state
 from services.eep.app.db.session import get_session
@@ -366,6 +367,7 @@ def _check_and_release_ptiff_qa(db: Session, job: Job, pages: list[JobPage]) -> 
 def get_ptiff_qa_status(
     job_id: str,
     db: Session = Depends(get_session),
+    user: CurrentUser = Depends(require_user),
 ) -> PtiffQaStatusResponse:
     """
     Return the current PTIFF QA gate status for a job.
@@ -378,6 +380,7 @@ def get_ptiff_qa_status(
     - ``404`` — job not found
     """
     job = _fetch_job_or_404(db, job_id)
+    assert_job_ownership(job, user)
     pages = _leaf_pages(db, job_id)
 
     pages_pending = sum(
@@ -425,6 +428,7 @@ def approve_page(
     page_number: int,
     db: Session = Depends(get_session),
     r: redis.Redis = Depends(get_redis),
+    user: CurrentUser = Depends(require_user),
 ) -> ApprovePageResponse:
     """
     Record approval intent for a page in ptiff_qa_pending.
@@ -445,6 +449,7 @@ def approve_page(
     - ``409`` — page is not in 'ptiff_qa_pending' state
     """
     job = _fetch_job_or_404(db, job_id)
+    assert_job_ownership(job, user)
 
     qa_pages: list[JobPage] = (
         db.query(JobPage)
@@ -518,6 +523,7 @@ def approve_all(
     job_id: str,
     db: Session = Depends(get_session),
     r: redis.Redis = Depends(get_redis),
+    user: CurrentUser = Depends(require_user),
 ) -> ApproveAllResponse:
     """
     Approve all pages currently in ptiff_qa_pending for this job.
@@ -540,6 +546,7 @@ def approve_all(
     - ``404`` — job not found
     """
     job = _fetch_job_or_404(db, job_id)
+    assert_job_ownership(job, user)
 
     qa_pages: list[JobPage] = (
         db.query(JobPage)
@@ -604,6 +611,7 @@ def edit_page(
     job_id: str,
     page_number: int,
     db: Session = Depends(get_session),
+    user: CurrentUser = Depends(require_user),
 ) -> EditPageResponse:
     """
     Transition a ptiff_qa_pending page to pending_human_correction.
@@ -619,7 +627,8 @@ def edit_page(
     - ``404`` — job not found
     - ``409`` — page is not in 'ptiff_qa_pending' state
     """
-    _fetch_job_or_404(db, job_id)
+    job = _fetch_job_or_404(db, job_id)
+    assert_job_ownership(job, user)
 
     qa_pages: list[JobPage] = (
         db.query(JobPage)

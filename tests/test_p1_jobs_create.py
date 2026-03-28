@@ -38,6 +38,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from sqlalchemy.orm import Session
 
+from services.eep.app.auth import CurrentUser, require_user
 from services.eep.app.db.models import Job, JobPage
 from services.eep.app.db.session import get_session
 from services.eep.app.jobs.create import router
@@ -112,11 +113,15 @@ def _make_mock_session() -> MagicMock:
 # ---------------------------------------------------------------------------
 
 
+_MOCK_ADMIN = CurrentUser(user_id="test-admin", role="admin")
+
+
 @pytest.fixture()
 def test_app() -> FastAPI:
     """Minimal FastAPI app with only the jobs router."""
     _app = FastAPI()
     _app.include_router(router)
+    _app.dependency_overrides[require_user] = lambda: _MOCK_ADMIN
     return _app
 
 
@@ -280,9 +285,9 @@ class TestJobDbRecord:
         client.post("/v1/jobs", json=_MINIMAL_BODY)
         assert _added_jobs(mock_db)[0].policy_version == "v1.0"
 
-    def test_created_by_is_none(self, client: TestClient, mock_db: MagicMock) -> None:
+    def test_created_by_is_set_from_jwt(self, client: TestClient, mock_db: MagicMock) -> None:
         client.post("/v1/jobs", json=_MINIMAL_BODY)
-        assert _added_jobs(mock_db)[0].created_by is None
+        assert _added_jobs(mock_db)[0].created_by == "test-admin"
 
     def test_db_commit_called(self, client: TestClient, mock_db: MagicMock) -> None:
         client.post("/v1/jobs", json=_MINIMAL_BODY)
