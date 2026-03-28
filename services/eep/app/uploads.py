@@ -29,8 +29,7 @@ S3 env vars (shared with shared/io/storage.py)
 
 Auth
 ----
-Authentication is enforced in Phase 7 (Packet 7.1).  This module contains
-no auth logic.
+Authentication: require_user (Packet 7.2).
 """
 
 from __future__ import annotations

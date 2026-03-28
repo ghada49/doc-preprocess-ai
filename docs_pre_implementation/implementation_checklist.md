@@ -114,18 +114,18 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - **Blocked/blocking:**
 - **Relevant spec constraints:**
 
-### [~] Phase 7 — Auth, RBAC, admin/user APIs, lineage
+### ☑ Phase 7 — Auth, RBAC, admin/user APIs, lineage
 
 - ☑ Packet 7.1 — auth and JWT issuance
 - ☑ Packet 7.2 — RBAC helpers and enforcement
 - ☑ Packet 7.3 — job list endpoint
 - ☑ Packet 7.4 — admin dashboard endpoints
 - ☑ Packet 7.5 — lineage endpoint
-- ☐ Packet 7.6 — user management endpoints
+- ☑ Packet 7.6 — user management endpoints
 
-- **Summary:** Packets 7.1–7.5 complete. Packet 7.1: `services/eep/app/auth.py` implemented with `get_password_hash`/`verify_password` (bcrypt direct), `create_access_token`/`decode_token` (python-jose HS256), `TokenRequest`/`TokenResponse`/`CurrentUser` schemas, `require_user`/`require_admin` FastAPI dependencies, `assert_job_ownership` helper, `POST /v1/auth/token` router. Packet 7.2: `require_user` wired to all 9 protected endpoints; `assert_job_ownership` added to all endpoints that load a job; `Job.created_by` populated from JWT `sub` in `create.py`; `GET /v1/correction-queue` scoped to `created_by == user.user_id` for non-admin users. Packet 7.3: `GET /v1/jobs` with pagination, filters (search/status/pipeline_mode/created_by/from_date/to_date), sorting (created_at DESC), ownership scoping (non-admin sees own jobs only). Packet 7.4: `GET /v1/admin/dashboard-summary` (7 KPI fields, Redis LLEN for active_workers_count) and `GET /v1/admin/service-health` (6 fields, window_hours 1–720, service_invocations ILIKE patterns per IEP stage). Auth fix: `HTTPBearer(auto_error=False)` ensures missing token returns 401 not 403. Tests: 23 new tests in `test_p7_admin_dashboard.py`. Suite: 2000 passing, 137 failing (all pre-existing P4 integration test failures — unchanged by Phase 7 work).
-- **Blocked/blocking:** None. Packet 7.6 may begin.
-- **Relevant spec constraints:** JWT `sub` claim = user_id; `require_admin` for admin-only endpoints; `active_workers_count` sourced from Redis LLEN `QUEUE_PAGE_TASKS_PROCESSING`; service health patterns: iep1a%/iep1b%/iep1c% preprocessing, iep1d% rectification, iep2% layout; lineage endpoint returns all page_lineage rows for (job_id, page_number) — 1 unsplit or 2 split — with service_invocations embedded per row and quality_gate_log rows in separate list.
+- **Summary:** Packets 7.1–7.6 complete. Phase 7 definition of done satisfied: JWT works ☑, RBAC works ☑, job list scoped for users / global for admins ☑, lineage response correct and complete ☑, admin user management works ☑. Packet 7.6: `POST /v1/users` (create with bcrypt hash, 409 on duplicate username, 201), `GET /v1/users` (list all, ordered by created_at ASC), `PATCH /v1/users/{user_id}/deactivate` (sets is_active=False, idempotent, 404 on unknown user_id). hashed_password never returned in any response. Implementation in `services/eep/app/admin/users.py`; 24 new tests in `test_p7_user_management.py`. Suite: 2044 passing, 137 failing (all pre-existing P4 integration test failures — unchanged).
+- **Blocked/blocking:** None. Phase 8 may begin.
+- **Relevant spec constraints:** JWT `sub` claim = user_id; `require_admin` for all three user management endpoints; `hashed_password` must never appear in any response; `IntegrityError` from DB unique constraint maps to 409; `PATCH .../deactivate` is idempotent.
 
 ### ☐ Phase 8 — MLOps plumbing
 
