@@ -101,18 +101,19 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - **Blocked/blocking:** None. Phase 6 may begin.
 - **Relevant spec constraints:** `pending_human_correction` is worker-terminal but not leaf-final; corrections always return to `ptiff_qa_pending` before proceeding downstream (spec Section 1.6); `pending_human_correction → layout_detection` and `pending_human_correction → accepted` are NOT valid transitions; PTIFF QA gate is never bypassed for non-auto_continue mode; split parents must not block the PTIFF QA gate for their children in manual mode; `_maybe_close_split_parent` is only called after `gate_released=True`; Phase 6 IEP2 worker must call the split-parent closure check after layout_detection pages complete.
 
-### ☐ Phase 6 — IEP2 + layout consensus
+### ☑ Phase 6 — IEP2 + layout consensus
 
 - ☑ Packet 6.1 — IEP2A service shell and detect path
 - ☑ Packet 6.2 — IEP2A postprocessing
 - ☑ Packet 6.3 — IEP2B service shell and detect path
 - ☑ Packet 6.4 — IEP2B canonical class mapping and postprocessing
 - ☑ Packet 6.5 — layout consensus gate
-- ☐ Packet 6.6 — layout integration tests
+- ☑ Packet 6.6 — layout integration tests
+- ☑ Packet 6.7 — real-model inference paths for IEP2A and IEP2B (behind IEP2A_USE_REAL_MODEL / IEP2B_USE_REAL_MODEL toggle; stub remains default)
 
-- **Summary:**
-- **Blocked/blocking:**
-- **Relevant spec constraints:**
+- **Summary:** IEP2A (Detectron2) and IEP2B (DocLayout-YOLO) services now implement real inference paths behind env-var toggles, preserving all external contracts. IEP2A real path: `services/iep2a/app/model.py` (Detectron2 singleton, thread-safe lazy load, PubLayNet R101-FPN weights) + `services/iep2a/app/inference.py` (image I/O via shared storage backend, run_detectron2, raw→Region conversion). IEP2B real path: `services/iep2b/app/model.py` (DocLayout-YOLO YOLOv10 singleton, HuggingFace or local weights) + `services/iep2b/app/inference.py` (RGB image I/O, run_doclayout_yolo, raw→Region via class_mapping). Both detect.py files dispatch to stub or real path at call time; stub remains active when USE_REAL_MODEL is unset. /ready reflects actual model-loaded state in real mode. 36 new integration tests added covering model readiness, real-mode 500 contract, region ID/type invariants, IEP2B native→canonical mapping, and toggle isolation. 2356 tests pass (88 Phase 6 integration = 52 original + 36 new).
+- **Blocked/blocking:** None. Phase 7 may begin.
+- **Relevant spec constraints:** Spec Section 7.4: IEP2A regions are canonical output when agreed=True; single-model auto-acceptance is prohibited. `ptiff_qa_pending` is non-terminal; layout must not execute until PTIFF QA gate releases. `layout_detection → accepted` only when agreed=True AND consensus_confidence ≥ 0.6; `layout_detection → review` for all consensus failures. Layout JSON artifact path: `{page_number}.json` (unsplit) / `{page_number}_{sub_index}.json` (split) — Phase 6 layout worker (not yet implemented) must write this artifact before transitioning to `accepted`.
 
 ### ☐ Phase 7 — Auth, RBAC, admin/user APIs, lineage
 

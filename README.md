@@ -52,6 +52,56 @@ make health
 make test
 ```
 
+## Model serving
+
+`IEP2A` and `IEP2B` keep their existing HTTP contracts and detector semantics:
+
+- `IEP2A` serves Detectron2-based PubLayNet layout detection by default and
+  can optionally run PaddleOCR PP-DocLayoutV2 behind
+  `IEP2A_LAYOUT_BACKEND=paddleocr`.
+- `IEP2B` serves DocLayout-YOLO layout detection.
+
+Production serving is local-artifact only:
+
+- candidate or staging artifacts may live in MLflow or S3 during the MLOps lifecycle
+- once a model version is approved, build a versioned inference image that contains the exact checkpoint
+- bake the matching artifact version sidecar alongside the checkpoint as `<weights>.version`
+- runtime startup loads weights only from local in-image paths under `/opt/models`
+- `/ready` depends only on successful local model load, never on remote downloads
+
+Default real-mode artifact locations:
+
+- `IEP2A_WEIGHTS_PATH=/opt/models/iep2a/model_final.pth`
+- `IEP2A_PADDLE_MODEL_DIR=/opt/models/iep2a/paddle/PP-DocLayoutV2`
+- `IEP2B_WEIGHTS_PATH=/opt/models/iep2b/doclayout_yolo_docstructbench_imgsz1024.pt`
+- `IEP2A_CONFIG_PATH` is optional; if unset, `IEP2A` uses the packaged
+  Detectron2 `faster_rcnn_R_50_FPN_3x` config shipped inside the image
+
+Local development overrides remain available:
+
+- `docker-compose.yml` mounts `./models/iep2a` to `/dev-models/iep2a`
+- `docker-compose.yml` mounts `./models/iep2b` to `/dev-models/iep2b`
+- set `IEP2A_LOCAL_WEIGHTS_PATH`, `IEP2A_PADDLE_LOCAL_MODEL_DIR`, or `IEP2B_LOCAL_WEIGHTS_PATH`
+  to use those mounted files in real mode
+
+Model version metadata:
+
+- production images must place a `<weights>.version` file next to each baked checkpoint
+- that sidecar becomes the authoritative `model_version` logged at startup and returned by `/v1/layout-detect`
+- `IEP2A_MODEL_VERSION` and `IEP2B_MODEL_VERSION` are validation or dev-override inputs only; if they disagree with a sidecar, startup fails
+- PaddleOCR uses the same rule, except the sidecar is next to the baked model
+  directory: `PP-DocLayoutV2.version`
+
+Typical production image build flow:
+
+```bash
+# Place approved artifacts in the local build context without committing them.
+# See models/iep2a/README.txt and models/iep2b/README.txt for expected names.
+
+docker compose build iep2a iep2b
+docker compose up -d iep2a iep2b
+```
+
 ## Repository structure
 
 ```

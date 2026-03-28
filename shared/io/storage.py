@@ -31,8 +31,6 @@ import pathlib
 from typing import Any, Protocol
 from urllib.parse import urlparse
 
-import boto3
-
 # ── Protocol ───────────────────────────────────────────────────────────────────
 
 
@@ -99,6 +97,13 @@ class S3Backend:
     """
 
     def __init__(self) -> None:
+        try:
+            import boto3
+        except ImportError as exc:
+            raise RuntimeError(
+                "boto3 is required for s3:// artifact access but is not installed"
+            ) from exc
+
         self._client: Any = boto3.client(
             "s3",
             endpoint_url=os.environ.get("S3_ENDPOINT_URL"),

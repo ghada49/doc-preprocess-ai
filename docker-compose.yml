@@ -365,6 +365,7 @@ services:
       dockerfile: services/iep1a/Dockerfile
     volumes:
       - .:/app
+      - ./test_data:/app/test_data
     environment:
       PYTHONPATH: /app
       PYTHONDONTWRITEBYTECODE: "1"
@@ -418,44 +419,103 @@ services:
     command: ["uvicorn", "services.iep1d.app.main:app", "--host", "0.0.0.0", "--port", "8003", "--reload"]
 
   # ── IEP2A — Detectron2 layout detection ──────────────────────────────────────
+  #
+  # Real-model build (optional):
+  #   Set IEP2A_ENABLE_REAL_MODEL=true in your shell or .env, then:
+  #     docker compose build iep2a
+  #   Enable inference at runtime by also setting IEP2A_USE_REAL_MODEL=true
+  #   in .env.  See services/iep2a/Dockerfile for full instructions.
 
   iep2a:
     build:
       context: .
       dockerfile: services/iep2a/Dockerfile
+      args:
+        # Pass IEP2A_ENABLE_REAL_MODEL=true to install ML deps at build time.
+        # Defaults to false → base/stub image.
+        ENABLE_REAL_MODEL: "${IEP2A_ENABLE_REAL_MODEL:-false}"
+        # Pass IEP2A_ENABLE_PADDLE_BACKEND=true to install PaddleOCR PP-DocLayoutV2
+        # support alongside the default Detectron2 backend.
+        ENABLE_PADDLE_BACKEND: "${IEP2A_ENABLE_PADDLE_BACKEND:-false}"
     volumes:
       - .:/app
+      # Development-only override for a mounted PubLayNet checkpoint.
+      # Mounted under /dev-models so it cannot shadow the baked /opt/models path.
+      - "${IEP2A_LOCAL_WEIGHTS_DIR:-./models/iep2a}:/dev-models/iep2a:ro"
     environment:
       PYTHONPATH: /app
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
+      # IEP2A_USE_REAL_MODEL is intentionally NOT set here.
+      # Add IEP2A_USE_REAL_MODEL=true to .env to enable real inference.
     env_file: .env
     ports:
       - "8004:8004"
     networks:
       - libraryai-net
     restart: unless-stopped
-    command: ["uvicorn", "services.iep2a.app.main:app", "--host", "0.0.0.0", "--port", "8004", "--reload"]
+    command:
+      [
+        "uvicorn",
+        "services.iep2a.app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8004",
+        "--reload",
+        "--reload-dir",
+        "/app/services/iep2a",
+        "--reload-dir",
+        "/app/shared",
+      ]
 
   # ── IEP2B — DocLayout-YOLO layout detection ───────────────────────────────────
+  #
+  # Real-model build (optional):
+  #   Set IEP2B_ENABLE_REAL_MODEL=true in your shell or .env, then:
+  #     docker compose build iep2b
+  #   Enable inference at runtime by also setting IEP2B_USE_REAL_MODEL=true
+  #   in .env.  See services/iep2b/Dockerfile for full instructions.
 
   iep2b:
     build:
       context: .
       dockerfile: services/iep2b/Dockerfile
+      args:
+        # Pass IEP2B_ENABLE_REAL_MODEL=true to install ML deps at build time.
+        # Defaults to false → base/stub image.
+        ENABLE_REAL_MODEL: "${IEP2B_ENABLE_REAL_MODEL:-false}"
     volumes:
       - .:/app
+      # Development-only override for a mounted DocLayout-YOLO checkpoint.
+      # Mounted under /dev-models so it cannot shadow the baked /opt/models path.
+      - "${IEP2B_LOCAL_WEIGHTS_DIR:-./models/iep2b}:/dev-models/iep2b:ro"
     environment:
       PYTHONPATH: /app
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
+      # IEP2B_USE_REAL_MODEL is intentionally NOT set here.
+      # Add IEP2B_USE_REAL_MODEL=true to .env to enable real inference.
     env_file: .env
     ports:
       - "8005:8005"
     networks:
       - libraryai-net
     restart: unless-stopped
-    command: ["uvicorn", "services.iep2b.app.main:app", "--host", "0.0.0.0", "--port", "8005", "--reload"]
+    command:
+      [
+        "uvicorn",
+        "services.iep2b.app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "8005",
+        "--reload",
+        "--reload-dir",
+        "/app/services/iep2b",
+        "--reload-dir",
+        "/app/shared",
+      ]
 
 # ── Volumes ───────────────────────────────────────────────────────────────────
 

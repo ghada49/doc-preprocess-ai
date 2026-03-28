@@ -1,13 +1,56 @@
-# pytorch/pytorch includes CUDA 11.8 + cuDNN 8 + Python 3.10 (3.11 not available in this tag)
-# Service-specific ML model deps (ultralytics, detectron2, etc.) are installed in Phase 2/6
-FROM pytorch/pytorch:2.2.2-cuda11.8-cudnn8-runtime
+# =============================================================================
+# IEP2B - DocLayout-YOLO layout detection service
+# =============================================================================
+#
+# Build modes
+#   Base (default):
+#     docker build -t libraryai/iep2b:base -f services/iep2b/Dockerfile .
+#
+#   Real model:
+#     docker build --build-arg ENABLE_REAL_MODEL=true \
+#         -t libraryai/iep2b:real \
+#         -f services/iep2b/Dockerfile .
+#
+# Approved serving images must bake the exact checkpoint and version sidecar into:
+#   /opt/models/iep2b/doclayout_yolo_docstructbench_imgsz1024.pt
+#   /opt/models/iep2b/doclayout_yolo_docstructbench_imgsz1024.pt.version
+#
+# Local development may mount a replacement file and point
+# IEP2B_LOCAL_WEIGHTS_PATH at it, but runtime serving never downloads
+# weights on startup.
+#
+# =============================================================================
 
-# Install system dependencies
-RUN apt-get update \
-    && apt-get install -y --no-install-recommends curl \
-    && rm -rf /var/lib/apt/lists/*
+FROM python:3.11-slim-bookworm
 
-# Install uv
+ARG ENABLE_REAL_MODEL=false
+
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list ]; then \
+      sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list; \
+    fi; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    for i in 1 2 3; do \
+      apt-get update && break || sleep 5; \
+    done; \
+    apt-get install -y --no-install-recommends --fix-missing \
+      -o Acquire::Retries=5 \
+      -o Acquire::http::Timeout=30 \
+      -o Acquire::https::Timeout=30 \
+      curl; \
+    if [ "$ENABLE_REAL_MODEL" = "true" ]; then \
+      apt-get install -y --no-install-recommends --fix-missing \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Timeout=30 \
+        -o Acquire::https::Timeout=30 \
+        libgomp1 \
+        libgl1 \
+        libglib2.0-0; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
+
 COPY --from=ghcr.io/astral-sh/uv:0.4.18 /uv /usr/local/bin/uv
 
 WORKDIR /app
@@ -16,12 +59,21 @@ ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Install minimal runtime deps needed for health/metrics endpoints
-# ML model deps (ultralytics, detectron2, etc.) are added in Phase 2/6
 RUN uv pip install --system \
     "fastapi>=0.110.0" \
     "uvicorn[standard]>=0.27.0" \
     "prometheus-client>=0.20.0"
 
-# Source code is volume-mounted in development (see docker-compose.yml)
-# CMD is supplied by docker-compose.yml
+COPY services/iep2b/requirements-real.txt /tmp/requirements-real-iep2b.txt
+COPY models/iep2b/ /opt/models/iep2b/
+
+RUN if [ "$ENABLE_REAL_MODEL" = "true" ]; then \
+      pip install --no-cache-dir \
+        "torch==2.1.0" \
+        --index-url https://download.pytorch.org/whl/cpu \
+      && pip install --no-cache-dir \
+        -r /tmp/requirements-real-iep2b.txt; \
+    fi
+
+# Source code is volume-mounted in development (see docker-compose.yml).
+# CMD is supplied by docker-compose.yml.
