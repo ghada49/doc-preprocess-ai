@@ -118,7 +118,7 @@ A phase must never be marked complete if any item in its Definition of Done rema
 
 - ☑ Packet 7.1 — auth and JWT issuance
 - ☑ Packet 7.2 — RBAC helpers and enforcement
-- ☐ Packet 7.3 — job list endpoint
+- ☑ Packet 7.3 — job list endpoint
 - ☐ Packet 7.4 — admin dashboard endpoints
 - ☐ Packet 7.5 — lineage endpoint
 - ☐ Packet 7.6 — user management endpoints

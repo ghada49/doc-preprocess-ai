@@ -8,6 +8,7 @@ Real implementations:
   POST /v1/uploads/jobs/presign → LIVE (Packet 1.7b)
   POST /v1/jobs                → LIVE (Packet 1.8)
   GET  /v1/jobs/{job_id}       → LIVE (Packet 1.9)
+  GET  /v1/jobs                → LIVE (Packet 7.3)
 """
 
 from fastapi import FastAPI
@@ -18,6 +19,7 @@ from services.eep.app.correction.ptiff_qa import router as ptiff_qa_router
 from services.eep.app.correction.queue import router as correction_queue_router
 from services.eep.app.correction.reject import router as correction_reject_router
 from services.eep.app.jobs.create import router as jobs_router
+from services.eep.app.jobs.list import router as job_list_router
 from services.eep.app.jobs.status import router as job_status_router
 from services.eep.app.uploads import router as uploads_router
 from shared.logging_config import setup_logging
@@ -44,6 +46,7 @@ app.include_router(auth_router)
 # ── Phase 1 routers ────────────────────────────────────────────────────────────
 app.include_router(uploads_router)
 app.include_router(jobs_router)
+app.include_router(job_list_router)
 app.include_router(job_status_router)
 
 # ── Phase 5 routers ────────────────────────────────────────────────────────────
