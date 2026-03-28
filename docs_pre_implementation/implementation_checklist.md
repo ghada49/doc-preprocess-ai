@@ -130,7 +130,7 @@ A phase must never be marked complete if any item in its Definition of Done rema
 ### [~] Phase 8 — MLOps plumbing
 
 - ☑ Packet 8.1 — Phase 8 migration
-- ☐ Packet 8.2 — policy endpoints
+- ☑ Packet 8.2 — policy endpoints
 - ☐ Packet 8.3 — promotion / rollback API (offline gate evaluation for IEP1)
 - ☐ Packet 8.4 — retraining webhook and trigger recording
 - ☐ Packet 8.5 — retraining worker, offline evaluation, and recovery service
