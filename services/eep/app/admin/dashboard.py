@@ -68,6 +68,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, datetime, timedelta
+from typing import cast
 
 import redis as redis_lib
 from fastapi import APIRouter, Depends, Query
@@ -183,9 +184,7 @@ def get_dashboard_summary(
 
     # auto_accept_rate: accepted / all terminal (all-time)
     total_terminal: int = (
-        db.query(func.count(JobPage.page_id))
-        .filter(JobPage.status.in_(_TERMINAL_STATES))
-        .scalar()
+        db.query(func.count(JobPage.page_id)).filter(JobPage.status.in_(_TERMINAL_STATES)).scalar()
         or 0
     )
     total_accepted: int = (
@@ -225,7 +224,7 @@ def get_dashboard_summary(
     )
 
     # active workers: tasks currently held in the processing list
-    active_workers_count: int = r.llen(QUEUE_PAGE_TASKS_PROCESSING)
+    active_workers_count: int = cast(int, r.llen(QUEUE_PAGE_TASKS_PROCESSING))
 
     # shadow evaluations: jobs submitted with shadow_mode
     shadow_evaluations_count: int = (

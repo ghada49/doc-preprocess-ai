@@ -607,6 +607,14 @@ def approve_all(
     tags=["ptiff-qa"],
     summary="Send a PTIFF QA page to human correction",
 )
+@router.post(
+    "/v1/jobs/{job_id}/pages/{page_number}/ptiff-qa/edit-and-return",
+    response_model=EditPageResponse,
+    status_code=status.HTTP_200_OK,
+    tags=["ptiff-qa"],
+    summary="Send a PTIFF QA page to human correction (alias for /edit)",
+    include_in_schema=True,
+)
 def edit_page(
     job_id: str,
     page_number: int,

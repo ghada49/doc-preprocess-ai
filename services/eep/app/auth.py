@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import os
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, status
@@ -45,21 +45,19 @@ from services.eep.app.db.session import get_session
 
 _SECRET_KEY: str = os.environ.get("JWT_SECRET_KEY", "dev-secret-key-change-in-production")
 _ALGORITHM: str = os.environ.get("JWT_ALGORITHM", "HS256")
-_ACCESS_TOKEN_EXPIRE_MINUTES: int = int(
-    os.environ.get("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "60")
-)
+_ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.environ.get("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
 
 # ── Password helpers ───────────────────────────────────────────────────────────
 
 
 def get_password_hash(password: str) -> str:
     """Return bcrypt hash of *password*. Used when creating users (Packet 7.6)."""
-    return bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode()
+    return cast(str, bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode())
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Return True iff *plain_password* matches the stored bcrypt *hashed_password*."""
-    return bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
+    return cast(bool, bcrypt.checkpw(plain_password.encode(), hashed_password.encode()))
 
 
 # ── JWT helpers ─────────────────────────────────────────────────────────────────
@@ -82,14 +80,16 @@ def create_access_token(
         Encoded JWT string.
     """
     expire = datetime.now(tz=UTC) + (
-        expires_delta if expires_delta is not None else timedelta(minutes=_ACCESS_TOKEN_EXPIRE_MINUTES)
+        expires_delta
+        if expires_delta is not None
+        else timedelta(minutes=_ACCESS_TOKEN_EXPIRE_MINUTES)
     )
     payload: dict[str, Any] = {
         "sub": user_id,
         "role": role,
         "exp": expire,
     }
-    return jwt.encode(payload, _SECRET_KEY, algorithm=_ALGORITHM)
+    return cast(str, jwt.encode(payload, _SECRET_KEY, algorithm=_ALGORITHM))
 
 
 def decode_token(token: str) -> dict[str, Any]:

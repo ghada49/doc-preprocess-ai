@@ -19,25 +19,32 @@ Real implementations:
   PATCH /v1/policy                        → LIVE (Packet 8.2)
   POST /v1/models/promote                 → LIVE (Packet 8.3)
   POST /v1/models/rollback                → LIVE (Packet 8.3)
-  POST /v1/retraining/webhook             → LIVE (Packet 8.4)
+  POST /v1/retraining/webhook             → LIVE (Packet 8.4; now requires X-Webhook-Secret)
+  GET  /v1/retraining/status              → LIVE (frontend integration)
+  GET  /v1/models/evaluation              → LIVE (frontend integration)
+  POST /v1/models/evaluate                → LIVE (frontend integration)
+  POST /v1/artifacts/presign-read         → LIVE (browser artifact access)
 """
 
 from fastapi import FastAPI
 
-from services.eep.app.auth import router as auth_router
-from services.eep.app.policy_api import router as policy_router
-from services.eep.app.promotion_api import router as promotion_router
-from services.eep.app.retraining_webhook import router as retraining_webhook_router
 from services.eep.app.admin.dashboard import router as admin_dashboard_router
 from services.eep.app.admin.users import router as admin_users_router
+from services.eep.app.artifacts_api import router as artifacts_router
+from services.eep.app.auth import router as auth_router
 from services.eep.app.correction.apply import router as correction_apply_router
-from services.eep.app.lineage_api import router as lineage_router
 from services.eep.app.correction.ptiff_qa import router as ptiff_qa_router
 from services.eep.app.correction.queue import router as correction_queue_router
 from services.eep.app.correction.reject import router as correction_reject_router
 from services.eep.app.jobs.create import router as jobs_router
 from services.eep.app.jobs.list import router as job_list_router
 from services.eep.app.jobs.status import router as job_status_router
+from services.eep.app.lineage_api import router as lineage_router
+from services.eep.app.models_api import router as models_api_router
+from services.eep.app.policy_api import router as policy_router
+from services.eep.app.promotion_api import router as promotion_router
+from services.eep.app.retraining_api import router as retraining_api_router
+from services.eep.app.retraining_webhook import router as retraining_webhook_router
 from services.eep.app.uploads import router as uploads_router
 from shared.logging_config import setup_logging
 from shared.middleware import configure_observability
@@ -75,6 +82,11 @@ app.include_router(lineage_router)
 app.include_router(policy_router)
 app.include_router(promotion_router)
 app.include_router(retraining_webhook_router)
+
+# ── Frontend integration routers ────────────────────────────────────────────────
+app.include_router(retraining_api_router)
+app.include_router(models_api_router)
+app.include_router(artifacts_router)
 
 # ── Phase 5 routers ────────────────────────────────────────────────────────────
 app.include_router(ptiff_qa_router)
