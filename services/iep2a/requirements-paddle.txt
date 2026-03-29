@@ -1,0 +1,18 @@
+# IEP2A PaddleOCR layout backend dependencies
+# Installed only when services/iep2a/Dockerfile is built with
+# --build-arg ENABLE_PADDLE_BACKEND=true.
+#
+# paddlepaddle: CPU-only wheel. For GPU inference replace with paddlepaddle-gpu.
+# paddleocr[doc-parser] 3.x: provides the official LayoutDetection API used for
+# PP-DocLayoutV2 layout analysis.
+#
+# Production serving is local-artifact-first. Bake the model directory into the
+# image and point IEP2A_PADDLE_MODEL_DIR at it.
+# Development-only online download can be enabled explicitly with
+# IEP2A_PADDLE_ALLOW_ONLINE_DOWNLOAD=true.
+
+paddlepaddle>=3.0.0
+paddleocr[doc-parser]>=3.0.0
+huggingface_hub>=0.23
+opencv-python-headless>=4.8.0
+numpy>=1.24.0,<2.0

@@ -60,6 +60,10 @@ Thumbs.db
 *.ckpt
 *.safetensors
 *.bin
+models/iep2a/*
+!models/iep2a/README.txt
+models/iep2b/*
+!models/iep2b/README.txt
 
 # MLflow artifacts
 mlruns/
@@ -77,3 +81,5 @@ logs/
 *.tfstate
 *.tfstate.backup
 .terraform/
+
+test_data/

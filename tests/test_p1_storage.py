@@ -11,8 +11,11 @@ Definition of done:
   - local and S3-compatible interfaces exist
 """
 
+import importlib
 import os
-from collections.abc import Iterator
+import sys
+from builtins import __import__ as builtin_import
+from collections.abc import Iterator, Mapping
 
 import boto3
 import pytest
@@ -187,6 +190,31 @@ class TestGetBackend:
     def test_error_message_names_scheme(self) -> None:
         with pytest.raises(ValueError, match="gs"):
             get_backend("gs://bucket/key")
+
+    def test_file_backend_does_not_require_boto3_installed(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.delitem(sys.modules, "shared.io.storage", raising=False)
+        monkeypatch.delitem(sys.modules, "boto3", raising=False)
+
+        def guarded_import(
+            name: str,
+            globals: Mapping[str, object] | None = None,
+            locals: Mapping[str, object] | None = None,
+            fromlist: tuple[str, ...] = (),
+            level: int = 0,
+        ) -> object:
+            if name == "boto3":
+                raise ImportError("No module named 'boto3'")
+            return builtin_import(name, globals, locals, fromlist, level)
+
+        monkeypatch.setattr("builtins.__import__", guarded_import)
+
+        storage = importlib.import_module("shared.io.storage")
+
+        backend = storage.get_backend("file:///some/path/artifact.tiff")
+        assert isinstance(backend, storage.LocalFileBackend)
 
 
 # ── StorageBackend Protocol compliance ────────────────────────────────────────

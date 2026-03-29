@@ -148,7 +148,7 @@ class LayoutDetectResponse(BaseModel):
         region_type_histogram — counts per RegionType string key
         column_structure      — inferred column layout; None if no text_block regions
         model_version         — model version string (e.g. git SHA or semver tag)
-        detector_type         — "detectron2" for IEP2A, "doclayout_yolo" for IEP2B
+        detector_type         — "detectron2" or "paddleocr" for IEP2A; "doclayout_yolo" for IEP2B
         processing_time_ms    — wall-clock elapsed time in ms (>= 0)
         warnings              — advisory messages; empty list if none
     """
@@ -159,7 +159,7 @@ class LayoutDetectResponse(BaseModel):
     region_type_histogram: dict[str, int]
     column_structure: ColumnStructure | None = None
     model_version: str
-    detector_type: Literal["detectron2", "doclayout_yolo"]
+    detector_type: Literal["detectron2", "doclayout_yolo", "paddleocr"]
     processing_time_ms: Annotated[float, Field(ge=0.0)]
     warnings: list[str]
 
@@ -191,6 +191,8 @@ class LayoutConsensusResult(BaseModel):
                                 type_histogram_match; always False in single-model fallback
         consensus_confidence  — 0.6 * match_ratio + 0.2 * mean_iou +
                                 0.2 * histogram_match (float in [0, 1])
+        single_model_mode     — True when IEP2B was unavailable; agreed is
+                                always False in this case (spec Section 7.4)
     """
 
     iep2a_region_count: int
@@ -202,3 +204,4 @@ class LayoutConsensusResult(BaseModel):
     type_histogram_match: bool
     agreed: bool
     consensus_confidence: float
+    single_model_mode: bool

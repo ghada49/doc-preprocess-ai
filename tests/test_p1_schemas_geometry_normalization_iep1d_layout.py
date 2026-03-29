@@ -650,6 +650,7 @@ class TestLayoutConsensusResult:
             type_histogram_match=True,
             agreed=True,
             consensus_confidence=0.82,
+            single_model_mode=False,
         )
         assert r.agreed is True
 
@@ -664,6 +665,7 @@ class TestLayoutConsensusResult:
             type_histogram_match=False,
             agreed=False,
             consensus_confidence=0.0,
+            single_model_mode=True,
         )
         assert r.agreed is False
 
@@ -678,6 +680,7 @@ class TestLayoutConsensusResult:
             type_histogram_match=True,
             agreed=True,
             consensus_confidence=0.87,
+            single_model_mode=False,
         )
         dumped = r.model_dump()
         restored = LayoutConsensusResult(**dumped)
