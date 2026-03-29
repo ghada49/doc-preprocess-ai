@@ -83,6 +83,9 @@ Local development overrides remain available:
 - `docker-compose.yml` mounts `./models/iep2b` to `/dev-models/iep2b`
 - set `IEP2A_LOCAL_WEIGHTS_PATH`, `IEP2A_PADDLE_LOCAL_MODEL_DIR`, or `IEP2B_LOCAL_WEIGHTS_PATH`
   to use those mounted files in real mode
+- local Paddle model loads disable Paddle's model-source connectivity check by
+  default; override with `IEP2A_PADDLE_DISABLE_MODEL_SOURCE_CHECK=false` only
+  if you intentionally want that upstream probe
 
 Model version metadata:
 

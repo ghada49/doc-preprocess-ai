@@ -20,6 +20,10 @@ Relevant env vars:
     IEP2A_PADDLE_ALLOW_ONLINE_DOWNLOAD dev-only escape hatch; default false
     IEP2A_PADDLE_MODEL_SOURCE          optional upstream source selector
                                        (mirrors to PADDLE_PDX_MODEL_SOURCE)
+    IEP2A_PADDLE_DISABLE_MODEL_SOURCE_CHECK
+                                       disables Paddle hoster connectivity
+                                       checks; defaults to true for local model
+                                       directories
     IEP2A_PADDLE_DEVICE                "cpu" (default) or "gpu:0" style string
 
 Result parsing expects official PP-DocLayoutV2 boxes containing:
@@ -51,6 +55,7 @@ _DEFAULT_MODEL_NAME = "PP-DocLayoutV2"
 _DEFAULT_MODEL_DIR = Path("/opt/models/iep2a/paddle/PP-DocLayoutV2")
 _DEFAULT_MODEL_VERSION = "paddleocr-pp-doclayoutv2"
 _OFFICIAL_MODEL_SOURCE_ENV = "PADDLE_PDX_MODEL_SOURCE"
+_OFFICIAL_DISABLE_SOURCE_CHECK_ENV = "PADDLE_PDX_DISABLE_MODEL_SOURCE_CHECK"
 _TRUE_VALUES = {"1", "true", "yes", "on"}
 
 
@@ -311,10 +316,14 @@ class PaddleOCRBackend(LayoutBackend):
             ).strip() or str(_DEFAULT_MODEL_DIR)
             local_model_override = os.environ.get("IEP2A_PADDLE_LOCAL_MODEL_DIR", "").strip()
             model_source = os.environ.get("IEP2A_PADDLE_MODEL_SOURCE", "").strip()
+            disable_source_check = os.environ.get(
+                "IEP2A_PADDLE_DISABLE_MODEL_SOURCE_CHECK", ""
+            ).strip()
             device = os.environ.get("IEP2A_PADDLE_DEVICE", "cpu").strip() or "cpu"
 
             active_model_dir = local_model_override or requested_model_dir
             resolved_model_source = "unresolved"
+            resolved_disable_source_check = disable_source_check or None
             resolved_model_version = (
                 os.environ.get("IEP2A_PADDLE_MODEL_VERSION", _DEFAULT_MODEL_VERSION).strip()
                 or _DEFAULT_MODEL_VERSION
@@ -329,6 +338,7 @@ class PaddleOCRBackend(LayoutBackend):
                     "local_model_override": local_model_override or None,
                     "active_model_dir": active_model_dir,
                     "model_source": resolved_model_source,
+                    "disable_model_source_check": resolved_disable_source_check,
                     "device": device,
                     "model_name": _DEFAULT_MODEL_NAME,
                     "model_version": resolved_model_version,
@@ -356,6 +366,12 @@ class PaddleOCRBackend(LayoutBackend):
 
                 if model_source:
                     os.environ[_OFFICIAL_MODEL_SOURCE_ENV] = model_source
+                if disable_source_check:
+                    resolved_disable_source_check = disable_source_check
+                elif model_dir is not None:
+                    resolved_disable_source_check = "True"
+                if resolved_disable_source_check:
+                    os.environ[_OFFICIAL_DISABLE_SOURCE_CHECK_ENV] = resolved_disable_source_check
 
                 kwargs: dict[str, Any] = {
                     "model_name": _DEFAULT_MODEL_NAME,
@@ -376,6 +392,7 @@ class PaddleOCRBackend(LayoutBackend):
                         "local_model_override": local_model_override or None,
                         "active_model_dir": active_model_dir,
                         "model_source": resolved_model_source,
+                        "disable_model_source_check": resolved_disable_source_check,
                         "device": device,
                         "model_name": _DEFAULT_MODEL_NAME,
                         "model_version": resolved_model_version,
@@ -395,6 +412,7 @@ class PaddleOCRBackend(LayoutBackend):
                         "local_model_override": local_model_override or None,
                         "active_model_dir": active_model_dir,
                         "model_source": resolved_model_source,
+                        "disable_model_source_check": resolved_disable_source_check,
                         "device": device,
                         "model_name": _DEFAULT_MODEL_NAME,
                         "model_version": resolved_model_version,
