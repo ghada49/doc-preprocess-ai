@@ -1,0 +1,36 @@
+"use client";
+
+import { useParams, useSearchParams } from "next/navigation";
+import { AdminShell } from "@/components/layout/admin-shell";
+import { CorrectionWorkspace } from "@/components/correction/workspace";
+
+export default function AdminWorkspacePage() {
+  const searchParams = useSearchParams();
+  const { job_id, page_number } = useParams<{
+    job_id: string;
+    page_number: string;
+  }>();
+  const subPageIndexParam = searchParams.get("sub_page_index");
+  const subPageIndex =
+    subPageIndexParam != null ? parseInt(subPageIndexParam, 10) : undefined;
+
+  return (
+    <AdminShell
+      breadcrumbs={[
+        { label: "Correction Queue", href: "/admin/queue" },
+        { label: "Workspace" },
+      ]}
+      className="p-0 overflow-hidden"
+    >
+      <div className="h-full">
+        <CorrectionWorkspace
+          jobId={job_id}
+          pageNumber={parseInt(page_number, 10)}
+          subPageIndex={Number.isNaN(subPageIndex) ? undefined : subPageIndex}
+          backPath="/admin/queue"
+          isAdmin
+        />
+      </div>
+    </AdminShell>
+  );
+}

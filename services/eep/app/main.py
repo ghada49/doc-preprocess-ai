@@ -26,7 +26,10 @@ Real implementations:
   POST /v1/artifacts/presign-read         → LIVE (browser artifact access)
 """
 
+import os
+
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from services.eep.app.admin.dashboard import router as admin_dashboard_router
 from services.eep.app.admin.users import router as admin_users_router
@@ -52,6 +55,15 @@ from shared.middleware import configure_observability
 # Must be called before app is created so uvicorn log capture is configured
 setup_logging(service_name="eep")
 
+
+def _get_cors_allow_origins() -> list[str]:
+    raw = os.environ.get(
+        "CORS_ALLOW_ORIGINS",
+        "http://localhost:3000,http://127.0.0.1:3000",
+    )
+    return [origin.strip() for origin in raw.split(",") if origin.strip()]
+
+
 app = FastAPI(
     title="EEP — Execution Engine Pipeline",
     version="0.1.0",
@@ -61,6 +73,16 @@ app = FastAPI(
         "lineage recording, and all acceptance decisions."
     ),
 )
+
+cors_allow_origins = _get_cors_allow_origins()
+if cors_allow_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=cors_allow_origins,
+        allow_credentials=True,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
 
 configure_observability(app, service_name="eep")
 

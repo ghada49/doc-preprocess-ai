@@ -55,10 +55,11 @@ The UI should be impressive, but the “wow” must come from:
 
 ### 3.1 Regular User
 
-A library staff member or job submitter.
+A library staff member or job submitter. Regular users may self-register through the public signup page — no admin action is required to create a regular user account.
 
 **Capabilities**
 
+* self-register via the public signup page (`/signup`)
 * log in
 * submit jobs
 * view own jobs only
@@ -80,7 +81,7 @@ A library staff member or job submitter.
 
 ### 3.2 Admin
 
-A system overseer, senior operator, or MLOps user.
+A system overseer, senior operator, or MLOps user. Admin accounts are created only through the `scripts/create_admin.py` bootstrap script or by an authenticated admin via `POST /v1/users`. There is no public signup path for admin accounts.
 
 **Capabilities**
 
@@ -103,6 +104,7 @@ Role scoping must follow the backend contract exactly. For example, many endpoin
 
 ## 4.1 Regular User Portal
 
+* Signup
 * Login
 * Submit Job
 * My Jobs
@@ -157,6 +159,7 @@ Nullable fields must be handled explicitly. Example: in correction workspace, `c
 
 | Screen / Action                 |  Regular User  | Admin |
 | ------------------------------- | :------------: | :---: |
+| Signup (self-register)          |       Yes      |  No   |
 | Login                           |       Yes      |  Yes  |
 | Submit job                      |       Yes      |  Yes  |
 | View own jobs                   |       Yes      |  Yes  |
@@ -214,6 +217,46 @@ The frontend must call `POST /v1/artifacts/presign-read` to obtain browser-ready
 ---
 
 ## 8. Regular User Portal Screens
+
+## 8.0 Signup
+
+**Purpose**
+Allow a new user to self-register a regular user account without admin assistance.
+
+**Endpoint**
+
+* `POST /v1/auth/signup`
+
+**Form fields**
+
+* username
+* password
+* confirm password
+
+**Behaviour**
+
+* client-side: validate that password and confirm password match before submission
+* on success: redirect to `/login` with a success message
+* role is always `"user"` — the server enforces this; no role field is sent from the client
+
+**States**
+
+* loading on submit
+* duplicate username (409) — inline field error
+* validation failure (422) — inline error banner
+* network error — inline error banner
+
+**Link**
+
+* `/signup` must link back to `/login`
+* `/login` must link to `/signup` ("Don't have an account? Sign up")
+
+**Important**
+
+* there is no public signup path for admin accounts
+* admins are created by the bootstrap script or by another admin via the Users admin console
+
+---
 
 ## 8.1 Login
 
@@ -760,6 +803,8 @@ View and update active policy configuration.
 **Purpose**
 Admin user management.
 
+Regular users can self-register via the public `/signup` page. This admin screen is used to create admin accounts (or additional regular accounts) and to deactivate any user account. The public signup flow and this admin console coexist: regular users from signup appear in this list.
+
 **Endpoints**
 
 * `POST /v1/users`
@@ -775,7 +820,7 @@ Admin user management.
 
 **Actions**
 
-* create user
+* create user (any role, including admin)
 * deactivate user
 
 ---
@@ -784,6 +829,7 @@ Admin user management.
 
 | Page                      | Endpoint(s)                                              |
 | ------------------------- | -------------------------------------------------------- |
+| Signup                    | `POST /v1/auth/signup`                                   |
 | Login                     | `POST /v1/auth/token`                                    |
 | Submit Job                | `POST /v1/uploads/jobs/presign`, `POST /v1/jobs`         |
 | My Jobs / Admin Jobs      | `GET /v1/jobs`                                           |
@@ -871,6 +917,7 @@ The frontend does not:
 
 ### Phase A — Must-have
 
+* Signup
 * Login
 * Submit Job
 * My Jobs

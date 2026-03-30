@@ -54,6 +54,40 @@ Obtain a JWT access token.
 
 ---
 
+### `POST /v1/auth/signup`
+
+Self-register a new regular user account.
+
+**Auth:** none (public endpoint)
+**Request:** `application/json`
+
+| Field | Type | Required | Constraints |
+|-------|------|----------|-------------|
+| username | string | yes | 1–64 characters |
+| password | string | yes | minimum 8 characters |
+
+**Response 201:**
+
+```json
+{
+  "user_id": "<uuid>",
+  "username": "alice",
+  "role": "user",
+  "is_active": true,
+  "created_at": "2026-03-29T12:00:00Z"
+}
+```
+
+**Security note:** `role` is always set to `"user"` by the server. The request body has no `role` field and there is no mechanism to create an admin account through this endpoint.
+
+**Error responses:**
+- `409` — username already taken
+- `422` — validation error (empty username, password shorter than 8 characters)
+
+**Admin accounts** are created only via `POST /v1/users` (admin-authenticated) or the `scripts/create_admin.py` bootstrap script. There is no public path to an admin account.
+
+---
+
 ## 2. Upload
 
 ### `POST /v1/uploads/jobs/presign`
@@ -788,6 +822,7 @@ The correction workspace and job detail UI receive raw `s3://` URIs in API respo
 
 | Endpoint | user role | admin role |
 |----------|-----------|------------|
+| `POST /v1/auth/signup` | n/a (public) | n/a (public) |
 | `GET /v1/jobs` | own jobs only | all jobs |
 | `GET /v1/jobs/{job_id}` | own job only | any job |
 | `GET /v1/jobs/{job_id}/ptiff-qa` | own job only | any job |

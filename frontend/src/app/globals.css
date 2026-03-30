@@ -1,0 +1,169 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --font-inter: "Inter", system-ui, sans-serif;
+    --font-mono: "JetBrains Mono", "Menlo", monospace;
+  }
+
+  * {
+    @apply border-slate-200;
+  }
+
+  html {
+    @apply antialiased;
+    font-feature-settings: "cv02", "cv03", "cv04", "cv11";
+  }
+
+  body {
+    @apply bg-slate-50 text-slate-900;
+    font-family: var(--font-inter);
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    @apply bg-transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    @apply bg-slate-300 rounded-full;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    @apply bg-slate-400;
+  }
+
+  /* Selection */
+  ::selection {
+    @apply bg-indigo-100 text-indigo-900;
+  }
+}
+
+@layer components {
+  /* Focus ring */
+  .focus-ring {
+    @apply focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-500 focus-visible:ring-offset-2 focus-visible:ring-offset-white;
+  }
+
+  /* Card */
+  .card {
+    @apply bg-white border border-slate-200 rounded-xl shadow-sm;
+  }
+
+  /* Muted label */
+  .label-sm {
+    @apply text-xs font-medium text-slate-500 uppercase tracking-wider;
+  }
+
+  /* Status dot */
+  .status-dot {
+    @apply inline-block w-1.5 h-1.5 rounded-full;
+  }
+
+  /* Table */
+  .data-table th {
+    @apply px-4 py-3 text-left text-2xs font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-200;
+  }
+  .data-table td {
+    @apply px-4 py-3.5 text-sm border-b border-slate-100;
+  }
+  .data-table tr:last-child td {
+    @apply border-b-0;
+  }
+  .data-table tbody tr {
+    @apply transition-colors duration-100;
+  }
+  .data-table tbody tr:hover {
+    @apply bg-slate-50;
+  }
+
+  /* Skeleton shimmer */
+  .skeleton {
+    @apply animate-pulse bg-slate-200 rounded;
+  }
+
+  /* Page state badge colors */
+  .state-queued        { @apply bg-slate-100 text-slate-600 border border-slate-200; }
+  .state-preprocessing { @apply bg-blue-50 text-blue-700 border border-blue-200; }
+  .state-rectification { @apply bg-purple-50 text-purple-700 border border-purple-200; }
+  .state-ptiff_qa_pending { @apply bg-amber-50 text-amber-700 border border-amber-200; }
+  .state-layout_detection { @apply bg-cyan-50 text-cyan-700 border border-cyan-200; }
+  .state-pending_human_correction { @apply bg-orange-50 text-orange-700 border border-orange-200; }
+  .state-accepted      { @apply bg-emerald-50 text-emerald-700 border border-emerald-200; }
+  .state-review        { @apply bg-yellow-50 text-yellow-700 border border-yellow-200; }
+  .state-failed        { @apply bg-red-50 text-red-700 border border-red-200; }
+  .state-split         { @apply bg-violet-50 text-violet-700 border border-violet-200; }
+
+  /* Job status colors */
+  .job-queued  { @apply bg-slate-100 text-slate-600 border border-slate-200; }
+  .job-running { @apply bg-blue-50 text-blue-700 border border-blue-200; }
+  .job-done    { @apply bg-emerald-50 text-emerald-700 border border-emerald-200; }
+  .job-failed  { @apply bg-red-50 text-red-700 border border-red-200; }
+}
+
+@layer utilities {
+  @keyframes homepage-float {
+    0%,
+    100% {
+      transform: translate3d(0, 0, 0);
+    }
+    50% {
+      transform: translate3d(0, -10px, 0);
+    }
+  }
+
+  @keyframes homepage-pulse {
+    0%,
+    100% {
+      opacity: 0.65;
+      transform: scale(1);
+    }
+    50% {
+      opacity: 1;
+      transform: scale(1.08);
+    }
+  }
+
+  @keyframes homepage-sheen {
+    0% {
+      transform: translateX(-120%);
+      opacity: 0;
+    }
+    18%,
+    78% {
+      opacity: 0.55;
+    }
+    100% {
+      transform: translateX(120%);
+      opacity: 0;
+    }
+  }
+
+  .text-gradient {
+    @apply bg-clip-text text-transparent bg-gradient-to-r from-indigo-600 to-violet-600;
+  }
+  .homepage-floating-panel {
+    animation: homepage-float 8s ease-in-out infinite;
+    will-change: transform;
+  }
+  .homepage-live-dot {
+    animation: homepage-pulse 2.2s ease-in-out infinite;
+  }
+  .homepage-sheen {
+    animation: homepage-sheen 8s ease-in-out infinite;
+  }
+  .glass {
+    backdrop-filter: blur(12px);
+    background: rgb(255 255 255 / 0.9);
+  }
+  .truncate-2 {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+}

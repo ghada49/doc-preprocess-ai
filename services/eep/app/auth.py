@@ -28,14 +28,16 @@ Exported for Packet 7.2 use (not wired into endpoints here):
 from __future__ import annotations
 
 import os
+import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import bcrypt
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import Session
 
 from services.eep.app.db.models import User
@@ -116,13 +118,6 @@ def decode_token(token: str) -> dict[str, Any]:
 # ── Schemas ─────────────────────────────────────────────────────────────────────
 
 
-class TokenRequest(BaseModel):
-    """Request body for POST /v1/auth/token."""
-
-    username: str
-    password: str
-
-
 class TokenResponse(BaseModel):
     """Response body for POST /v1/auth/token."""
 
@@ -135,6 +130,23 @@ class CurrentUser(BaseModel):
 
     user_id: str
     role: str
+
+
+class SignupRequest(BaseModel):
+    """Request body for POST /v1/auth/signup (public self-registration)."""
+
+    username: str = Field(..., min_length=1, max_length=64, description="Desired username")
+    password: str = Field(..., min_length=8, description="Plaintext password (min 8 characters)")
+
+
+class SignupResponse(BaseModel):
+    """Response body for POST /v1/auth/signup. Never includes the password hash."""
+
+    user_id: str
+    username: str
+    role: str
+    is_active: bool
+    created_at: datetime
 
 
 # ── FastAPI security dependencies (wired to endpoints in Packet 7.2) ───────────
@@ -240,7 +252,7 @@ router = APIRouter(tags=["auth"])
     status_code=status.HTTP_200_OK,
 )
 def auth_token(
-    body: TokenRequest,
+    form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(get_session),
 ) -> TokenResponse:
     """
@@ -259,9 +271,9 @@ def auth_token(
           "token_type": "bearer"
         }
     """
-    user: User | None = db.query(User).filter(User.username == body.username).first()
+    user: User | None = db.query(User).filter(User.username == form_data.username).first()
 
-    if user is None or not verify_password(body.password, user.hashed_password):
+    if user is None or not verify_password(form_data.password, user.hashed_password):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Incorrect username or password",
@@ -277,3 +289,59 @@ def auth_token(
 
     token = create_access_token(user_id=user.user_id, role=user.role)
     return TokenResponse(access_token=token)
+
+
+@router.post(
+    "/v1/auth/signup",
+    response_model=SignupResponse,
+    summary="Self-register a new user account",
+    status_code=status.HTTP_201_CREATED,
+)
+def auth_signup(
+    body: SignupRequest,
+    db: Session = Depends(get_session),
+) -> SignupResponse:
+    """
+    Public self-registration endpoint.  Creates a regular user account.
+
+    - No authentication required.
+    - ``role`` is always set to ``"user"`` — the caller cannot choose a role.
+    - ``is_active`` is always ``True``.
+    - Returns 409 if the username is already taken.
+    - Returns 422 if validation fails (username empty, password < 8 chars).
+    - Password is hashed with bcrypt before storage; the hash is never returned.
+
+    Response (201)::
+
+        {
+          "user_id": "<uuid>",
+          "username": "alice",
+          "role": "user",
+          "is_active": true,
+          "created_at": "..."
+        }
+    """
+    new_user = User(
+        user_id=str(uuid.uuid4()),
+        username=body.username,
+        hashed_password=get_password_hash(body.password),
+        role="user",
+        is_active=True,
+    )
+    db.add(new_user)
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Username {body.username!r} is already taken",
+        )
+    db.refresh(new_user)
+    return SignupResponse(
+        user_id=new_user.user_id,
+        username=new_user.username,
+        role=new_user.role,
+        is_active=new_user.is_active,
+        created_at=new_user.created_at,
+    )

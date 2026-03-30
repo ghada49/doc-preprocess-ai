@@ -58,6 +58,7 @@ from sqlalchemy.orm import Session
 from services.eep.app.auth import CurrentUser, require_user
 from services.eep.app.db.models import Job, JobPage, PageLineage
 from services.eep.app.db.session import get_session
+from shared.io.storage import rewrite_presigned_url_for_public_endpoint
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["artifacts"])
@@ -68,6 +69,14 @@ router = APIRouter(tags=["artifacts"])
 
 _BUCKET: str = os.environ.get("S3_BUCKET_NAME", "libraryai")
 _READ_EXPIRES_IN: int = int(os.environ.get("ARTIFACT_READ_PRESIGN_EXPIRES_SECONDS", "300"))
+
+
+def _s3_access_key() -> str | None:
+    return os.environ.get("S3_ACCESS_KEY") or os.environ.get("S3_ACCESS_KEY_ID")
+
+
+def _s3_secret_key() -> str | None:
+    return os.environ.get("S3_SECRET_KEY") or os.environ.get("S3_SECRET_ACCESS_KEY")
 
 
 class _S3Client(Protocol):
@@ -81,8 +90,8 @@ def _s3_client() -> _S3Client:
         boto3.client(
             "s3",
             endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
-            aws_access_key_id=os.environ.get("S3_ACCESS_KEY"),
-            aws_secret_access_key=os.environ.get("S3_SECRET_KEY"),
+            aws_access_key_id=_s3_access_key(),
+            aws_secret_access_key=_s3_secret_key(),
         ),
     )
 
@@ -301,6 +310,7 @@ def presign_artifact_read(
             Params={"Bucket": _BUCKET, "Key": key},
             ExpiresIn=ttl,
         )
+        read_url = rewrite_presigned_url_for_public_endpoint(read_url)
     except Exception as exc:
         logger.error("presign_artifact_read: storage error for key=%s — %s", key, exc)
         raise HTTPException(
