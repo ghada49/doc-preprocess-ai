@@ -22,7 +22,7 @@ import type { CorrectionWorkspaceDetail } from "@/types/api";
 import { reviewReasonLabel, snakeToTitle, truncateId } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 import { getApiErrorMessage } from "@/lib/api/client";
-import { useArtifactRead } from "@/lib/artifacts";
+import { useArtifactPreview } from "@/lib/artifacts";
 import { ConfirmModal } from "@/components/shared/confirm-modal";
 import { ErrorBanner } from "@/components/shared/error-banner";
 import { ArtifactLinkButton } from "@/components/shared/artifact-link-button";
@@ -74,25 +74,21 @@ export function CorrectionWorkspace({
 
   const [activeSource, setActiveSource] = useState<SourceView>("best_output");
   const [cropBox, setCropBox] = useState<[number, number, number, number] | null>(null);
-  const [deskewAngle, setDeskewAngle] = useState("");
+  const [deskewAngle, setDeskewAngle] = useState<number | null>(null);
   const [splitX, setSplitX] = useState("");
   const [reviewerNotes, setReviewerNotes] = useState("");
   const [showRejectModal, setShowRejectModal] = useState(false);
 
   const activeUri = resolveUri(workspace, activeSource);
-  const { data: viewerArtifact, isLoading: viewerLoading } = useArtifactRead(
+  const { data: viewerData, isLoading: viewerLoading } = useArtifactPreview(
     activeUri,
-    600
+    { maxWidth: 2400 }
   );
 
   useEffect(() => {
     if (!workspace) return;
     setCropBox(workspace.current_crop_box ?? null);
-    setDeskewAngle(
-      workspace.current_deskew_angle != null
-        ? String(workspace.current_deskew_angle)
-        : ""
-    );
+    setDeskewAngle(workspace.current_deskew_angle ?? null);
     setSplitX(
       workspace.current_split_x != null ? String(workspace.current_split_x) : ""
     );
@@ -101,9 +97,11 @@ export function CorrectionWorkspace({
   const submitMut = useMutation({
     mutationFn: () =>
       submitCorrection(jobId, pageNumber, {
-        crop_box: cropBox,
-        deskew_angle: deskewAngle ? parseFloat(deskewAngle) : null,
-        split_x: splitX ? parseFloat(splitX) : null,
+        crop_box: cropBox
+          ? (cropBox.map(Math.round) as [number, number, number, number])
+          : null,
+        deskew_angle: deskewAngle,
+        split_x: splitX ? Math.round(parseFloat(splitX)) : null,
       }, {
         subPageIndex,
         notes: reviewerNotes,
@@ -336,11 +334,12 @@ export function CorrectionWorkspace({
 
         <div className="min-w-0 flex-1 bg-slate-50/70 p-4">
           <ImageViewer
-            imageUrl={viewerArtifact?.read_url ?? null}
+            imageUrl={viewerData?.blobUrl ?? null}
             isLoading={viewerLoading}
             cropBox={cropBoxObj}
             splitX={splitX ? parseFloat(splitX) : undefined}
-            showCropOverlay={!!cropBoxObj}
+            deskewAngle={deskewAngle ?? 0}
+            showCropOverlay
             showSplitOverlay={!!splitX}
             onCropBoxChange={(box) => setCropBox([box.x1, box.y1, box.x2, box.y2])}
             onSplitXChange={(x) => setSplitX(String(Math.round(x)))}
@@ -396,22 +395,53 @@ export function CorrectionWorkspace({
             <Separator />
 
             <div className="space-y-2">
-              <Label className="text-xs text-slate-600">
-                Deskew Angle{" "}
-                <span className="font-normal text-slate-400">(degrees)</span>
-              </Label>
-              <Input
-                type="number"
-                step="0.1"
-                value={deskewAngle}
-                onChange={(event) => setDeskewAngle(event.target.value)}
-                placeholder="- (null for fresh pages)"
-                className="text-xs"
-              />
-              {deskewAngle === "" && (
+              <div className="flex items-center justify-between">
+                <Label className="text-xs text-slate-600">
+                  Deskew Angle{" "}
+                  <span className="font-normal text-slate-400">(°)</span>
+                </Label>
+                {deskewAngle != null && (
+                  <button
+                    type="button"
+                    onClick={() => setDeskewAngle(null)}
+                    className="text-2xs text-slate-400 hover:text-slate-600"
+                  >
+                    clear
+                  </button>
+                )}
+              </div>
+              <div className="flex items-center gap-2">
+                <input
+                  type="range"
+                  min="-45"
+                  max="45"
+                  step="0.1"
+                  value={deskewAngle ?? 0}
+                  onChange={(e) => setDeskewAngle(parseFloat(e.target.value))}
+                  className="h-1.5 flex-1 accent-indigo-500"
+                />
+                <Input
+                  type="number"
+                  step="0.1"
+                  min="-45"
+                  max="45"
+                  value={deskewAngle ?? ""}
+                  onChange={(e) => {
+                    const v = parseFloat(e.target.value);
+                    setDeskewAngle(Number.isNaN(v) ? null : Math.max(-45, Math.min(45, v)));
+                  }}
+                  placeholder="null"
+                  className="h-8 w-20 text-xs tabular-nums"
+                />
+              </div>
+              {deskewAngle == null ? (
                 <p className="flex items-center gap-1 text-2xs text-slate-400">
                   <Info className="h-3 w-3" />
-                  Leave blank to submit null deskew.
+                  No deskew — drag slider or type a value.
+                </p>
+              ) : (
+                <p className="text-2xs text-slate-400">
+                  Live preview shown on image.
                 </p>
               )}
             </div>
@@ -437,6 +467,14 @@ export function CorrectionWorkspace({
                   IEP1A detected a split.
                 </p>
               )}
+              {splitX && (
+                <div className="flex items-start gap-1.5 rounded border border-cyan-200 bg-cyan-50 p-2 text-2xs text-cyan-700">
+                  <GitBranch className="mt-0.5 h-3 w-3 shrink-0" />
+                  <span>
+                    Submitting with split_x creates two child sub-pages (sub&nbsp;0&nbsp;=&nbsp;left, sub&nbsp;1&nbsp;=&nbsp;right). Each child is persisted independently and re-enters the pipeline.
+                  </span>
+                </div>
+              )}
             </div>
 
             <Separator />
@@ -459,8 +497,17 @@ export function CorrectionWorkspace({
                 label="Crop Box"
                 value={cropBox ? `[${cropBox.map((value) => Math.round(value)).join(", ")}]` : "null"}
               />
-              <SubmitRow label="Deskew" value={deskewAngle || "null"} />
+              <SubmitRow
+                label="Deskew"
+                value={deskewAngle != null ? `${deskewAngle}°` : "null"}
+              />
               <SubmitRow label="Split X" value={splitX || "null"} />
+              {splitX && (
+                <div className="flex items-center gap-1 text-2xs text-cyan-600">
+                  <GitBranch className="h-2.5 w-2.5 shrink-0" />
+                  <span>Creates sub-pages 0 + 1</span>
+                </div>
+              )}
             </div>
           </div>
 

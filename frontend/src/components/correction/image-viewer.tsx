@@ -17,6 +17,7 @@ interface ImageViewerProps {
   imageUrl: string | null;
   cropBox?: CropBox | null;
   splitX?: number | null;
+  deskewAngle?: number;
   onCropBoxChange?: (box: CropBox) => void;
   onSplitXChange?: (x: number) => void;
   showCropOverlay?: boolean;
@@ -28,6 +29,7 @@ export function ImageViewer({
   imageUrl,
   cropBox,
   splitX,
+  deskewAngle = 0,
   onCropBoxChange,
   onSplitXChange,
   showCropOverlay = true,
@@ -49,6 +51,10 @@ export function ImageViewer({
   const [dragStartPos, setDragStartPos] = useState({ x: 0, y: 0 });
   const [dragStartCrop, setDragStartCrop] = useState<CropBox | null>(null);
 
+  // Draw-new-crop-box drag state
+  const [isDrawing, setIsDrawing] = useState(false);
+  const [drawStart, setDrawStart] = useState({ x: 0, y: 0 });
+
   // Active drag for split line
   const [isDraggingSplit, setIsDraggingSplit] = useState(false);
 
@@ -68,14 +74,39 @@ export function ImageViewer({
     (e: React.MouseEvent) => {
       if (activeHandle || isDraggingSplit) return;
       if (e.button !== 0) return;
+
+      // Draw a new crop box by dragging on the canvas
+      if (showCropOverlay && onCropBoxChange && imgLoaded && imgRef.current) {
+        const imgRect = imgRef.current.getBoundingClientRect();
+        const imgX = Math.max(0, Math.min((e.clientX - imgRect.left) / zoom, naturalSize.w));
+        const imgY = Math.max(0, Math.min((e.clientY - imgRect.top) / zoom, naturalSize.h));
+        setIsDrawing(true);
+        setDrawStart({ x: imgX, y: imgY });
+        return;
+      }
+
       setIsPanning(true);
       setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
     },
-    [pan, activeHandle, isDraggingSplit]
+    [pan, activeHandle, isDraggingSplit, showCropOverlay, onCropBoxChange, imgLoaded, zoom, naturalSize]
   );
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
+      if (isDrawing && onCropBoxChange && imgRef.current) {
+        const imgRect = imgRef.current.getBoundingClientRect();
+        const imgX = Math.max(0, Math.min((e.clientX - imgRect.left) / zoom, naturalSize.w));
+        const imgY = Math.max(0, Math.min((e.clientY - imgRect.top) / zoom, naturalSize.h));
+        const x1 = Math.min(drawStart.x, imgX);
+        const y1 = Math.min(drawStart.y, imgY);
+        const x2 = Math.max(drawStart.x, imgX);
+        const y2 = Math.max(drawStart.y, imgY);
+        if (x2 - x1 > 2 && y2 - y1 > 2) {
+          onCropBoxChange({ x1, y1, x2, y2 });
+        }
+        return;
+      }
+
       if (isPanning) {
         setPan({ x: e.clientX - panStart.x, y: e.clientY - panStart.y });
         return;
@@ -116,6 +147,8 @@ export function ImageViewer({
       }
     },
     [
+      isDrawing,
+      drawStart,
       isPanning,
       panStart,
       activeHandle,
@@ -130,6 +163,7 @@ export function ImageViewer({
   );
 
   const handleMouseUp = useCallback(() => {
+    setIsDrawing(false);
     setIsPanning(false);
     setActiveHandle(null);
     setIsDraggingSplit(false);
@@ -197,7 +231,13 @@ export function ImageViewer({
         ref={containerRef}
         className={cn(
           "flex-1 overflow-hidden relative select-none",
-          isPanning ? "cursor-grabbing" : "cursor-grab"
+          isDrawing
+            ? "cursor-crosshair"
+            : showCropOverlay && onCropBoxChange
+            ? "cursor-crosshair"
+            : isPanning
+            ? "cursor-grabbing"
+            : "cursor-grab"
         )}
         onWheel={handleWheel}
         onMouseDown={handleMouseDown}
@@ -220,7 +260,7 @@ export function ImageViewer({
             className="absolute inset-0 flex items-center justify-center"
             style={{ transform: `translate(${pan.x}px, ${pan.y}px)` }}
           >
-            <div className="relative" style={{ transform: `scale(${zoom})`, transformOrigin: "center center" }}>
+            <div className="relative" style={{ transform: `scale(${zoom}) rotate(${deskewAngle}deg)`, transformOrigin: "center center" }}>
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 ref={imgRef}
@@ -236,7 +276,7 @@ export function ImageViewer({
                 onError={() => setImgLoaded(false)}
               />
 
-              {/* Crop box overlay */}
+              {/* Crop box overlay — renders whenever showCropOverlay is on (cropBox may be null during initial draw) */}
               {imgLoaded && showCropOverlay && cropBox && (
                 <CropOverlay
                   cropBox={cropBox}
@@ -261,7 +301,15 @@ export function ImageViewer({
                     setIsDraggingSplit(true);
                   }}
                 >
+                  {/* Drag handle */}
                   <div className="absolute top-1/2 h-8 w-3 -translate-x-1/2 -translate-y-1/2 rounded border border-cyan-400/60 bg-white/80 shadow-sm cursor-col-resize" />
+                  {/* Child sub-page labels */}
+                  <span className="pointer-events-none absolute top-2 right-full mr-1.5 rounded bg-cyan-500 px-1 py-0.5 text-2xs font-semibold text-white shadow-sm">
+                    sub 0
+                  </span>
+                  <span className="pointer-events-none absolute top-2 left-full ml-1.5 rounded bg-cyan-500 px-1 py-0.5 text-2xs font-semibold text-white shadow-sm">
+                    sub 1
+                  </span>
                 </div>
               )}
             </div>

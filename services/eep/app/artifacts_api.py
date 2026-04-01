@@ -45,6 +45,7 @@ Exported:
 
 from __future__ import annotations
 
+import io
 import logging
 import os
 from typing import Protocol, cast
@@ -52,13 +53,14 @@ from urllib.parse import urlparse
 
 import boto3
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from services.eep.app.auth import CurrentUser, require_user
 from services.eep.app.db.models import Job, JobPage, PageLineage
 from services.eep.app.db.session import get_session
-from shared.io.storage import rewrite_presigned_url_for_public_endpoint
+from shared.io.storage import get_backend, rewrite_presigned_url_for_public_endpoint
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["artifacts"])
@@ -131,6 +133,21 @@ class ArtifactPresignReadResponse(BaseModel):
     read_url: str
     expires_in: int
     content_type_hint: str
+
+
+class ArtifactPreviewRequest(BaseModel):
+    """
+    Request body for POST /v1/artifacts/preview.
+
+    Fields:
+        uri         — s3:// URI of the artifact (must be known to the system)
+        page_index  — 0-indexed TIFF page to render (default: 0)
+        max_width   — if set, downscale so width <= max_width px (aspect-ratio preserved)
+    """
+
+    uri: str
+    page_index: int = 0
+    max_width: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -331,4 +348,83 @@ def presign_artifact_read(
         read_url=read_url,
         expires_in=ttl,
         content_type_hint=_content_type_hint(uri),
+    )
+
+
+@router.post(
+    "/v1/artifacts/preview",
+    status_code=200,
+    summary="Stream a stored artifact as a browser-displayable PNG",
+    response_class=StreamingResponse,
+)
+def artifact_preview(
+    body: ArtifactPreviewRequest,
+    db: Session = Depends(get_session),
+    user: CurrentUser = Depends(require_user),
+) -> StreamingResponse:
+    """
+    Download the artifact at *uri*, convert it to PNG in memory, and stream
+    the PNG bytes back.  No files are written to disk or re-stored.
+
+    Browsers cannot render TIFF in ``<img>`` tags; this endpoint acts as a
+    transcoding proxy so the frontend can display any TIFF artifact without
+    client-side decoder libraries.
+
+    **Auth:** JWT bearer required.  Same ownership rules as presign-read.
+    """
+    try:
+        from PIL import Image  # noqa: PLC0415 — optional dep, imported lazily
+    except ImportError:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Image preview unavailable: Pillow is not installed on this server.",
+        )
+
+    uri = body.uri
+
+    # ── Validate URI ──────────────────────────────────────────────────────────
+    try:
+        _uri_to_s3_key(uri, _BUCKET)
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+
+    # ── Authorize ─────────────────────────────────────────────────────────────
+    _assert_uri_access(db, uri, user)
+
+    # ── Fetch raw bytes ────────────────────────────────────────────────────────
+    try:
+        raw_bytes: bytes = get_backend(uri).get_bytes(uri)
+    except Exception as exc:
+        logger.error("artifact_preview: storage fetch failed uri=%s — %s", uri, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Storage service unavailable; could not download artifact.",
+        ) from exc
+
+    # ── Decode → PNG ───────────────────────────────────────────────────────────
+    try:
+        img = Image.open(io.BytesIO(raw_bytes))
+        if body.page_index > 0:
+            try:
+                img.seek(body.page_index)
+            except EOFError:
+                img.seek(0)
+        if img.mode not in ("RGB", "RGBA", "L"):
+            img = img.convert("RGB")
+        if body.max_width and img.width > body.max_width:
+            ratio = body.max_width / img.width
+            img = img.resize((body.max_width, int(img.height * ratio)), Image.LANCZOS)
+        buf = io.BytesIO()
+        img.save(buf, format="PNG", optimize=True)
+        buf.seek(0)
+    except Exception as exc:
+        logger.error("artifact_preview: decode/convert failed uri=%s — %s", uri, exc)
+        raise HTTPException(
+            status_code=status.HTTP_415_UNSUPPORTED_MEDIA_TYPE,
+            detail="Could not decode the artifact as an image.",
+        ) from exc
+
+    logger.info("artifact_preview: user=%s uri=%s", user.user_id, uri)
+    return StreamingResponse(
+        buf, media_type="image/png", headers={"Cache-Control": "private, max-age=300"}
     )

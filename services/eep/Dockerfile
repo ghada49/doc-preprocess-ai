@@ -28,6 +28,7 @@ RUN uv pip install --system \
     "redis>=5.0" \
     "opencv-python-headless>=4.9" \
     "numpy>=1.26" \
+    "Pillow>=10.0" \
     "python-jose[cryptography]>=3.3" \
     "python-multipart>=0.0.9" \
     "PyYAML>=6.0" \

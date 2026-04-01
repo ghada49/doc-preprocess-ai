@@ -1,7 +1,7 @@
 "use client";
 
 import { useState, useEffect } from "react";
-import { useArtifactRead } from "@/lib/artifacts";
+import { useArtifactPreview } from "@/lib/artifacts";
 import { Spinner } from "@/components/ui/spinner";
 import { AlertTriangle, FileImage } from "lucide-react";
 import { cn } from "@/lib/utils";
@@ -25,7 +25,7 @@ export function ArtifactImage({
 }: ArtifactImageProps) {
   const [imgError, setImgError] = useState(false);
 
-  const { data, isLoading, isError } = useArtifactRead(uri, expiresIn);
+  const { data, isLoading, isError } = useArtifactPreview(uri);
 
   // Reset img error when URI changes
   useEffect(() => {
@@ -77,7 +77,7 @@ export function ArtifactImage({
     <div className={cn("overflow-hidden", containerClassName)}>
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={data?.read_url}
+        src={data?.blobUrl}
         alt={alt}
         className={cn("w-full h-full object-contain", className)}
         onError={() => setImgError(true)}

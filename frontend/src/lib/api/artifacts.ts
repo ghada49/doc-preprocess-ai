@@ -1,4 +1,4 @@
-import { apiPost } from "./client";
+import { apiPost, getAccessToken, API_BASE_URL } from "./client";
 import type { PresignReadRequest, PresignReadResponse } from "@/types/api";
 
 export async function presignReadArtifact(
@@ -15,4 +15,40 @@ export async function presignReadUrl(
 ): Promise<string> {
   const response = await presignReadArtifact(uri, expiresIn);
   return response.read_url;
+}
+
+/**
+ * Call POST /v1/artifacts/preview, receive PNG bytes, and return an object
+ * URL suitable for <img src={...}>.
+ *
+ * The caller must revoke the returned URL via URL.revokeObjectURL() when done.
+ */
+export async function fetchArtifactPreviewBlobUrl(
+  uri: string,
+  options: { pageIndex?: number; maxWidth?: number } = {}
+): Promise<string> {
+  const token = getAccessToken();
+  const headers: HeadersInit = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+
+  const body: Record<string, unknown> = { uri };
+  if (options.pageIndex != null) body["page_index"] = options.pageIndex;
+  if (options.maxWidth != null) body["max_width"] = options.maxWidth;
+
+  const response = await fetch(`${API_BASE_URL}/v1/artifacts/preview`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    let detail = `Preview failed (HTTP ${response.status})`;
+    try {
+      const json = await response.json();
+      if (typeof json?.detail === "string") detail = json.detail;
+    } catch { /* ignore */ }
+    throw new Error(detail);
+  }
+
+  return URL.createObjectURL(await response.blob());
 }
