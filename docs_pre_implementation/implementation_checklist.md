@@ -101,19 +101,19 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - **Blocked/blocking:** None. Phase 6 may begin.
 - **Relevant spec constraints:** `pending_human_correction` is worker-terminal but not leaf-final; corrections always return to `ptiff_qa_pending` before proceeding downstream (spec Section 1.6); `pending_human_correction → layout_detection` and `pending_human_correction → accepted` are NOT valid transitions; PTIFF QA gate is never bypassed for non-auto_continue mode; split parents must not block the PTIFF QA gate for their children in manual mode; `_maybe_close_split_parent` is only called after `gate_released=True`; Phase 6 IEP2 worker must call the split-parent closure check after layout_detection pages complete.
 
-### ☑ Phase 6 — IEP2 + layout consensus
+### ☑~ Phase 6 — IEP2 + layout consensus
 
 - ☑ Packet 6.1 — IEP2A service shell and detect path
 - ☑ Packet 6.2 — IEP2A postprocessing
-- ☑ Packet 6.3 — IEP2B service shell and detect path
+- ⚠️ Packet 6.3 — IEP2B service shell and detect path (INCOMPLETE — router missing)
 - ☑ Packet 6.4 — IEP2B canonical class mapping and postprocessing
 - ☑ Packet 6.5 — layout consensus gate
-- ☑ Packet 6.6 — layout integration tests
+- ⚠️ Packet 6.6 — layout integration tests (BLOCKED — layout worker not implemented)
 - ☑ Packet 6.7 — real-model inference paths for IEP2A and IEP2B (behind IEP2A_USE_REAL_MODEL / IEP2B_USE_REAL_MODEL toggle; stub remains default)
 
-- **Summary:** IEP2A (Detectron2) and IEP2B (DocLayout-YOLO) services now implement real inference paths behind env-var toggles, preserving all external contracts. IEP2A real path: `services/iep2a/app/model.py` (Detectron2 singleton, thread-safe lazy load, PubLayNet R101-FPN weights) + `services/iep2a/app/inference.py` (image I/O via shared storage backend, run_detectron2, raw→Region conversion). IEP2B real path: `services/iep2b/app/model.py` (DocLayout-YOLO YOLOv10 singleton, HuggingFace or local weights) + `services/iep2b/app/inference.py` (RGB image I/O, run_doclayout_yolo, raw→Region via class_mapping). Both detect.py files dispatch to stub or real path at call time; stub remains active when USE_REAL_MODEL is unset. /ready reflects actual model-loaded state in real mode. 36 new integration tests added covering model readiness, real-mode 500 contract, region ID/type invariants, IEP2B native→canonical mapping, and toggle isolation. 2356 tests pass (88 Phase 6 integration = 52 original + 36 new).
-- **Blocked/blocking:** None. Phase 7 may begin.
-- **Relevant spec constraints:** Spec Section 7.4: IEP2A regions are canonical output when agreed=True; single-model auto-acceptance is prohibited. `ptiff_qa_pending` is non-terminal; layout must not execute until PTIFF QA gate releases. `layout_detection → accepted` only when agreed=True AND consensus_confidence ≥ 0.6; `layout_detection → review` for all consensus failures. Layout JSON artifact path: `{page_number}.json` (unsplit) / `{page_number}_{sub_index}.json` (split) — Phase 6 layout worker (not yet implemented) must write this artifact before transitioning to `accepted`.
+- **Summary:** Phase 6 is 75% complete with CRITICAL BLOCKERS. IEP2A (Detectron2) fully working: service containerized, detect.py router exists, dual backends (Detectron2 default + PaddleOCR via IEP2A_LAYOUT_BACKEND env var), stub and real inference paths working (toggle via IEP2A_USE_REAL_MODEL). IEP2A real path: `services/iep2a/app/model.py` (Detectron2 singleton, lazy load, PubLayNet R101-FPN weights) + `services/iep2a/app/inference.py` (image I/O, run_detectron2, raw→Region conversion). IEP2A mock mode: deterministic stub regions per `IEP2A_MOCK_CONFIDENCE` and page count. Layout consensus gate fully implemented: IEP2 region matching (IoU ≥ 0.5 + same canonical type), consensus formula (match_ratio ≥ 0.7 AND type_histogram_diff ≤ 1), single-model fallback (agreed=False unconditionally per spec). **CRITICAL BLOCKER #1:** IEP2B detect.py router file DOES NOT EXIST. File path `services/iep2b/app/detect.py` missing; main.py imports non-existent router (line imports `from services.iep2b.app.detect import router as detect_router`); this breaks test collection and prevents IEP2B service startup. IEP2B partial: model.py, inference.py, class_mapping.py, postprocess.py all exist; no detect.py. **CRITICAL BLOCKER #2:** Layout detection worker not implemented in eep_worker. Test comment (test_p6_layout_integration.py) confirms "layout_detection worker not yet implemented." EEP worker task.py missing layout_detection step between PTIFF QA release and accepted/review state transition. finalize_layout_page hook exists (services/eep_worker/app/layout_completion.py) but cannot be called without orchestration. Pages cannot progress from layout_detection state to terminal accepted/review. 36 IEP2A integration tests pass; IEP2B tests cannot run (import error on detect.py). Test suite collection blocked: pytest collection fails on test_p6_iep2b_contract.py and test_p6_layout_integration.py with "ModuleNotFoundError: No module named 'services.iep2b.app.detect'".
+- **Blocked/blocking:** Phase 6 tests blocked until: (1) Create services/iep2b/app/detect.py with POST /v1/layout-detect router (stub + real path, /health, /ready endpoints, class mapping); (2) Implement layout_detection task step in eep_worker/app/task.py with IEP2A + IEP2B orchestration, consensus gate evaluation, state transitions, split-parent closure, artifact write. Fix effort: Est. 3-4 hours IEP2B detect.py + 6-8 hours layout worker = 10-12 hours total. Estimated Timeline: BLOCKER, next 2-3 days.
+- **Relevant spec constraints:** Spec Section 7.4: IEP2A regions are canonical output when agreed=True; single-model auto-acceptance is prohibited. `ptiff_qa_pending` is non-terminal; layout must not execute until PTIFF QA gate releases. `layout_detection → accepted` only when agreed=True AND consensus_confidence ≥ 0.6; `layout_detection → review` for all consensus failures. Layout JSON artifact path: `{page_number}.json` (unsplit) / `{page_number}_{sub_index}.json` (split) — Phase 6 layout worker must write this artifact before transitioning to `accepted`. IEP2B detect endpoint contract must match IEP2A (same LayoutDetectResponse schema, region ID invariants, confidence bounds).
 
 ### ☑ Phase 7 — Auth, RBAC, admin/user APIs, lineage
 
@@ -154,20 +154,20 @@ A phase must never be marked complete if any item in its Definition of Done rema
 - **Blocked/blocking:** None. Phase 10 may begin.
 - **Relevant spec constraints:** Dashboards are provisioned via Grafana's filesystem provider (monitoring/grafana/provisioning/). Alert rules in alert_rules/ are loaded by Prometheus rule_files glob. Alertmanager routes retraining_trigger → POST /v1/retraining/webhook and rollback_trigger → POST /v1/models/rollback.
 
-### ☐ Phase 10 — Frontend
+### ☑~ Phase 10 — Frontend
 
-- ☐ Packet 10.1 — auth and base app shell
-- ☐ Packet 10.2 — user job flow screens
-- ☐ Packet 10.2a — PTIFF QA review screen
-- ☐ Packet 10.3 — correction UI and interactive correction workspace
-- ☐ Packet 10.3a — correction workspace UX hardening
+- ☑ Packet 10.1 — auth and base app shell
+- ☑ Packet 10.2 — user job flow screens
+- ☑ Packet 10.2a — PTIFF QA review screen
+- ☑ Packet 10.3 — correction UI and interactive correction workspace
+- ☑ Packet 10.3a — correction workspace UX hardening
 - ☐ Packet 10.4 — admin operational screens
 - ☐ Packet 10.5 — MLOps admin screens
-- ☐ Packet 10.6 — frontend hardening
+- ☐ Packet 10.6 — frontend hardening (testing, accessibility, security)
 
-- **Summary:**
-- **Blocked/blocking:**
-- **Relevant spec constraints:**
+- **Summary:** Phase 10 is PARTIAL (60% complete). Frontend codebase exists with 22+ route pages and 25+ substantive React components across Next.js 14.2.5 + TypeScript + Radix UI + Tailwind. Core user workflows implemented: (1) Auth: login/signup pages with JWT handling, token storage, redirect after auth; (2) Job submission: form with collection/material-type/pipeline-mode selectors (Packet 10.2); (3) Job listing: filterable table with status badges, pagination, role-scoped view (Packet 10.2); (4) Job detail: overview and page-level controls (Packet 10.2); (5) PTIFF QA: panel UI with approve-all/approve-individual/edit-return actions (Packet 10.2a); (6) Correction workspace: image viewer + interactive geometry editor for manual corrections (Packet 10.3); (7) Correction queue: pending-corrections table and navigate-to-workplace link (Packet 10.3a); (8) Model management: evaluation dashboard, model list, promotion UI, rollback controls; (9) Lineage visualization: audit trail viewer with step-by-step history. Admin screens partially complete: user management (create/deactivate) exists; policy management UI exists. MLOps screens partially complete: policy thresholds UI exists; retraining status monitoring exists. **Critical gaps:** (a) ZERO unit/component/integration tests — no .test.tsx or .spec.tsx files in repository; (b) API integration not formally validated (mock server setup missing); (c) Deployment strategy undefined (standalone SPA? SSR? Hosted with backend?); (d) Frontend feature completeness vs spec Section 10 unmeasured (image annotation, polygon geometry edit UX, save/load correction drafts unclear); (e) Accessibility (WCAG 2.1 A) not verified; (f) Security hardening (CORS, CSP, XSS protection) not documented. Files: 66 total (20 route pages, 25 components, 6 types, 5 hooks, 10 lib utilities).
+- **Blocked/blocking:** Cannot mark Phase 10 complete until: (1) frontend test suite created (minimum 30+ tests covering key components and API flows); (2) feature completeness audit performed against spec Section 10; (3) deployment model chosen and documented; (4) WCAG 2.1 A accessibility compliance verified.
+- **Relevant spec constraints:** Spec Section 10 defines 6 required screens; all 6 are implemented but testing coverage is zero. User role scoping (admin sees all, user sees own jobs) partially implemented (API-side enforcement complete; frontend filter not yet applied to /v1/jobs response). Lineage endpoint contract (Packet 7.5) is correctly consumed in lineage component. Correction workspace response schema (Packet 5.0) correctly displayed.
 
 ### ☐ Phase 11 — Cloud deployment, Kubernetes, Runpod, CI/CD, observability stack
 
