@@ -43,7 +43,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from services.eep.app.auth import CurrentUser, assert_job_ownership, require_user
 from services.eep.app.correction.workspace_assembly import (
@@ -184,6 +184,20 @@ def list_correction_queue(
         .join(Job, Job.job_id == JobPage.job_id)
         .filter(JobPage.status == "pending_human_correction")
     )
+
+    child_page = aliased(JobPage)
+    has_split_children = (
+        db.query(child_page.page_id)
+        .filter(
+            child_page.job_id == JobPage.job_id,
+            child_page.page_number == JobPage.page_number,
+            child_page.sub_page_index.isnot(None),
+        )
+        .exists()
+    )
+    # Once child review units exist for a parent page_number, the queue should
+    # show only those children, not the original parent row.
+    q = q.filter(~(JobPage.sub_page_index.is_(None) & has_split_children))
 
     # Scope to the authenticated user's own jobs unless they are admin.
     if user.role != "admin":

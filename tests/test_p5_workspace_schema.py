@@ -27,6 +27,7 @@ from pydantic import ValidationError
 
 from services.eep.app.correction.workspace_schema import (
     BranchOutputs,
+    ChildPageSummary,
     CorrectionWorkspaceResponse,
     GeometrySummary,
 )
@@ -123,6 +124,8 @@ def _minimal_workspace(**overrides: Any) -> CorrectionWorkspaceResponse:
         "pipeline_mode": "layout",
         "review_reasons": ["structural_disagreement_post_rectification"],
         "branch_outputs": BranchOutputs(),
+        "suggested_page_structure": "single",
+        "child_pages": [],
     }
     defaults.update(overrides)
     return CorrectionWorkspaceResponse(**defaults)
@@ -156,6 +159,8 @@ class TestCorrectionWorkspaceResponseSchema:
         assert ws.current_crop_box is None
         assert ws.current_deskew_angle is None
         assert ws.current_split_x is None
+        assert ws.suggested_page_structure == "single"
+        assert ws.child_pages == []
 
     def test_page_number_below_1_rejected(self) -> None:
         with pytest.raises(ValidationError):
@@ -327,6 +332,29 @@ class TestCorrectionWorkspaceResponseSchema:
         ws = _minimal_workspace(sub_page_index=1, current_split_x=None)
         assert ws.sub_page_index == 1
 
+    def test_suggested_page_structure_spread_valid(self) -> None:
+        ws = _minimal_workspace(suggested_page_structure="spread")
+        assert ws.suggested_page_structure == "spread"
+
+    def test_child_pages_payload_valid(self) -> None:
+        ws = _minimal_workspace(
+            child_pages=[
+                ChildPageSummary(
+                    sub_page_index=0,
+                    status="pending_human_correction",
+                    output_image_uri="s3://bucket/jobs/job-001/corrected/1_0.tiff",
+                ),
+                ChildPageSummary(
+                    sub_page_index=1,
+                    status="ptiff_qa_pending",
+                    output_image_uri="s3://bucket/jobs/job-001/corrected/1_1.tiff",
+                ),
+            ]
+        )
+        assert [child.sub_page_index for child in ws.child_pages] == [0, 1]
+        assert ws.child_pages[0].status == "pending_human_correction"
+        assert ws.child_pages[1].output_image_uri == "s3://bucket/jobs/job-001/corrected/1_1.tiff"
+
     # ── Serialization ─────────────────────────────────────────────────────────
 
     def test_serializes_to_dict_matching_spec_shape(self) -> None:
@@ -374,3 +402,5 @@ class TestCorrectionWorkspaceResponseSchema:
         assert d["current_crop_box"] == [100, 80, 2400, 3200]
         assert d["current_deskew_angle"] == pytest.approx(1.3)
         assert d["current_split_x"] is None
+        assert d["suggested_page_structure"] == "single"
+        assert d["child_pages"] == []

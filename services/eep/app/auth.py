@@ -54,12 +54,15 @@ _ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.environ.get("JWT_ACCESS_TOKEN_EXPIRE_
 
 def get_password_hash(password: str) -> str:
     """Return bcrypt hash of *password*. Used when creating users (Packet 7.6)."""
-    return cast(str, bcrypt.hashpw(password.encode(), bcrypt.gensalt()).decode())
+    hashed_bytes: bytes = bcrypt.hashpw(password.encode(), bcrypt.gensalt())
+    hashed_password: str = hashed_bytes.decode()
+    return hashed_password
 
 
 def verify_password(plain_password: str, hashed_password: str) -> bool:
     """Return True iff *plain_password* matches the stored bcrypt *hashed_password*."""
-    return cast(bool, bcrypt.checkpw(plain_password.encode(), hashed_password.encode()))
+    is_valid: bool = bcrypt.checkpw(plain_password.encode(), hashed_password.encode())
+    return is_valid
 
 
 # ── JWT helpers ─────────────────────────────────────────────────────────────────

@@ -189,11 +189,22 @@ class TestCorrectionApplyRequestValidation:
         req = CorrectionApplyRequest(
             crop_box=[0, 0, 100, 200],
             deskew_angle=-1.5,
+            page_structure="spread",
             split_x=300,
             notes="looks good",
         )
+        assert req.page_structure == "spread"
         assert req.split_x == 300
         assert req.notes == "looks good"
+
+    def test_null_deskew_angle_accepted(self) -> None:
+        req = CorrectionApplyRequest(crop_box=[0, 0, 100, 200], deskew_angle=None)
+        assert req.deskew_angle is None
+
+    def test_null_crop_box_accepted(self) -> None:
+        req = CorrectionApplyRequest(crop_box=None, deskew_angle=None, page_structure="single")
+        assert req.crop_box is None
+        assert req.page_structure == "single"
 
 
 # ── HTTP endpoint tests ────────────────────────────────────────────────────────
@@ -265,6 +276,55 @@ class TestApplyCorrectionEndpoint:
             from_state="pending_human_correction",
             to_state="ptiff_qa_pending",
         )
+
+    def test_child_correction_targets_requested_sub_page_only(self) -> None:
+        job = _make_job(ptiff_qa_mode="manual")
+        child = _make_page(
+            page_id="child-p1",
+            sub_page_index=1,
+            status="pending_human_correction",
+            output_image_uri="s3://bucket/child-1.tiff",
+        )
+        child_lineage = _make_lineage(
+            lineage_id="lin-child-1",
+            output_image_uri="s3://bucket/child-1.tiff",
+        )
+        parent = _make_page(
+            page_id="parent-p1",
+            sub_page_index=None,
+            status="split",
+            ptiff_qa_approved=True,
+            output_image_uri="s3://bucket/parent.tiff",
+        )
+        parent_lineage = _make_lineage(
+            lineage_id="lin-parent",
+            output_image_uri="s3://bucket/parent.tiff",
+        )
+
+        session = _make_session(job=job, first_results=[child, child_lineage])
+        self._inject(session)
+
+        with patch(
+            "services.eep.app.correction.apply.advance_page_state",
+            return_value=True,
+        ) as mock_advance:
+            r = self.client.post(
+                "/v1/jobs/job-001/pages/1/correction?sub_page_index=1",
+                json=_DEFAULT_BODY,
+            )
+
+        assert r.status_code == 200
+        mock_advance.assert_called_once_with(
+            session,
+            child.page_id,
+            from_state="pending_human_correction",
+            to_state="ptiff_qa_pending",
+        )
+        assert child.output_image_uri == "s3://bucket/child-1_corrected.tiff"
+        assert child_lineage.output_image_uri == "s3://bucket/child-1_corrected.tiff"
+        assert parent.output_image_uri == "s3://bucket/parent.tiff"
+        assert parent.ptiff_qa_approved is True
+        assert parent_lineage.output_image_uri == "s3://bucket/parent.tiff"
 
     # ── ptiff_qa_mode behaviour ───────────────────────────────────────────────
 
@@ -508,6 +568,23 @@ class TestApplyCorrectionEndpoint:
         assert lineage.human_correction_fields["crop_box"] == [5, 10, 400, 600]
         assert lineage.human_correction_fields["deskew_angle"] == pytest.approx(1.5)
         assert lineage.human_correction_timestamp is not None
+
+    def test_null_deskew_angle_persisted_without_error(self) -> None:
+        job = _make_job(ptiff_qa_mode="manual")
+        page = _make_page(status="pending_human_correction")
+        lineage = _make_lineage()
+
+        session = _make_session(job=job, first_results=[page, lineage])
+        self._inject(session)
+
+        with patch("services.eep.app.correction.apply.advance_page_state", return_value=True):
+            r = self.client.post(
+                "/v1/jobs/job-001/pages/1/correction",
+                json={"crop_box": [5, 10, 400, 600], "deskew_angle": None},
+            )
+
+        assert r.status_code == 200
+        assert lineage.human_correction_fields["deskew_angle"] is None
 
     def test_notes_stored_in_reviewer_notes(self) -> None:
         """notes field written to lineage.reviewer_notes."""

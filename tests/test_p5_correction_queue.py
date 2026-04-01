@@ -35,9 +35,14 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy import false
 
 from services.eep.app.correction.workspace_assembly import PageNotInCorrectionError
-from services.eep.app.correction.workspace_schema import BranchOutputs, CorrectionWorkspaceResponse
+from services.eep.app.correction.workspace_schema import (
+    BranchOutputs,
+    ChildPageSummary,
+    CorrectionWorkspaceResponse,
+)
 from services.eep.app.db.session import get_session
 from services.eep.app.main import app
 
@@ -92,6 +97,8 @@ def _minimal_workspace(
         pipeline_mode="layout",
         review_reasons=["geometry_sanity_failed"],
         branch_outputs=BranchOutputs(),
+        suggested_page_structure="single",
+        child_pages=[],
     )
 
 
@@ -118,6 +125,7 @@ def _make_list_session(
         chain.with_entities.return_value = chain
         chain.scalar.return_value = effective_total
         chain.all.return_value = rows
+        chain.exists.return_value = false()
         return chain
 
     session.query.side_effect = query_se
@@ -314,6 +322,8 @@ class TestGetCorrectionWorkspace:
         data = r.json()
         assert data["job_id"] == "job-001"
         assert data["page_number"] == 1
+        assert data["suggested_page_structure"] == "single"
+        assert data["child_pages"] == []
         mock_assemble.assert_called_once()
 
     def test_assembler_called_with_correct_sub_page_index(self) -> None:
@@ -419,6 +429,19 @@ class TestGetCorrectionWorkspace:
             branch_outputs=BranchOutputs(
                 iep1c_normalized="s3://bucket/norm.tiff",
             ),
+            suggested_page_structure="spread",
+            child_pages=[
+                ChildPageSummary(
+                    sub_page_index=0,
+                    status="pending_human_correction",
+                    output_image_uri="s3://bucket/jobs/job-123/corrected/2_0.tiff",
+                ),
+                ChildPageSummary(
+                    sub_page_index=1,
+                    status="ptiff_qa_pending",
+                    output_image_uri="s3://bucket/jobs/job-123/corrected/2_1.tiff",
+                ),
+            ],
             current_crop_box=[50, 60, 1200, 1800],
             current_deskew_angle=0.5,
             current_split_x=None,
@@ -443,6 +466,8 @@ class TestGetCorrectionWorkspace:
         assert data["original_otiff_uri"] == "s3://bucket/raw.tiff"
         assert data["best_output_uri"] == "s3://bucket/norm.tiff"
         assert data["branch_outputs"]["iep1c_normalized"] == "s3://bucket/norm.tiff"
+        assert data["suggested_page_structure"] == "spread"
+        assert [child["sub_page_index"] for child in data["child_pages"]] == [0, 1]
         assert data["current_crop_box"] == [50, 60, 1200, 1800]
         assert data["current_deskew_angle"] == pytest.approx(0.5)
         assert data["current_split_x"] is None

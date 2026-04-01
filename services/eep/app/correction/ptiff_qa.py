@@ -57,7 +57,7 @@ import logging
 import uuid
 
 import redis
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -157,10 +157,10 @@ def _is_gate_satisfied(pages: list[JobPage]) -> bool:
 
     A split parent is a page with sub_page_index IS None whose page_number
     also appears among the children (sub_page_index IS NOT None) in the list.
-    Split parents must not block the gate: they can only exit
-    pending_human_correction after their children become worker-terminal,
-    which only happens after the gate releases — including them would create
-    a circular deadlock in manual PTIFF QA mode for split corrections.
+    Split parents must not block the gate. In the reviewer-driven split flow,
+    child pages are the real review units, and any parent row that still
+    appears in pending_human_correction should be ignored by gate evaluation
+    once matching children exist.
 
     Args:
         pages: Leaf pages for the job (may include split-parent records).
@@ -169,7 +169,7 @@ def _is_gate_satisfied(pages: list[JobPage]) -> bool:
         True when gate conditions are met, False otherwise.
     """
     # Page numbers that have at least one child (sub_page_index IS NOT None).
-    # These correspond to split parents still awaiting child completion.
+    # These correspond to parent rows that should not block child-page PTIFF QA.
     child_page_numbers: frozenset[int] = frozenset(
         p.page_number for p in pages if p.sub_page_index is not None
     )
@@ -426,12 +426,17 @@ def get_ptiff_qa_status(
 def approve_page(
     job_id: str,
     page_number: int,
+    sub_page_index: int | None = Query(default=None),
     db: Session = Depends(get_session),
     r: redis.Redis = Depends(get_redis),
     user: CurrentUser = Depends(require_user),
 ) -> ApprovePageResponse:
     """
     Record approval intent for a page in ptiff_qa_pending.
+
+    When ``sub_page_index`` is provided, only that specific child sub-page is
+    approved. When omitted, all pages with the given page_number are approved
+    (original behavior).
 
     Approval does NOT change the page state immediately. If all gate
     conditions are met after this approval, the gate is released
@@ -451,20 +456,24 @@ def approve_page(
     job = _fetch_job_or_404(db, job_id)
     assert_job_ownership(job, user)
 
-    qa_pages: list[JobPage] = (
-        db.query(JobPage)
-        .filter(
-            JobPage.job_id == job_id,
-            JobPage.page_number == page_number,
-            JobPage.status == "ptiff_qa_pending",
-        )
-        .all()
+    query = db.query(JobPage).filter(
+        JobPage.job_id == job_id,
+        JobPage.page_number == page_number,
+        JobPage.status == "ptiff_qa_pending",
     )
+    if sub_page_index is not None:
+        query = query.filter(JobPage.sub_page_index == sub_page_index)
+    qa_pages: list[JobPage] = query.all()
 
     if not qa_pages:
+        page_desc = (
+            f"Page {page_number} sub {sub_page_index}"
+            if sub_page_index is not None
+            else f"Page {page_number}"
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=(f"Page {page_number} of job {job_id!r} is not in " "'ptiff_qa_pending' state."),
+            detail=f"{page_desc} of job {job_id!r} is not in 'ptiff_qa_pending' state.",
         )
 
     for page in qa_pages:
@@ -618,11 +627,16 @@ def approve_all(
 def edit_page(
     job_id: str,
     page_number: int,
+    sub_page_index: int | None = Query(default=None),
     db: Session = Depends(get_session),
     user: CurrentUser = Depends(require_user),
 ) -> EditPageResponse:
     """
     Transition a ptiff_qa_pending page to pending_human_correction.
+
+    When ``sub_page_index`` is provided, only that specific child sub-page is
+    sent to correction. When omitted, all pages with the given page_number are
+    transitioned (original behavior).
 
     Uses the state machine validator. Clears any prior approval flag so the
     page must be re-approved after correction is submitted.
@@ -638,20 +652,24 @@ def edit_page(
     job = _fetch_job_or_404(db, job_id)
     assert_job_ownership(job, user)
 
-    qa_pages: list[JobPage] = (
-        db.query(JobPage)
-        .filter(
-            JobPage.job_id == job_id,
-            JobPage.page_number == page_number,
-            JobPage.status == "ptiff_qa_pending",
-        )
-        .all()
+    query = db.query(JobPage).filter(
+        JobPage.job_id == job_id,
+        JobPage.page_number == page_number,
+        JobPage.status == "ptiff_qa_pending",
     )
+    if sub_page_index is not None:
+        query = query.filter(JobPage.sub_page_index == sub_page_index)
+    qa_pages: list[JobPage] = query.all()
 
     if not qa_pages:
+        page_desc = (
+            f"Page {page_number} sub {sub_page_index}"
+            if sub_page_index is not None
+            else f"Page {page_number}"
+        )
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
-            detail=(f"Page {page_number} of job {job_id!r} is not in " "'ptiff_qa_pending' state."),
+            detail=f"{page_desc} of job {job_id!r} is not in 'ptiff_qa_pending' state.",
         )
 
     for page in qa_pages:

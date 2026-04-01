@@ -16,19 +16,31 @@ export function approveAllPtiffQa(jobId: string): Promise<PtiffApproveAllRespons
 
 export function approvePtiffQaPage(
   jobId: string,
-  pageNumber: number
+  pageNumber: number,
+  subPageIndex?: number
 ): Promise<PtiffApprovePageResponse> {
   return apiPost<PtiffApprovePageResponse>(
-    `/v1/jobs/${jobId}/pages/${pageNumber}/ptiff-qa/approve`
+    `/v1/jobs/${jobId}/pages/${pageNumber}/ptiff-qa/approve`,
+    undefined,
+    {
+      params:
+        subPageIndex != null ? { sub_page_index: subPageIndex } : undefined,
+    }
   );
 }
 
 export function editPtiffQaPage(
   jobId: string,
-  pageNumber: number
+  pageNumber: number,
+  subPageIndex?: number
 ): Promise<PtiffEditPageResponse> {
   // Use canonical /edit route
   return apiPost<PtiffEditPageResponse>(
-    `/v1/jobs/${jobId}/pages/${pageNumber}/ptiff-qa/edit`
+    `/v1/jobs/${jobId}/pages/${pageNumber}/ptiff-qa/edit`,
+    undefined,
+    {
+      params:
+        subPageIndex != null ? { sub_page_index: subPageIndex } : undefined,
+    }
   );
 }

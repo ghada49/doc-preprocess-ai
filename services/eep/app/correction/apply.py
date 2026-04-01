@@ -1,16 +1,17 @@
 """
 services/eep/app/correction/apply.py
 --------------------------------------
-Packet 5.2 / 5.3 — Single-page and split correction apply path.
+Single-page and reviewer-driven split correction apply path.
 
 Implements:
   POST /v1/jobs/{job_id}/pages/{page_number}/correction
 
 Applies human correction inputs for pages in pending_human_correction.
-Dispatches to one of two paths depending on whether split_x is supplied.
+Parent-page review is structure-first: reviewers choose single page vs spread,
+and split_x is retained only as an internal or advanced fallback input.
 
 ──────────────────────────────────────────────────────────────────────────
-Packet 5.2  (split_x is None — single-page path)
+Single-page path (child correction or parent kept as a single page)
 ──────────────────────────────────────────────────────────────────────────
   - The correction is authoritative; processing is not re-run.
   - The existing artifact is copied to a derived corrected URI via the
@@ -20,22 +21,19 @@ Packet 5.2  (split_x is None — single-page path)
     called immediately after the transition.
 
 ──────────────────────────────────────────────────────────────────────────
-Packet 5.3  (split_x is not None — split correction path)
+Split path (reviewer selects a two-page spread or supplies an explicit split_x fallback)
 ──────────────────────────────────────────────────────────────────────────
   - Two child sub-pages (sub_page_index 0 and 1) are created or reused
-    (idempotent via UNIQUE job_id / page_number / sub_page_index).
-  - A corrected artifact is copied to a child-specific URI for each child.
-  - Each child transitions: pending_human_correction → ptiff_qa_pending.
-  - In auto_continue mode, children are released directly past the PTIFF QA
-    gate (accepted or layout_detection) because the gate is blocked while the
-    parent is still in pending_human_correction.
-  - In auto_continue + layout mode, children released to layout_detection are
-    enqueued to Redis for downstream layout detection processing.
-  - The parent transitions to 'split' only when both children reach a
-    worker-terminal state (accepted / pending_human_correction / review /
-    failed). This occurs synchronously only for preprocess + auto_continue.
+    idempotently.
+  - Child artifacts are written to child-specific corrected URIs using the
+    actual left and right image regions from the parent artifact.
+  - Each child remains in pending_human_correction so the reviewer can correct
+    Page 0 and Page 1 separately before PTIFF QA.
   - Parent lineage is NOT modified; it remains the retained lineage record
     for the original OTIFF.
+  - The parent may transition to "split" in the same request once the child
+    review units satisfy the worker-terminal closure rule used elsewhere in
+    the split flow.
 
 ──────────────────────────────────────────────────────────────────────────
 Shared invariants (non-negotiable)
@@ -66,12 +64,15 @@ from __future__ import annotations
 import logging
 import uuid
 from datetime import UTC, datetime
-from typing import Any
+from typing import Any, Literal
 from urllib.parse import urlparse
 
+import cv2
+import numpy as np
 import redis
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, field_validator
+from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from services.eep.app.auth import CurrentUser, assert_job_ownership, require_user
@@ -79,16 +80,21 @@ from services.eep.app.correction.ptiff_qa import (
     _WORKER_TERMINAL_STATES,
     _check_and_release_ptiff_qa,
 )
-from services.eep.app.db.models import Job, JobPage, PageLineage
+from services.eep.app.db.models import Job, JobPage, PageLineage, QualityGateLog
 from services.eep.app.db.page_state import advance_page_state
 from services.eep.app.db.session import get_session
-from services.eep.app.queue import enqueue_page_task
 from services.eep.app.redis_client import get_redis
 from shared.io.storage import get_backend
-from shared.schemas.queue import PageTask
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+PageStructure = Literal["single", "spread"]
+_GEOMETRY_GATE_TYPES = frozenset(
+    {
+        "geometry_selection",
+        "geometry_selection_post_rectification",
+    }
+)
 
 
 # ── Request schema ──────────────────────────────────────────────────────────────
@@ -101,20 +107,27 @@ class CorrectionApplyRequest(BaseModel):
     Fields:
         crop_box     — [x_min, y_min, x_max, y_max]; exactly 4 non-negative integers
                        with x_min < x_max and y_min < y_max.
-        deskew_angle — rotation correction angle in degrees.
-        split_x      — horizontal split coordinate. When non-null, triggers the
-                       split correction path (Packet 5.3); creates two child pages.
+        deskew_angle — rotation correction angle in degrees; null means no deskew.
+        page_structure — reviewer-facing structural choice for parent pages.
+                         "spread" creates or reuses Page 0 / Page 1 children.
+        split_x      — optional internal or advanced split boundary override.
+                       Normal reviewer UX should prefer page_structure over
+                       direct split_x entry. Ignored when correcting a child
+                       sub-page (split already occurred).
         notes        — optional reviewer notes; stored in lineage.reviewer_notes.
     """
 
-    crop_box: list[int]
-    deskew_angle: float
+    crop_box: list[int] | None = None
+    deskew_angle: float | None = None
+    page_structure: PageStructure | None = None
     split_x: int | None = None
     notes: str | None = None
 
     @field_validator("crop_box")
     @classmethod
-    def validate_crop_box(cls, v: list[int]) -> list[int]:
+    def validate_crop_box(cls, v: list[int] | None) -> list[int] | None:
+        if v is None:
+            return None
         if len(v) != 4:
             raise ValueError(f"crop_box must have exactly 4 integers; got {len(v)}")
         x_min, y_min, x_max, y_max = v
@@ -195,6 +208,135 @@ def _leaf_pages(db: Session, job_id: str) -> list[JobPage]:
     return db.query(JobPage).filter(JobPage.job_id == job_id, JobPage.status != "split").all()
 
 
+def _fetch_latest_geometry_gate(
+    db: Session,
+    job_id: str,
+    page_number: int,
+) -> QualityGateLog | None:
+    """Return the most recent geometry gate record for this page."""
+    return (
+        db.query(QualityGateLog)
+        .filter(
+            QualityGateLog.job_id == job_id,
+            QualityGateLog.page_number == page_number,
+            QualityGateLog.gate_type.in_(list(_GEOMETRY_GATE_TYPES)),
+        )
+        .order_by(desc(QualityGateLog.created_at))
+        .first()
+    )
+
+
+def _split_x_from_gate(gate: QualityGateLog | None) -> int | None:
+    """Extract the selected split_x from the latest geometry gate when available."""
+    if gate is None:
+        return None
+
+    geo_jsonb: dict[str, Any] | None = None
+    if gate.selected_model == "iep1a":
+        geo_jsonb = gate.iep1a_geometry
+    elif gate.selected_model == "iep1b":
+        geo_jsonb = gate.iep1b_geometry
+
+    if geo_jsonb is None:
+        geo_jsonb = gate.iep1a_geometry or gate.iep1b_geometry
+    if geo_jsonb is None:
+        return None
+
+    raw_split_x = geo_jsonb.get("split_x")
+    return int(raw_split_x) if raw_split_x is not None else None
+
+
+def _resolve_split_x(
+    *,
+    requested_split_x: int | None,
+    parent_lineage: PageLineage,
+    gate: QualityGateLog | None,
+    image_width: int,
+) -> int:
+    """Resolve the internal split boundary without requiring it in the normal UI."""
+    if requested_split_x is not None:
+        return requested_split_x
+
+    hcf = parent_lineage.human_correction_fields or {}
+    raw_hcf_split_x = hcf.get("split_x")
+    if raw_hcf_split_x is not None:
+        return int(raw_hcf_split_x)
+
+    gate_split_x = _split_x_from_gate(gate)
+    if gate_split_x is not None:
+        return gate_split_x
+
+    if image_width < 2:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"Page image width {image_width} is too small to split.",
+        )
+    return image_width // 2
+
+
+def _decode_split_source_image(source_uri: str, data: bytes) -> np.ndarray:
+    """
+    Decode the parent artifact into an in-memory image array for child splitting.
+
+    Raises HTTP 500 on decode failure because the stored parent artifact is
+    expected to be a readable TIFF/PTIFF at correction time.
+    """
+    try:
+        buf = np.frombuffer(data, dtype=np.uint8)
+        image: np.ndarray | None = cv2.imdecode(buf, cv2.IMREAD_UNCHANGED)
+    except cv2.error as exc:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Data-integrity failure: cannot decode parent artifact {source_uri!r}: {exc}",
+        ) from exc
+    if image is None or image.ndim < 2:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Data-integrity failure: cannot decode parent artifact {source_uri!r}.",
+        )
+    return image
+
+
+def _encode_tiff_bytes(image: np.ndarray, *, source_uri: str, sub_page_index: int) -> bytes:
+    """Encode a split child image to TIFF bytes without writing to disk."""
+    ok, encoded = cv2.imencode(".tiff", image)
+    if not ok:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                "Data-integrity failure: could not encode split child artifact "
+                f"for {source_uri!r} sub_page_index {sub_page_index}."
+            ),
+        )
+    encoded_bytes: bytes = encoded.tobytes()
+    return encoded_bytes
+
+
+def _build_split_child_artifacts(
+    source_uri: str, image: np.ndarray, split_x: int
+) -> dict[int, bytes]:
+    """
+    Build left/right TIFF artifacts for a split correction from the parent image.
+
+    Child 0 receives the left half ``[:, :split_x]`` and child 1 receives the
+    right half ``[:, split_x:]``.
+    """
+    width = int(image.shape[1])
+    if split_x <= 0 or split_x >= width:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=f"split_x must be within the image width (got {split_x}, width={width}).",
+        )
+
+    left = np.ascontiguousarray(image[:, :split_x])
+    right = np.ascontiguousarray(image[:, split_x:])
+
+    return {
+        0: _encode_tiff_bytes(left, source_uri=source_uri, sub_page_index=0),
+        1: _encode_tiff_bytes(right, source_uri=source_uri, sub_page_index=1),
+    }
+
+
 # ── Split correction path (Packet 5.3) ──────────────────────────────────────────
 
 
@@ -206,25 +348,18 @@ def _apply_split_correction(
     r: redis.Redis,
 ) -> None:
     """
-    Execute the split correction path (Packet 5.3).
+    Execute the reviewer-driven split path for a parent page.
 
     Creates two child sub-pages (left: sub_page_index=0, right: sub_page_index=1),
-    writes corrected artifacts for each child via the storage backend, records
-    lineage, and transitions children through ptiff_qa_pending.
+    writes corrected artifacts for each child via the storage backend, and records
+    child lineage. The reviewer then corrects each child page separately; this
+    request does not send the children directly into PTIFF QA.
 
-    In auto_continue mode, children are immediately released to their target state
-    (accepted or layout_detection). Children released to layout_detection are
-    enqueued to Redis for downstream processing.
-
-    The parent page transitions to 'split' via _close_parent_if_children_terminal
-    when both children reach a worker-terminal state. This occurs synchronously
-    only for preprocess + auto_continue. In all other modes the parent stays in
-    pending_human_correction until a later child-completion path closes it.
+    The parent page may transition to "split" within the same request once the
+    child review units satisfy the worker-terminal closure rule.
 
     The caller is responsible for db.commit() after this function returns.
     """
-    assert body.split_x is not None  # guarded by caller
-
     now = datetime.now(tz=UTC)
 
     # Step A — Fetch parent lineage row
@@ -259,16 +394,33 @@ def _apply_split_correction(
             ),
         )
 
+    parent_backend = get_backend(parent.output_image_uri)
+    parent_image_bytes = parent_backend.get_bytes(parent.output_image_uri)
+    parent_image = _decode_split_source_image(parent.output_image_uri, parent_image_bytes)
+    gate = _fetch_latest_geometry_gate(db, parent.job_id, parent.page_number)
+    resolved_split_x = _resolve_split_x(
+        requested_split_x=body.split_x,
+        parent_lineage=parent_lineage,
+        gate=gate,
+        image_width=int(parent_image.shape[1]),
+    )
     correction_fields: dict[str, Any] = {
         "crop_box": body.crop_box,
         "deskew_angle": body.deskew_angle,
-        "split_x": body.split_x,
+        "page_structure": "spread",
+        "split_x": resolved_split_x,
     }
+    child_artifacts = _build_split_child_artifacts(
+        parent.output_image_uri,
+        parent_image,
+        resolved_split_x,
+    )
 
     children: list[JobPage] = []
 
-    # Step C — For each side: create/reuse child page + lineage, write artifact,
-    #           transition to ptiff_qa_pending.
+    # Step C — For each side: create/reuse child page + lineage and write the
+    # child artifact. Children stay in pending_human_correction so the reviewer
+    # can continue in Page 0 / Page 1 workspaces.
     for sub_idx in (0, 1):
         child_uri = _derive_child_corrected_uri(
             parent.output_image_uri, parent.job_id, parent.page_number, sub_idx
@@ -297,9 +449,8 @@ def _apply_split_correction(
             )
             db.add(child)
 
-        # Copy parent artifact bytes to child corrected URI.
-        src_data = get_backend(parent.output_image_uri).get_bytes(parent.output_image_uri)
-        get_backend(child_uri).put_bytes(child_uri, src_data)
+        # Write the actual split child artifact bytes to the child-specific URI.
+        get_backend(child_uri).put_bytes(child_uri, child_artifacts[sub_idx])
 
         # Mirror corrected URI onto the child page row for fast lookups.
         # page_lineage remains authoritative; job_pages.output_image_uri is a convenience copy.
@@ -347,75 +498,15 @@ def _apply_split_correction(
             if body.notes is not None:
                 child_lineage.reviewer_notes = body.notes
 
-        # Transition child: pending_human_correction → ptiff_qa_pending.
-        # Track status in memory because advance_page_state uses a bulk UPDATE
-        # and does not refresh the ORM object automatically.
-        if child.status == "pending_human_correction":
-            advanced = advance_page_state(
-                db,
-                child.page_id,
-                from_state="pending_human_correction",
-                to_state="ptiff_qa_pending",
-            )
-            if advanced:
-                child.status = "ptiff_qa_pending"
-            else:
-                logger.warning(
-                    "Split correction child CAS miss: job=%s page_id=%s sub_page_index=%d "
-                    "(concurrent update or state already changed)",
-                    parent.job_id,
-                    child.page_id,
-                    sub_idx,
-                )
-
+        # Track child rows in memory for the split-parent closure check below.
         children.append(child)
 
     db.flush()
 
-    # Step D — auto_continue: release children directly past the PTIFF QA gate.
-    # Note: _check_and_release_ptiff_qa is intentionally NOT used here. The parent
-    # is still in pending_human_correction, which would block _is_gate_satisfied.
-    # Instead, children are released directly per spec Section 8.6, step 8.
-    if job.ptiff_qa_mode == "auto_continue":
-        target = "accepted" if job.pipeline_mode == "preprocess" else "layout_detection"
-        for child in children:
-            if child.status == "ptiff_qa_pending":
-                advanced = advance_page_state(
-                    db,
-                    child.page_id,
-                    from_state="ptiff_qa_pending",
-                    to_state=target,
-                )
-                if advanced:
-                    child.status = target
-                    # Enqueue children released to layout_detection for downstream processing.
-                    if target == "layout_detection":
-                        enqueue_page_task(
-                            r,
-                            PageTask(
-                                task_id=str(uuid.uuid4()),
-                                job_id=child.job_id,
-                                page_id=child.page_id,
-                                page_number=child.page_number,
-                                sub_page_index=child.sub_page_index,
-                                retry_count=0,
-                            ),
-                        )
-                else:
-                    logger.warning(
-                        "Split correction auto-release CAS miss: job=%s page_id=%s",
-                        parent.job_id,
-                        child.page_id,
-                    )
-        db.flush()
-
-    # Step E — Transition parent to 'split' when both children are worker-terminal.
-    # Uses pre-loaded children with up-to-date in-memory statuses (manually
-    # tracked after each advance_page_state call above).
-    # Worker-terminal: accepted, pending_human_correction, review, failed.
-    # Synchronous only for preprocess + auto_continue; other modes rely on
-    # _maybe_close_split_parent invoked from later child-completion paths
-    # (e.g. ptiff_qa.py approve endpoints).
+    # Step D — Transition the parent to "split" when the child review units
+    # satisfy the shared worker-terminal closure rule. In the current
+    # reviewer-driven flow, newly created children remain
+    # pending_human_correction and therefore already satisfy that rule.
     if all(c.status in _WORKER_TERMINAL_STATES for c in children):
         advanced = advance_page_state(
             db,
@@ -434,9 +525,108 @@ def _apply_split_correction(
         "Split correction applied: job=%s page=%d split_x=%d " "ptiff_qa_mode=%s pipeline_mode=%s",
         parent.job_id,
         parent.page_number,
-        body.split_x,
+        resolved_split_x,
         job.ptiff_qa_mode,
         job.pipeline_mode,
+    )
+
+
+# ── Single-page correction path (Packet 5.2) ────────────────────────────────────
+
+
+def _apply_single_page_correction(
+    db: Session,
+    job: Job,
+    page: JobPage,
+    body: CorrectionApplyRequest,
+    r: redis.Redis,
+) -> None:
+    """
+    Execute the single-page correction path (Packet 5.2).
+
+    Works for both parent pages (sub_page_index IS NULL) and child sub-pages
+    (sub_page_index = 0 or 1 after a split). Callers must ensure the page is
+    already in pending_human_correction before calling.
+
+    The caller is responsible for db.commit() after this function returns.
+    """
+    lineage: PageLineage | None = (
+        db.query(PageLineage)
+        .filter(
+            PageLineage.job_id == page.job_id,
+            PageLineage.page_number == page.page_number,
+            PageLineage.sub_page_index == page.sub_page_index,
+        )
+        .first()
+    )
+
+    if lineage is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                f"Data-integrity failure: no lineage row for job {page.job_id!r} "
+                f"page {page.page_number} sub_page_index {page.sub_page_index!r}. "
+                "Page cannot be corrected without an existing lineage record."
+            ),
+        )
+
+    if page.output_image_uri is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                f"Data-integrity failure: page {page.page_number} of job {page.job_id!r} "
+                "has no source artifact URI. Cannot create corrected artifact."
+            ),
+        )
+
+    corrected_uri = _derive_corrected_uri(page.output_image_uri)
+    assert corrected_uri is not None  # guaranteed: output_image_uri is non-None above
+    src_data = get_backend(page.output_image_uri).get_bytes(page.output_image_uri)
+    get_backend(corrected_uri).put_bytes(corrected_uri, src_data)
+
+    now = datetime.now(tz=UTC)
+    correction_fields: dict[str, Any] = {
+        "crop_box": body.crop_box,
+        "deskew_angle": body.deskew_angle,
+    }
+
+    lineage.human_corrected = True
+    lineage.human_correction_timestamp = now
+    lineage.human_correction_fields = correction_fields
+    lineage.output_image_uri = corrected_uri
+    if body.notes is not None:
+        lineage.reviewer_notes = body.notes
+
+    page.output_image_uri = corrected_uri
+    page.ptiff_qa_approved = False
+
+    advanced = advance_page_state(
+        db,
+        page.page_id,
+        from_state="pending_human_correction",
+        to_state="ptiff_qa_pending",
+    )
+    if not advanced:
+        logger.warning(
+            "Correction apply CAS miss: job=%s page_id=%s page_number=%d "
+            "(concurrent update or state already changed)",
+            page.job_id,
+            page.page_id,
+            page.page_number,
+        )
+
+    db.flush()
+
+    if job.ptiff_qa_mode == "auto_continue":
+        all_pages = _leaf_pages(db, page.job_id)
+        _check_and_release_ptiff_qa(db, job, all_pages)
+
+    logger.info(
+        "Correction applied: job=%s page=%d sub_page_index=%s ptiff_qa_mode=%s",
+        page.job_id,
+        page.page_number,
+        page.sub_page_index,
+        job.ptiff_qa_mode,
     )
 
 
@@ -448,12 +638,13 @@ def _apply_split_correction(
     response_model=CorrectionApplyResponse,
     status_code=status.HTTP_200_OK,
     tags=["correction"],
-    summary="Apply human correction to a single page",
+    summary="Apply human correction to a page",
 )
 def apply_correction(
     job_id: str,
     page_number: int,
     body: CorrectionApplyRequest,
+    sub_page_index: int | None = Query(default=None),
     db: Session = Depends(get_session),
     r: redis.Redis = Depends(get_redis),
     user: CurrentUser = Depends(require_user),
@@ -461,21 +652,23 @@ def apply_correction(
     """
     Apply human correction inputs for a page in pending_human_correction.
 
-    Dispatches to one of two paths depending on ``split_x``:
+    When ``sub_page_index`` is provided, the correction targets a specific child
+    sub-page created by a prior split. In this mode split structure inputs are
+    ignored because a child page cannot be split a second time.
 
-    **Single-page path (split_x is None — Packet 5.2):**
-      Processing is not re-run. The existing artifact is copied to a derived
-      corrected URI and recorded in lineage. The page transitions to
-      ptiff_qa_pending. In auto_continue mode, the PTIFF QA gate is checked
-      and may release immediately.
+    **Single-page path**
+      Used for child-page corrections and for parent pages whose structure is
+      kept as a single page. Processing is not re-run. The existing artifact is
+      copied to a derived corrected URI and recorded in lineage. The page then
+      transitions to ptiff_qa_pending.
 
-    **Split correction path (split_x is not None — Packet 5.3):**
-      Two child sub-pages are created (or reused for idempotency). Corrected
-      artifacts are written for each child. Children transition to
-      ptiff_qa_pending. The parent stays in pending_human_correction until both
-      children reach worker-terminal states. In auto_continue mode, children
-      are released directly to their target state within this request.
-      Children released to layout_detection are enqueued to Redis.
+    **Split path**
+      Used for parent pages when the reviewer selects ``page_structure="spread"``
+      or an explicit ``split_x`` fallback is provided. Two child sub-pages are
+      created or reused idempotently. Child artifacts are written for each
+      child, and each child remains in pending_human_correction so the reviewer
+      can correct Page 0 and Page 1 separately. The parent may transition to
+      "split" once the child workspaces exist.
 
     **Error responses**
 
@@ -485,133 +678,67 @@ def apply_correction(
     - ``500`` — data-integrity failure: lineage row missing or page has no
                 source artifact URI
     """
-    # Step 1 — Load job and page
     job = _fetch_job_or_404(db, job_id)
     assert_job_ownership(job, user)
 
-    page: JobPage | None = (
-        db.query(JobPage)
-        .filter(
-            JobPage.job_id == job_id,
-            JobPage.page_number == page_number,
-            JobPage.sub_page_index == None,  # non-split pages only  # noqa: E711
-        )
-        .first()
-    )
-
-    if page is None:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Page {page_number} of job {job_id!r} not found.",
-        )
-
-    if page.status != "pending_human_correction":
-        raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
-            detail=(
-                f"Page {page_number} of job {job_id!r} is in state "
-                f"{page.status!r}, not 'pending_human_correction'."
-            ),
-        )
-
-    if body.split_x is not None:
-        # ── Packet 5.3: split correction path ────────────────────────────────
-        _apply_split_correction(db, job, page, body, r)
-
-    else:
-        # ── Packet 5.2: single-page correction path ───────────────────────────
-
-        # Step 2 — Fetch required lineage row
-        # Data-integrity requirement: every page in pending_human_correction must
-        # have a lineage row.
-        lineage: PageLineage | None = (
-            db.query(PageLineage)
+    if sub_page_index is not None:
+        # ── Child sub-page correction (split already occurred) ────────────────
+        # Split structure was already decided on the parent, so child requests
+        # only apply normal correction fields.
+        page: JobPage | None = (
+            db.query(JobPage)
             .filter(
-                PageLineage.job_id == job_id,
-                PageLineage.page_number == page_number,
-                PageLineage.sub_page_index == None,  # noqa: E711
+                JobPage.job_id == job_id,
+                JobPage.page_number == page_number,
+                JobPage.sub_page_index == sub_page_index,
             )
             .first()
         )
-
-        if lineage is None:
+        if page is None:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Page {page_number} sub {sub_page_index} of job {job_id!r} not found.",
+            )
+        if page.status != "pending_human_correction":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
                 detail=(
-                    f"Data-integrity failure: no lineage row for job {job_id!r} "
-                    f"page {page_number}. "
-                    "Page cannot be corrected without an existing lineage record."
+                    f"Page {page_number} sub {sub_page_index} of job {job_id!r} is in state "
+                    f"{page.status!r}, not 'pending_human_correction'."
                 ),
             )
+        _apply_single_page_correction(db, job, page, body, r)
 
-        # Step 3 — Derive corrected URI and copy artifact through storage backend
-        # Data-integrity requirement: page must have a source artifact URI.
-        if page.output_image_uri is None:
+    else:
+        # ── Parent page correction ────────────────────────────────────────────
+        page = (
+            db.query(JobPage)
+            .filter(
+                JobPage.job_id == job_id,
+                JobPage.page_number == page_number,
+                JobPage.sub_page_index == None,  # noqa: E711
+            )
+            .first()
+        )
+        if page is None:
             raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=f"Page {page_number} of job {job_id!r} not found.",
+            )
+        if page.status != "pending_human_correction":
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
                 detail=(
-                    f"Data-integrity failure: page {page_number} of job {job_id!r} "
-                    "has no source artifact URI. Cannot create corrected artifact."
+                    f"Page {page_number} of job {job_id!r} is in state "
+                    f"{page.status!r}, not 'pending_human_correction'."
                 ),
             )
-
-        corrected_uri = _derive_corrected_uri(page.output_image_uri)
-        assert corrected_uri is not None  # guaranteed: page.output_image_uri is non-None above
-        src_data = get_backend(page.output_image_uri).get_bytes(page.output_image_uri)
-        get_backend(corrected_uri).put_bytes(corrected_uri, src_data)
-
-        # Step 4 — Update lineage with correction fields
-        now = datetime.now(tz=UTC)
-        correction_fields: dict[str, Any] = {
-            "crop_box": body.crop_box,
-            "deskew_angle": body.deskew_angle,
-        }
-
-        lineage.human_corrected = True
-        lineage.human_correction_timestamp = now
-        lineage.human_correction_fields = correction_fields
-        # page_lineage.output_image_uri is the authoritative durable artifact path.
-        lineage.output_image_uri = corrected_uri
-        if body.notes is not None:
-            lineage.reviewer_notes = body.notes
-
-        # Mirror corrected URI onto the page row for fast lookups.
-        # page_lineage remains authoritative; job_pages.output_image_uri is a convenience copy.
-        page.output_image_uri = corrected_uri
-
-        # Step 5 — Clear approval flag: corrected page must be re-approved
-        page.ptiff_qa_approved = False
-
-        # Step 6 — State transition: pending_human_correction → ptiff_qa_pending
-        advanced = advance_page_state(
-            db,
-            page.page_id,
-            from_state="pending_human_correction",
-            to_state="ptiff_qa_pending",
-        )
-
-        if not advanced:
-            logger.warning(
-                "Correction apply CAS miss: job=%s page_id=%s page_number=%d "
-                "(concurrent update or state already changed)",
-                job_id,
-                page.page_id,
-                page_number,
-            )
-
-        db.flush()
-
-        # Step 7 — PTIFF QA behavior
-        if job.ptiff_qa_mode == "auto_continue":
-            all_pages = _leaf_pages(db, job_id)
-            _check_and_release_ptiff_qa(db, job, all_pages)
-
-        logger.info(
-            "Correction applied: job=%s page=%d ptiff_qa_mode=%s",
-            job_id,
-            page_number,
-            job.ptiff_qa_mode,
-        )
+        # page_structure is the primary reviewer-facing structure control for
+        # parent pages. split_x remains as a compatibility or advanced fallback.
+        if body.page_structure == "spread" or body.split_x is not None:
+            _apply_split_correction(db, job, page, body, r)
+        else:
+            _apply_single_page_correction(db, job, page, body, r)
 
     db.commit()
     return CorrectionApplyResponse()

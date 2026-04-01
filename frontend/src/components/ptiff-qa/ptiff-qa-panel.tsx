@@ -45,7 +45,8 @@ export default function PtiffQaPanel({ jobId }: PtiffQaPanelProps) {
   });
 
   const approvePageMut = useMutation({
-    mutationFn: (pageNumber: number) => approvePtiffQaPage(jobId, pageNumber),
+    mutationFn: (page: { pageNumber: number; subPageIndex?: number | null }) =>
+      approvePtiffQaPage(jobId, page.pageNumber, page.subPageIndex ?? undefined),
     onSuccess: (res) => {
       toast.success(
         `Page ${res.page_number} approved.${res.gate_released ? " Gate released!" : ""}`
@@ -60,7 +61,8 @@ export default function PtiffQaPanel({ jobId }: PtiffQaPanelProps) {
   });
 
   const editPageMut = useMutation({
-    mutationFn: (pageNumber: number) => editPtiffQaPage(jobId, pageNumber),
+    mutationFn: (page: { pageNumber: number; subPageIndex?: number | null }) =>
+      editPtiffQaPage(jobId, page.pageNumber, page.subPageIndex ?? undefined),
     onSuccess: (res) => {
       toast.success(`Page ${res.page_number} → ${res.new_state}`);
       queryClient.invalidateQueries({ queryKey: ["ptiff-qa", jobId] });
@@ -231,7 +233,12 @@ export default function PtiffQaPanel({ jobId }: PtiffQaPanelProps) {
                       <Button
                         size="xs"
                         variant="success"
-                        onClick={() => approvePageMut.mutate(page.page_number)}
+                        onClick={() =>
+                          approvePageMut.mutate({
+                            pageNumber: page.page_number,
+                            subPageIndex: page.sub_page_index,
+                          })
+                        }
                         loading={approvePageMut.isPending}
                         className="gap-1"
                       >
@@ -241,7 +248,12 @@ export default function PtiffQaPanel({ jobId }: PtiffQaPanelProps) {
                       <Button
                         size="xs"
                         variant="outline"
-                        onClick={() => editPageMut.mutate(page.page_number)}
+                        onClick={() =>
+                          editPageMut.mutate({
+                            pageNumber: page.page_number,
+                            subPageIndex: page.sub_page_index,
+                          })
+                        }
                         loading={editPageMut.isPending}
                       >
                         Send to Correction

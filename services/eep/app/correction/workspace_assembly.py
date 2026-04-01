@@ -19,10 +19,14 @@ Source image availability rules (spec Section 11.3):
   - iep1c_normalized:   same as best_output_uri (the final IEP1C output in all paths)
   - iep1d_rectified:    from service_invocations.metrics['rectified_image_uri'] when available
 
-Current correction parameter priority:
+Current workspace default priority:
   1. page_lineage.human_correction_fields (set by prior human correction, if any)
-  2. quality_gate_log selected geometry bbox → current_crop_box, split_x
+  2. quality_gate_log selected geometry data -> current_crop_box and internal split context
   3. None (deskew_angle is always None for a fresh correction — see known limitation)
+
+The correction UI now treats split as a structural choice. current_split_x is
+still assembled as backend context for suggestion and fallback purposes, but it
+is not the primary reviewer control in the normal workspace flow.
 
 Known limitation: current_deskew_angle is None for pages with no prior human
 correction because the IEP1C normalization deskew angle is not persisted in the
@@ -48,6 +52,7 @@ from sqlalchemy.orm import Session
 
 from services.eep.app.correction.workspace_schema import (
     BranchOutputs,
+    ChildPageSummary,
     CorrectionWorkspaceResponse,
     GeometrySummary,
 )
@@ -143,6 +148,24 @@ def _fetch_latest_geometry_gate(
     )
 
 
+def _fetch_child_pages(
+    session: Session,
+    job_id: str,
+    page_number: int,
+) -> list[JobPage]:
+    """Return any existing split children for this page, ordered left to right."""
+    return (
+        session.query(JobPage)
+        .filter(
+            JobPage.job_id == job_id,
+            JobPage.page_number == page_number,
+            JobPage.sub_page_index.isnot(None),
+        )
+        .order_by(JobPage.sub_page_index.asc())
+        .all()
+    )
+
+
 def _fetch_iep1d_rectified_uri(session: Session, lineage_id: str) -> str | None:
     """
     Attempt to retrieve the IEP1D rectified artifact URI from service_invocations.
@@ -194,7 +217,7 @@ def _params_from_human_correction(
     hcf: dict[str, Any],
 ) -> tuple[list[int] | None, float | None, int | None]:
     """
-    Extract (crop_box, deskew_angle, split_x) from a human_correction_fields JSONB dict.
+    Extract crop, deskew, and any stored split boundary from human correction data.
 
     Coerces crop_box values to int and split_x to int to ensure consistent types.
     deskew_angle is returned as-is (float or None).
@@ -213,10 +236,11 @@ def _params_from_gate(
     gate: QualityGateLog,
 ) -> tuple[list[int] | None, float | None, int | None]:
     """
-    Derive current correction parameters from the geometry gate log.
+    Derive current workspace defaults from the geometry gate log.
 
     crop_box: derived from the selected model's pages[0].bbox (x_min, y_min, x_max, y_max).
-    split_x:  derived from the selected model's top-level split_x field.
+    split_x:  derived from the selected model's top-level split_x field as
+              backend context for structure suggestions or fallback behavior.
     deskew_angle: always None — the IEP1C normalization deskew angle is not stored
                   in the DB (see module-level known-limitation note).
 
@@ -250,6 +274,17 @@ def _params_from_gate(
     split_x: int | None = int(raw_split_x) if raw_split_x is not None else None
 
     return crop_box, None, split_x
+
+
+def _suggested_page_structure(
+    *,
+    current_split_x: int | None,
+    child_pages: list[JobPage],
+) -> str:
+    """Derive the default single-page vs spread choice for the workspace UI."""
+    if child_pages or current_split_x is not None:
+        return "spread"
+    return "single"
 
 
 # ── Main assembly entry point ──────────────────────────────────────────────────
@@ -305,6 +340,7 @@ def assemble_correction_workspace(
 
     # ── Step 4: Fetch most recent geometry gate log ────────────────────────────
     gate = _fetch_latest_geometry_gate(session, job_id, page_number)
+    child_pages = _fetch_child_pages(session, job_id, page_number)
 
     # ── Step 5: Source image references ────────────────────────────────────────
     # original_otiff_uri: from page_lineage.otiff_uri; fall back to input_image_uri
@@ -343,7 +379,7 @@ def assemble_correction_workspace(
     )
 
     # ── Step 8: Current correction parameters ─────────────────────────────────
-    # Priority: human_correction_fields (re-correction) > gate geometry derivation
+    # Priority: prior human correction data > geometry-derived defaults
     current_crop_box: list[int] | None = None
     current_deskew_angle: float | None = None
     current_split_x: int | None = None
@@ -354,6 +390,20 @@ def assemble_correction_workspace(
         )
     elif gate is not None:
         current_crop_box, current_deskew_angle, current_split_x = _params_from_gate(gate)
+
+    suggested_page_structure = _suggested_page_structure(
+        current_split_x=current_split_x,
+        child_pages=child_pages,
+    )
+    child_page_summaries = [
+        ChildPageSummary(
+            sub_page_index=int(child.sub_page_index),
+            status=child.status,  # type: ignore[arg-type]
+            output_image_uri=child.output_image_uri,
+        )
+        for child in child_pages
+        if child.sub_page_index is not None
+    ]
 
     # ── Step 9: Assemble and return ────────────────────────────────────────────
     return CorrectionWorkspaceResponse(
@@ -366,6 +416,8 @@ def assemble_correction_workspace(
         original_otiff_uri=original_otiff_uri,
         best_output_uri=best_output_uri,
         branch_outputs=branch_outputs,
+        suggested_page_structure=suggested_page_structure,  # type: ignore[arg-type]
+        child_pages=child_page_summaries,
         current_crop_box=current_crop_box,
         current_deskew_angle=current_deskew_angle,
         current_split_x=current_split_x,

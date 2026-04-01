@@ -18,7 +18,7 @@ import {
   rejectPage,
   submitCorrection,
 } from "@/lib/api/correction";
-import type { CorrectionWorkspaceDetail } from "@/types/api";
+import type { CorrectionWorkspaceDetail, PageStructure } from "@/types/api";
 import { reviewReasonLabel, snakeToTitle, truncateId } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 import { getApiErrorMessage } from "@/lib/api/client";
@@ -56,8 +56,10 @@ export function CorrectionWorkspace({
   pageNumber,
   subPageIndex,
   backPath = "/queue",
-  isAdmin: _isAdmin,
+  isAdmin = false,
 }: WorkspaceProps) {
+  void isAdmin;
+
   const router = useRouter();
   const queryClient = useQueryClient();
 
@@ -75,7 +77,7 @@ export function CorrectionWorkspace({
   const [activeSource, setActiveSource] = useState<SourceView>("best_output");
   const [cropBox, setCropBox] = useState<[number, number, number, number] | null>(null);
   const [deskewAngle, setDeskewAngle] = useState<number | null>(null);
-  const [splitX, setSplitX] = useState("");
+  const [pageStructure, setPageStructure] = useState<PageStructure>("single");
   const [reviewerNotes, setReviewerNotes] = useState("");
   const [showRejectModal, setShowRejectModal] = useState(false);
 
@@ -89,31 +91,48 @@ export function CorrectionWorkspace({
     if (!workspace) return;
     setCropBox(workspace.current_crop_box ?? null);
     setDeskewAngle(workspace.current_deskew_angle ?? null);
-    setSplitX(
-      workspace.current_split_x != null ? String(workspace.current_split_x) : ""
-    );
+    setPageStructure(workspace.suggested_page_structure ?? "single");
   }, [workspace]);
+
+  const workspacePathForSubPage = (nextSubPageIndex: number) =>
+    `${backPath}/${jobId}/${pageNumber}/workspace?sub_page_index=${nextSubPageIndex}`;
 
   const submitMut = useMutation({
     mutationFn: () =>
-      submitCorrection(jobId, pageNumber, {
-        crop_box: cropBox
-          ? (cropBox.map(Math.round) as [number, number, number, number])
-          : null,
-        deskew_angle: deskewAngle,
-        split_x: splitX ? Math.round(parseFloat(splitX)) : null,
-      }, {
-        subPageIndex,
-        notes: reviewerNotes,
-      }),
+      submitCorrection(
+        jobId,
+        pageNumber,
+        {
+          crop_box:
+            subPageIndex != null || pageStructure === "single"
+              ? cropBox
+                ? (cropBox.map(Math.round) as [number, number, number, number])
+                : null
+              : null,
+          deskew_angle:
+            subPageIndex != null || pageStructure === "single" ? deskewAngle : null,
+          page_structure: subPageIndex == null ? pageStructure : undefined,
+          split_x: null,
+        },
+        {
+          subPageIndex,
+          notes: reviewerNotes,
+        }
+      ),
     onSuccess: () => {
       toast.success("Correction submitted.");
       queryClient.invalidateQueries({ queryKey: ["correction-queue"] });
+      queryClient.invalidateQueries({ queryKey: ["ptiff-qa", jobId] });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       queryClient.invalidateQueries({
         queryKey: ["correction-workspace", jobId, pageNumber, subPageIndex],
       });
-      router.push(backPath);
+      if (subPageIndex == null && pageStructure === "spread") {
+        const firstChildIndex = workspace?.child_pages[0]?.sub_page_index ?? 0;
+        router.push(workspacePathForSubPage(firstChildIndex));
+      } else {
+        router.push(backPath);
+      }
     },
     onError: (err: unknown) => {
       const status = (err as { status?: number })?.status;
@@ -166,8 +185,8 @@ export function CorrectionWorkspace({
           status === 409
             ? "This page is no longer in pending_human_correction state."
             : status === 404
-            ? "Page not found in the correction queue."
-            : "An error occurred loading the correction workspace."
+              ? "Page not found in the correction queue."
+              : "An error occurred loading the correction workspace."
         }
       />
     );
@@ -176,6 +195,10 @@ export function CorrectionWorkspace({
   const cropBoxObj = cropBox
     ? { x1: cropBox[0], y1: cropBox[1], x2: cropBox[2], y2: cropBox[3] }
     : null;
+  const isChildPage = workspace.sub_page_index != null;
+  const hasChildPages = workspace.child_pages.length > 0;
+  const isSpreadSelection = !isChildPage && pageStructure === "spread";
+  const canEditGeometry = isChildPage || pageStructure === "single";
 
   return (
     <div className="flex h-full flex-col bg-slate-50/80">
@@ -200,7 +223,7 @@ export function CorrectionWorkspace({
               <span className="text-xs text-slate-300">|</span>
               <span className="text-xs text-slate-700">
                 Page {pageNumber}
-                {workspace.sub_page_index != null && ` (sub ${workspace.sub_page_index})`}
+                {workspace.sub_page_index != null && ` / Page ${workspace.sub_page_index}`}
               </span>
               <Badge variant="warning" className="capitalize">
                 {workspace.material_type}
@@ -337,12 +360,9 @@ export function CorrectionWorkspace({
             imageUrl={viewerData?.blobUrl ?? null}
             isLoading={viewerLoading}
             cropBox={cropBoxObj}
-            splitX={splitX ? parseFloat(splitX) : undefined}
             deskewAngle={deskewAngle ?? 0}
             showCropOverlay
-            showSplitOverlay={!!splitX}
             onCropBoxChange={(box) => setCropBox([box.x1, box.y1, box.x2, box.y2])}
-            onSplitXChange={(x) => setSplitX(String(Math.round(x)))}
           />
         </div>
 
@@ -354,130 +374,217 @@ export function CorrectionWorkspace({
           </div>
 
           <div className="flex-1 space-y-5 p-3">
-            <div className="space-y-2">
-              <Label className="text-xs text-slate-600">
-                Crop Box{" "}
-                <span className="font-normal text-slate-400">[x1, y1, x2, y2]</span>
-              </Label>
-              <div className="grid grid-cols-2 gap-1.5">
-                {["X1", "Y1", "X2", "Y2"].map((field, index) => (
-                  <div key={field} className="space-y-0.5">
-                    <span className="text-2xs text-slate-500">{field}</span>
+            {!isChildPage && (
+              <>
+                <div className="space-y-2">
+                  <Label className="text-xs text-slate-600">Page Structure</Label>
+                  <div className="grid grid-cols-2 gap-2">
+                    <button
+                      type="button"
+                      onClick={() => setPageStructure("single")}
+                      className={cn(
+                        "rounded-lg border px-3 py-2 text-left transition-colors",
+                        pageStructure === "single"
+                          ? "border-indigo-200 bg-indigo-50 text-indigo-700"
+                          : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                      )}
+                    >
+                      <div className="text-xs font-semibold">Single page</div>
+                      <div className="mt-1 text-2xs text-slate-500">
+                        Review this artifact as one page.
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setPageStructure("spread")}
+                      className={cn(
+                        "rounded-lg border px-3 py-2 text-left transition-colors",
+                        pageStructure === "spread"
+                          ? "border-indigo-200 bg-indigo-50 text-indigo-700"
+                          : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                      )}
+                    >
+                      <div className="text-xs font-semibold">Two-page spread</div>
+                      <div className="mt-1 text-2xs text-slate-500">
+                        Create Page 0 and Page 1 child workspaces.
+                      </div>
+                    </button>
+                  </div>
+                  {workspace.branch_outputs.iep1a_geometry?.split_required ? (
+                    <p className="flex items-center gap-1 text-2xs text-amber-600">
+                      <AlertTriangle className="h-3 w-3" />
+                      IEP1 suggests this artifact is a two-page spread.
+                    </p>
+                  ) : (
+                    <p className="text-2xs text-slate-400">
+                      Confirm the page structure before reviewing crop and deskew.
+                    </p>
+                  )}
+                  {isSpreadSelection && (
+                    <div className="flex items-start gap-1.5 rounded border border-cyan-200 bg-cyan-50 p-2 text-2xs text-cyan-700">
+                      <GitBranch className="mt-0.5 h-3 w-3 shrink-0" />
+                      <span>
+                        Submitting this choice creates or reuses child pages, then opens
+                        Page 0 and Page 1 for separate correction.
+                      </span>
+                    </div>
+                  )}
+                </div>
+
+                <Separator />
+              </>
+            )}
+
+            {hasChildPages && (
+              <>
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs text-slate-600">Child Pages</Label>
+                    <span className="text-2xs text-slate-400">
+                      Parent stays as lineage anchor
+                    </span>
+                  </div>
+                  <div className="grid grid-cols-2 gap-2">
+                    {workspace.child_pages.map((child) => (
+                      <button
+                        key={child.sub_page_index}
+                        type="button"
+                        onClick={() => router.push(workspacePathForSubPage(child.sub_page_index))}
+                        className={cn(
+                          "rounded-lg border px-3 py-2 text-left transition-colors",
+                          workspace.sub_page_index === child.sub_page_index
+                            ? "border-indigo-200 bg-indigo-50"
+                            : "border-slate-200 bg-white hover:bg-slate-50"
+                        )}
+                      >
+                        <div className="text-xs font-semibold text-slate-700">
+                          Page {child.sub_page_index}
+                        </div>
+                        <div className="mt-1 text-2xs text-slate-500">
+                          {snakeToTitle(child.status)}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
+                <Separator />
+              </>
+            )}
+
+            {!canEditGeometry && (
+              <>
+                <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
+                  <p className="text-xs font-medium text-slate-700">
+                    Spread structure confirmed
+                  </p>
+                  <p className="mt-1 text-2xs leading-relaxed text-slate-500">
+                    Crop and deskew are applied on Page 0 and Page 1 separately after the
+                    child pages are created.
+                  </p>
+                </div>
+
+                <Separator />
+              </>
+            )}
+
+            {canEditGeometry && (
+              <>
+                <div className="space-y-2">
+                  <Label className="text-xs text-slate-600">
+                    Crop Box{" "}
+                    <span className="font-normal text-slate-400">[x1, y1, x2, y2]</span>
+                  </Label>
+                  <div className="grid grid-cols-2 gap-1.5">
+                    {["X1", "Y1", "X2", "Y2"].map((field, index) => (
+                      <div key={field} className="space-y-0.5">
+                        <span className="text-2xs text-slate-500">{field}</span>
+                        <Input
+                          type="number"
+                          value={cropBox?.[index] != null ? Math.round(cropBox[index]) : ""}
+                          onChange={(event) => {
+                            const value = parseFloat(event.target.value);
+                            if (Number.isNaN(value)) return;
+                            const next = [...(cropBox ?? [0, 0, 0, 0])] as [
+                              number,
+                              number,
+                              number,
+                              number,
+                            ];
+                            next[index] = value;
+                            setCropBox(next);
+                          }}
+                          className="h-8 text-xs tabular-nums"
+                          placeholder="-"
+                        />
+                      </div>
+                    ))}
+                  </div>
+                  {!cropBox && (
+                    <p className="flex items-center gap-1 text-2xs text-slate-400">
+                      <Info className="h-3 w-3" />
+                      No geometry. Drag on the image to set it.
+                    </p>
+                  )}
+                </div>
+
+                <Separator />
+
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <Label className="text-xs text-slate-600">
+                      Deskew Angle{" "}
+                      <span className="font-normal text-slate-400">(deg)</span>
+                    </Label>
+                    {deskewAngle != null && (
+                      <button
+                        type="button"
+                        onClick={() => setDeskewAngle(null)}
+                        className="text-2xs text-slate-400 hover:text-slate-600"
+                      >
+                        clear
+                      </button>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="range"
+                      min="-45"
+                      max="45"
+                      step="0.1"
+                      value={deskewAngle ?? 0}
+                      onChange={(e) => setDeskewAngle(parseFloat(e.target.value))}
+                      className="h-1.5 flex-1 accent-indigo-500"
+                    />
                     <Input
                       type="number"
-                      value={cropBox?.[index] != null ? Math.round(cropBox[index]) : ""}
-                      onChange={(event) => {
-                        const value = parseFloat(event.target.value);
-                        if (Number.isNaN(value)) return;
-                        const next = [...(cropBox ?? [0, 0, 0, 0])] as [
-                          number,
-                          number,
-                          number,
-                          number,
-                        ];
-                        next[index] = value;
-                        setCropBox(next);
+                      step="0.1"
+                      min="-45"
+                      max="45"
+                      value={deskewAngle ?? ""}
+                      onChange={(e) => {
+                        const v = parseFloat(e.target.value);
+                        setDeskewAngle(Number.isNaN(v) ? null : Math.max(-45, Math.min(45, v)));
                       }}
-                      className="h-8 text-xs tabular-nums"
-                      placeholder="-"
+                      placeholder="null"
+                      className="h-8 w-20 text-xs tabular-nums"
                     />
                   </div>
-                ))}
-              </div>
-              {!cropBox && (
-                <p className="flex items-center gap-1 text-2xs text-slate-400">
-                  <Info className="h-3 w-3" />
-                  No geometry. Drag on the image to set it.
-                </p>
-              )}
-            </div>
-
-            <Separator />
-
-            <div className="space-y-2">
-              <div className="flex items-center justify-between">
-                <Label className="text-xs text-slate-600">
-                  Deskew Angle{" "}
-                  <span className="font-normal text-slate-400">(°)</span>
-                </Label>
-                {deskewAngle != null && (
-                  <button
-                    type="button"
-                    onClick={() => setDeskewAngle(null)}
-                    className="text-2xs text-slate-400 hover:text-slate-600"
-                  >
-                    clear
-                  </button>
-                )}
-              </div>
-              <div className="flex items-center gap-2">
-                <input
-                  type="range"
-                  min="-45"
-                  max="45"
-                  step="0.1"
-                  value={deskewAngle ?? 0}
-                  onChange={(e) => setDeskewAngle(parseFloat(e.target.value))}
-                  className="h-1.5 flex-1 accent-indigo-500"
-                />
-                <Input
-                  type="number"
-                  step="0.1"
-                  min="-45"
-                  max="45"
-                  value={deskewAngle ?? ""}
-                  onChange={(e) => {
-                    const v = parseFloat(e.target.value);
-                    setDeskewAngle(Number.isNaN(v) ? null : Math.max(-45, Math.min(45, v)));
-                  }}
-                  placeholder="null"
-                  className="h-8 w-20 text-xs tabular-nums"
-                />
-              </div>
-              {deskewAngle == null ? (
-                <p className="flex items-center gap-1 text-2xs text-slate-400">
-                  <Info className="h-3 w-3" />
-                  No deskew — drag slider or type a value.
-                </p>
-              ) : (
-                <p className="text-2xs text-slate-400">
-                  Live preview shown on image.
-                </p>
-              )}
-            </div>
-
-            <Separator />
-
-            <div className="space-y-2">
-              <Label className="text-xs text-slate-600">
-                Split X{" "}
-                <span className="font-normal text-slate-400">(px from left)</span>
-              </Label>
-              <Input
-                type="number"
-                step="1"
-                value={splitX}
-                onChange={(event) => setSplitX(event.target.value)}
-                placeholder="- (null for no split)"
-                className="text-xs"
-              />
-              {workspace.branch_outputs.iep1a_geometry?.split_required && (
-                <p className="flex items-center gap-1 text-2xs text-amber-600">
-                  <AlertTriangle className="h-3 w-3" />
-                  IEP1A detected a split.
-                </p>
-              )}
-              {splitX && (
-                <div className="flex items-start gap-1.5 rounded border border-cyan-200 bg-cyan-50 p-2 text-2xs text-cyan-700">
-                  <GitBranch className="mt-0.5 h-3 w-3 shrink-0" />
-                  <span>
-                    Submitting with split_x creates two child sub-pages (sub&nbsp;0&nbsp;=&nbsp;left, sub&nbsp;1&nbsp;=&nbsp;right). Each child is persisted independently and re-enters the pipeline.
-                  </span>
+                  {deskewAngle == null ? (
+                    <p className="flex items-center gap-1 text-2xs text-slate-400">
+                      <Info className="h-3 w-3" />
+                      No deskew - drag the slider or type a value.
+                    </p>
+                  ) : (
+                    <p className="text-2xs text-slate-400">
+                      Live preview shown on image.
+                    </p>
+                  )}
                 </div>
-              )}
-            </div>
 
-            <Separator />
+                <Separator />
+              </>
+            )}
 
             <div className="space-y-2">
               <Label className="text-xs text-slate-600">Reviewer Notes</Label>
@@ -494,18 +601,39 @@ export function CorrectionWorkspace({
                 Will Submit
               </p>
               <SubmitRow
+                label="Structure"
+                value={
+                  isChildPage
+                    ? `Page ${workspace.sub_page_index}`
+                    : pageStructure === "spread"
+                      ? "Two-page spread"
+                      : "Single page"
+                }
+              />
+              <SubmitRow
                 label="Crop Box"
-                value={cropBox ? `[${cropBox.map((value) => Math.round(value)).join(", ")}]` : "null"}
+                value={
+                  canEditGeometry && cropBox
+                    ? `[${cropBox.map((value) => Math.round(value)).join(", ")}]`
+                    : canEditGeometry
+                      ? "null"
+                      : "child workflow"
+                }
               />
               <SubmitRow
                 label="Deskew"
-                value={deskewAngle != null ? `${deskewAngle}°` : "null"}
+                value={
+                  canEditGeometry
+                    ? deskewAngle != null
+                      ? `${deskewAngle} deg`
+                      : "null"
+                    : "child workflow"
+                }
               />
-              <SubmitRow label="Split X" value={splitX || "null"} />
-              {splitX && (
+              {isSpreadSelection && (
                 <div className="flex items-center gap-1 text-2xs text-cyan-600">
                   <GitBranch className="h-2.5 w-2.5 shrink-0" />
-                  <span>Creates sub-pages 0 + 1</span>
+                  <span>Creates or reuses Page 0 and Page 1</span>
                 </div>
               )}
             </div>
@@ -519,7 +647,7 @@ export function CorrectionWorkspace({
               disabled={rejectMut.isPending}
             >
               <CheckCircle className="h-4 w-4" />
-              Submit Correction
+              {isSpreadSelection ? "Create Child Pages" : "Submit Correction"}
             </Button>
             <Button
               variant="danger"

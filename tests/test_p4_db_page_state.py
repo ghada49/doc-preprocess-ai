@@ -21,11 +21,14 @@ Session is mocked — no live database required.
 
 from __future__ import annotations
 
+import sys
+import types
 from typing import Any, cast
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from services.eep.app.db.models import JobPage
 from services.eep.app.db.page_state import (
     TERMINAL_PAGE_STATES,
     VALID_TRANSITIONS,
@@ -168,6 +171,64 @@ class TestAdvancePageStateReturnValue:
         session.query.return_value.filter.return_value.update.return_value = 0
         result = advance_page_state(session, "pg-1", "preprocessing", "ptiff_qa_pending")
         assert result is False
+
+
+class TestAdvancePageStateLayoutCompletionHook:
+    @staticmethod
+    def _page(*, sub_page_index: int | None = 0) -> JobPage:
+        return JobPage(
+            page_id="pg-1",
+            job_id="job-1",
+            page_number=5,
+            sub_page_index=sub_page_index,
+            status="accepted",
+            input_image_uri="s3://bucket/input.tiff",
+        )
+
+    @pytest.mark.parametrize("to_state", ["accepted", "review", "failed"])
+    def test_calls_finalize_after_successful_layout_terminal_transition(
+        self,
+        session: MagicMock,
+        to_state: str,
+    ) -> None:
+        page = self._page()
+        session.get.return_value = page
+        fake_module = types.ModuleType("services.eep_worker.app.layout_completion")
+        mock_finalize = MagicMock()
+        setattr(fake_module, "finalize_layout_page", mock_finalize)
+
+        with patch.dict(sys.modules, {"services.eep_worker.app.layout_completion": fake_module}):
+            result = advance_page_state(session, "pg-1", "layout_detection", to_state)
+
+        assert result is True
+        session.get.assert_called_once_with(JobPage, "pg-1")
+        mock_finalize.assert_called_once_with(session, page)
+
+    def test_skips_finalize_when_layout_transition_cas_misses(self, session: MagicMock) -> None:
+        session.query.return_value.filter.return_value.update.return_value = 0
+        session.get.return_value = self._page()
+        fake_module = types.ModuleType("services.eep_worker.app.layout_completion")
+        mock_finalize = MagicMock()
+        setattr(fake_module, "finalize_layout_page", mock_finalize)
+
+        with patch.dict(sys.modules, {"services.eep_worker.app.layout_completion": fake_module}):
+            result = advance_page_state(session, "pg-1", "layout_detection", "accepted")
+
+        assert result is False
+        session.get.assert_not_called()
+        mock_finalize.assert_not_called()
+
+    def test_skips_finalize_for_non_layout_transition(self, session: MagicMock) -> None:
+        session.get.return_value = self._page()
+        fake_module = types.ModuleType("services.eep_worker.app.layout_completion")
+        mock_finalize = MagicMock()
+        setattr(fake_module, "finalize_layout_page", mock_finalize)
+
+        with patch.dict(sys.modules, {"services.eep_worker.app.layout_completion": fake_module}):
+            advance_page_state(session, "pg-1", "queued", "preprocessing")
+
+        session.get.assert_not_called()
+        mock_finalize.assert_not_called()
 
 
 # ── advance_page_state — invalid transitions ───────────────────────────────────

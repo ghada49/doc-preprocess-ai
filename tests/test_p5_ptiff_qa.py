@@ -466,6 +466,45 @@ class TestApprovePageEndpoint:
         for c in mock_advance.call_args_list:
             assert c.kwargs["to_state"] == "layout_detection" or c[0][3] == "layout_detection"
 
+    def test_approve_child_only_marks_requested_sub_page(self) -> None:
+        job = _make_job(pipeline_mode="layout")
+        parent = _make_page(
+            page_id="parent",
+            page_number=3,
+            sub_page_index=None,
+            status="pending_human_correction",
+        )
+        child_0 = _make_page(
+            page_id="c0",
+            page_number=3,
+            sub_page_index=0,
+            status="ptiff_qa_pending",
+            ptiff_qa_approved=False,
+        )
+        child_1 = _make_page(
+            page_id="c1",
+            page_number=3,
+            sub_page_index=1,
+            status="ptiff_qa_pending",
+            ptiff_qa_approved=False,
+        )
+
+        session = _make_session(
+            job=job,
+            first_query_pages=[child_1],
+            second_query_pages=[parent, child_0, child_1],
+        )
+        self._inject(session)
+
+        with patch("services.eep.app.correction.ptiff_qa.advance_page_state") as mock_advance:
+            r = self.client.post("/v1/jobs/job-001/pages/3/ptiff-qa/approve?sub_page_index=1")
+
+        assert r.status_code == 200
+        assert r.json()["gate_released"] is False
+        assert child_0.ptiff_qa_approved is False
+        assert child_1.ptiff_qa_approved is True
+        mock_advance.assert_not_called()
+
     def test_404_when_job_not_found(self) -> None:
         session = _make_session(job=None)
         self._inject(session)
@@ -675,6 +714,40 @@ class TestEditPageEndpoint:
             self.client.post("/v1/jobs/job-001/pages/1/ptiff-qa/edit")
 
         assert page.ptiff_qa_approved is False
+
+    def test_edit_child_only_affects_requested_sub_page(self) -> None:
+        job = _make_job()
+        child_0 = _make_page(
+            page_id="c0",
+            page_number=3,
+            sub_page_index=0,
+            ptiff_qa_approved=True,
+        )
+        child_1 = _make_page(
+            page_id="c1",
+            page_number=3,
+            sub_page_index=1,
+            ptiff_qa_approved=True,
+        )
+
+        session = _make_session(job=job, first_query_pages=[child_0])
+        self._inject(session)
+
+        with patch(
+            "services.eep.app.correction.ptiff_qa.advance_page_state",
+            return_value=True,
+        ) as mock_advance:
+            r = self.client.post("/v1/jobs/job-001/pages/3/ptiff-qa/edit?sub_page_index=0")
+
+        assert r.status_code == 200
+        mock_advance.assert_called_once_with(
+            session,
+            child_0.page_id,
+            from_state="ptiff_qa_pending",
+            to_state="pending_human_correction",
+        )
+        assert child_0.ptiff_qa_approved is False
+        assert child_1.ptiff_qa_approved is True
 
     def test_404_when_job_not_found(self) -> None:
         session = _make_session(job=None)

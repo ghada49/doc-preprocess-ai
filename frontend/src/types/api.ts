@@ -242,6 +242,14 @@ export interface BranchOutputs {
   iep1d_rectified: string | null;
 }
 
+export type PageStructure = "single" | "spread";
+
+export interface CorrectionWorkspaceChildPage {
+  sub_page_index: number;
+  status: PageState;
+  output_image_uri: string | null;
+}
+
 export interface CorrectionWorkspaceDetail {
   job_id: string;
   page_number: number;
@@ -252,6 +260,8 @@ export interface CorrectionWorkspaceDetail {
   original_otiff_uri: string | null;
   best_output_uri: string | null;
   branch_outputs: BranchOutputs;
+  suggested_page_structure: PageStructure;
+  child_pages: CorrectionWorkspaceChildPage[];
   current_crop_box: [number, number, number, number] | null;
   current_deskew_angle: number | null;
   current_split_x: number | null;
@@ -260,6 +270,7 @@ export interface CorrectionWorkspaceDetail {
 export interface SubmitCorrectionRequest {
   crop_box: [number, number, number, number] | null;
   deskew_angle: number | null;
+  page_structure?: PageStructure | null;
   split_x: number | null;
   notes?: string | null;
 }

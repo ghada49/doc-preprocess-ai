@@ -71,6 +71,7 @@ def _make_job(
 
 
 def _make_page(
+    page_id: str = "page-001",
     job_id: str = "job-001",
     page_number: int = 1,
     sub_page_index: int | None = None,
@@ -80,6 +81,7 @@ def _make_page(
     input_image_uri: str = "s3://bucket/raw/page1.tiff",
 ) -> JobPage:
     page = MagicMock(spec=JobPage)
+    page.page_id = page_id
     page.job_id = job_id
     page.page_number = page_number
     page.sub_page_index = sub_page_index
@@ -161,6 +163,7 @@ def _setup_session(
     page: JobPage | None,
     lineage: PageLineage | None = None,
     gate: QualityGateLog | None = None,
+    child_pages: list[JobPage] | None = None,
     inv_metrics: dict[str, Any] | None = None,
 ) -> None:
     """
@@ -195,6 +198,9 @@ def _setup_session(
     # Gate query (has extra .order_by() call)
     call_results.append(gate)
 
+    # Child-page query (has extra .order_by() + .all() call)
+    call_results.append(child_pages or [])
+
     # IEP1D invocation query (only called when iep1d_used=True)
     if lineage is not None and lineage.iep1d_used:
         if inv_metrics is not None:
@@ -214,6 +220,7 @@ def _setup_session(
         chain.filter.return_value = chain
         chain.order_by.return_value = chain
         chain.first.return_value = result
+        chain.all.return_value = result if isinstance(result, list) else []
         return chain
 
     def _query_side_effect(*args: Any, **kwargs: Any) -> MagicMock:
@@ -420,6 +427,8 @@ class TestAssembleCorrectionWorkspace:
         assert result.current_crop_box is None
         assert result.current_deskew_angle is None
         assert result.current_split_x is None
+        assert result.suggested_page_structure == "single"
+        assert result.child_pages == []
 
     # ── Scenario: original + branch artifacts ─────────────────────────────────
 
@@ -475,6 +484,7 @@ class TestAssembleCorrectionWorkspace:
         assert result.current_crop_box == [100, 80, 2400, 3200]
         assert result.current_split_x == 1200
         assert result.current_deskew_angle is None  # never from gate
+        assert result.suggested_page_structure == "spread"
 
     # ── Missing optional branch outputs ───────────────────────────────────────
 
@@ -580,6 +590,7 @@ class TestAssembleCorrectionWorkspace:
 
         result = assemble_correction_workspace(session, "job-001", 1)
         assert result.current_split_x is None
+        assert result.suggested_page_structure == "single"
 
     def test_split_page_has_split_x_from_gate(self, session: MagicMock) -> None:
         job = _make_job()
@@ -597,6 +608,7 @@ class TestAssembleCorrectionWorkspace:
 
         result = assemble_correction_workspace(session, "job-001", 1)
         assert result.current_split_x == 1150
+        assert result.suggested_page_structure == "spread"
 
     def test_split_child_sub_page_index_0(self, session: MagicMock) -> None:
         job = _make_job()
@@ -611,6 +623,7 @@ class TestAssembleCorrectionWorkspace:
 
         result = assemble_correction_workspace(session, "job-001", 1, sub_page_index=0)
         assert result.sub_page_index == 0
+        assert result.child_pages == []
 
     def test_split_child_sub_page_index_1(self, session: MagicMock) -> None:
         job = _make_job()
@@ -625,6 +638,97 @@ class TestAssembleCorrectionWorkspace:
 
         result = assemble_correction_workspace(session, "job-001", 1, sub_page_index=1)
         assert result.sub_page_index == 1
+        assert result.child_pages == []
+
+    def test_existing_child_pages_are_returned_for_parent_workspace(
+        self, session: MagicMock
+    ) -> None:
+        job = _make_job()
+        page = _make_page(
+            status="pending_human_correction",
+            review_reasons=["split_confidence_low"],
+            output_image_uri="s3://bucket/norm.tiff",
+        )
+        lineage = _make_lineage(output_image_uri="s3://bucket/norm.tiff")
+        gate = _make_gate(
+            iep1a_geometry=_geo_jsonb(split_x=1150, split_required=True, page_count=2),
+            selected_model="iep1a",
+        )
+        children = [
+            _make_page(
+                page_id="child-0",
+                sub_page_index=0,
+                status="pending_human_correction",
+                output_image_uri="s3://bucket/jobs/job-001/corrected/1_0.tiff",
+            ),
+            _make_page(
+                page_id="child-1",
+                sub_page_index=1,
+                status="ptiff_qa_pending",
+                output_image_uri="s3://bucket/jobs/job-001/corrected/1_1.tiff",
+            ),
+        ]
+        _setup_session(
+            session,
+            job=job,
+            page=page,
+            lineage=lineage,
+            gate=gate,
+            child_pages=children,
+        )
+
+        result = assemble_correction_workspace(session, "job-001", 1)
+
+        assert result.suggested_page_structure == "spread"
+        assert [child.sub_page_index for child in result.child_pages] == [0, 1]
+        assert result.child_pages[0].status == "pending_human_correction"
+        assert (
+            result.child_pages[1].output_image_uri == "s3://bucket/jobs/job-001/corrected/1_1.tiff"
+        )
+
+    def test_child_workspace_includes_sibling_navigation(self, session: MagicMock) -> None:
+        job = _make_job()
+        page = _make_page(
+            status="pending_human_correction",
+            sub_page_index=0,
+            review_reasons=["artifact_validation_failed"],
+            output_image_uri="s3://bucket/jobs/job-001/corrected/1_0.tiff",
+        )
+        lineage = _make_lineage(
+            sub_page_index=0,
+            output_image_uri="s3://bucket/jobs/job-001/corrected/1_0.tiff",
+        )
+        gate = _make_gate(
+            iep1a_geometry=_geo_jsonb(split_x=1150, split_required=True, page_count=2),
+            selected_model="iep1a",
+        )
+        children = [
+            _make_page(
+                page_id="child-0",
+                sub_page_index=0,
+                status="pending_human_correction",
+                output_image_uri="s3://bucket/jobs/job-001/corrected/1_0.tiff",
+            ),
+            _make_page(
+                page_id="child-1",
+                sub_page_index=1,
+                status="ptiff_qa_pending",
+                output_image_uri="s3://bucket/jobs/job-001/corrected/1_1.tiff",
+            ),
+        ]
+        _setup_session(
+            session,
+            job=job,
+            page=page,
+            lineage=lineage,
+            gate=gate,
+            child_pages=children,
+        )
+
+        result = assemble_correction_workspace(session, "job-001", 1, sub_page_index=0)
+
+        assert result.sub_page_index == 0
+        assert [child.sub_page_index for child in result.child_pages] == [0, 1]
 
     # ── Human correction field priority ───────────────────────────────────────
 
