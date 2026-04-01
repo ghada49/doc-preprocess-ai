@@ -76,6 +76,8 @@ logs/
 # Jupyter
 .ipynb_checkpoints/
 *.ipynb
+# Track documented training notebooks (override *.ipynb above)
+!training_iep1A/*.ipynb
 
 # Terraform / infra secrets
 *.tfstate
