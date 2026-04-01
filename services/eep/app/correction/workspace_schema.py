@@ -19,10 +19,13 @@ Schema fields:
   original_otiff_uri   — original raw OTIFF input (always included when available)
   best_output_uri      — best available derived preprocessing artifact
   branch_outputs       — per-branch geometry summaries and artifact URIs
+  suggested_page_structure — default structural choice for the reviewer UI
+  child_pages         — existing split child references for Page 0 / Page 1 navigation
   current_crop_box     — [x_min, y_min, x_max, y_max] current crop bounds; None when
                          no geometry or prior correction data is available
   current_deskew_angle — deskew angle in degrees; None when unavailable
-  current_split_x      — horizontal split pixel coordinate; None for single-page
+  current_split_x      — internal split boundary context; retained for backend
+                         compatibility and advanced fallback, not normal reviewer entry
 
 Availability rules (spec Section 11.3):
   - original_otiff_uri: from page_lineage.otiff_uri; always included when available
@@ -40,11 +43,13 @@ Exported:
 
 from __future__ import annotations
 
-from typing import Annotated
+from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-from shared.schemas.eep import MaterialType, PipelineMode
+from shared.schemas.eep import MaterialType, PageState, PipelineMode
+
+PageStructure = Literal["single", "spread"]
 
 # ── Branch-level geometry summary ──────────────────────────────────────────────
 
@@ -92,6 +97,20 @@ class BranchOutputs(BaseModel):
     iep1d_rectified: str | None = None
 
 
+class ChildPageSummary(BaseModel):
+    """
+    Minimal child-page reference used by the correction workspace UI.
+
+    Returned for both split parents and split children so the frontend can
+    render Page 0 / Page 1 navigation after a reviewer-driven spread decision
+    without reconstructing lineage locally.
+    """
+
+    sub_page_index: Annotated[int, Field(ge=0, le=1)]
+    status: PageState
+    output_image_uri: str | None = None
+
+
 # ── Top-level workspace response ───────────────────────────────────────────────
 
 
@@ -109,9 +128,10 @@ class CorrectionWorkspaceResponse(BaseModel):
       - branch_outputs: each available branch artifact included individually
 
     Current correction parameters represent the last-known state for the
-    correction form initial values:
+    correction form initial values and structure defaults:
       - After a prior human correction: from page_lineage.human_correction_fields
       - For a fresh correction routing: derived from quality gate geometry data
+      - suggested_page_structure: the structural choice the UI should default to
       - current_deskew_angle: None when no prior correction exists (the IEP1C
         normalization deskew angle is not stored in the current DB schema)
 
@@ -126,9 +146,11 @@ class CorrectionWorkspaceResponse(BaseModel):
         original_otiff_uri   — URI of the original raw OTIFF input; None when unavailable
         best_output_uri      — URI of best available derived artifact; None when unavailable
         branch_outputs       — per-branch artifact references and geometry summaries
+        suggested_page_structure — default reviewer choice: single page vs spread
+        child_pages         — existing child review units for Page 0 / Page 1 navigation
         current_crop_box     — [x_min, y_min, x_max, y_max] current crop bounds in pixels
         current_deskew_angle — deskew angle in degrees; None when unavailable
-        current_split_x      — horizontal split pixel coordinate; None for single-page
+        current_split_x      — internal split boundary context; None for single-page
     """
 
     job_id: str
@@ -140,6 +162,8 @@ class CorrectionWorkspaceResponse(BaseModel):
     original_otiff_uri: str | None = None
     best_output_uri: str | None = None
     branch_outputs: BranchOutputs
+    suggested_page_structure: PageStructure = "single"
+    child_pages: list[ChildPageSummary] = Field(default_factory=list)
     current_crop_box: Annotated[list[int], Field(min_length=4, max_length=4)] | None = None
     current_deskew_angle: float | None = None
     current_split_x: int | None = None

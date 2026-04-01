@@ -121,7 +121,6 @@ Correction return semantics:
 ---
 
 ## 4. Architecture Overview
-
 ### 4.1 Service Inventory
 
 | Service | Port | Role | Compute | Production Deployment |
@@ -131,16 +130,20 @@ Correction return semantics:
 | IEP1B | 8002 | YOLOv8-pose keypoint regression — secondary page geometry model | GPU (inference) | Scale-to-zero GPU |
 | IEP1C | — | Deterministic normalization: applies selected geometry to full-res image | CPU | Shared module (invoked by EEP, not a network service) |
 | IEP1D | 8003 | UVDoc rectification fallback for warped/distorted pages | GPU | Scale-to-zero GPU |
-| IEP2A | 8004 | Detectron2 Faster R-CNN layout detection (primary, high accuracy) | GPU | Scale-to-zero GPU |
+| IEP2A | 8004 | PaddleOCR PP-StructureV2 layout detection (primary, document-trained) | GPU | Scale-to-zero GPU |
 | IEP2B | 8005 | DocLayout-YOLO layout detection (fast second opinion, document-trained) | GPU (minimal) | Scale-to-zero GPU |
+| Google Document AI | — | External layout adjudicator (escalation only, not self-hosted) | External API | Google Cloud managed service |
 
-Every service exposes: `GET /health` → 200, `GET /ready` → 200/503, `GET /metrics` → Prometheus text.
+Every self-hosted service exposes: `GET /health` → 200, `GET /ready` → 200/503, `GET /metrics` → Prometheus text. Google Document AI is an external API and does not expose these endpoints.
 
-IEP1 is a staged cascade with quality gates, not a peer-consensus preprocessing system. IEP1A and IEP1B are both always-on geometry models. Both run on every page. Their structural outputs are compared as a safety check. In the first pass, disagreement between models reduces geometry trust and triggers rescue flow (rectification and a mandatory second geometry pass) rather than immediately halting preprocessing. In the second pass, both models must agree — this is the authoritative safety gate. Agreement is a structural corroboration signal, not a voting or averaging mechanism.
+IEP1 is a staged cascade with quality gates, not a peer-agreement preprocessing system. IEP1A and IEP1B are both always-on geometry models. Both run on every page. Their structural outputs are compared as a safety check. In the first pass, disagreement between models reduces geometry trust and triggers rescue flow (rectification and a mandatory second geometry pass) rather than immediately halting preprocessing. In the second pass, both models must agree — this is the authoritative safety gate. Agreement is a structural corroboration signal, not a voting or averaging mechanism.
 
 IEP1C is CPU-only deterministic image math. It is invoked as a shared module within EEP, not as a separate network service. A separate service boundary adds latency and operational failure modes without adding model diversity.
 
 IEP1D is a GPU service invoked when artifact validation fails after normalization or when first-pass geometry trust is insufficient. It is a rectification rescue stage, not a geometry model.
+
+IEP2A and IEP2B are local layout candidate generators. Both run on every page that reaches layout detection. When they agree, their agreed result is accepted. When they disagree or either fails, Google Document AI is invoked as the authoritative external adjudicator and its result is accepted as final. This is authoritative external adjudication, not consensus voting.
+
 
 ### 4.2 Data Flow
 
@@ -200,19 +203,34 @@ RAW OTIFF
     here)
         │
         ▼ (layout mode only)
-   IEP2A layout detection
-        │
-        ▼ (if IEP2A returns plausible output)
-   IEP2B layout detection
+   IEP2A layout detection (PaddleOCR)
         │
         ▼
-   Layout consensus gate (EEP)
+   IEP2B layout detection (DocLayout-YOLO)
         │
-   ┌────┴────┐
-   ▼         ▼
-ACCEPTED   review
+        ▼
+   Layout agreement check (EEP)
+        │
+   ┌────┴────────────────┐
+   ▼                     ▼
+ AGREED              DISAGREED / FAILED
+   │                     │
+   ▼                     ▼
+ACCEPTED          Google Document AI
+                  (authoritative external
+                   adjudication)
+                         │
+                  ┌──────┴──────┐
+                  ▼              ▼
+              ACCEPTED        review
+           (Google result    (Google failed)
+            is final)
+
 ```
 
+### §4.3 Internal Endpoint Summary (REPLACE)
+
+```markdown
 ### 4.3 Internal Endpoint Summary
 
 | Service | Route | Request Schema | Response Schema | Timeout |
@@ -221,10 +239,13 @@ ACCEPTED   review
 | IEP1B | `POST /v1/geometry` | GeometryRequest | GeometryResponse or PreprocessError | 30s |
 | IEP1C | (shared module) | NormalizeRequest (internal) | PreprocessBranchResponse (internal) | — |
 | IEP1D | `POST /v1/rectify` | RectifyRequest | RectifyResponse | 60s |
-| IEP2A | `POST /v1/layout-detect` | LayoutDetectRequest | LayoutDetectResponse (detector_type="detectron2") | 60s |
-| IEP2B | `POST /v1/layout-detect` |LayoutDetectRequest | LayoutDetectResponse (detector_type="doclayout_yolo") | 30s |
+| IEP2A | `POST /v1/layout-detect` | LayoutDetectRequest | LayoutDetectResponse (detector_type="ppstructure_layout") | 60s |
+| IEP2B | `POST /v1/layout-detect` | LayoutDetectRequest | LayoutDetectResponse (detector_type="doclayout_yolo") | 30s |
+| Google Document AI | External API | (EEP constructs request internally) | (EEP maps response to LayoutDetectResponse) | 60s |
 
 IEP1A and IEP1B expose identical endpoint schemas. The same GeometryRequest/GeometryResponse contract serves both.
+
+Google Document AI is invoked via the Google Cloud client library, not via an internal HTTP endpoint. EEP is responsible for constructing the request, invoking the API, and mapping the response to the canonical LayoutDetectResponse schema.
 
 ### 4.4 Repository Structure
 
@@ -261,9 +282,13 @@ libraryai/
 │   ├── iep1a/        — YOLOv8-seg geometry service
 │   ├── iep1b/        — YOLOv8-pose geometry service
 │   ├── iep1d/        — UVDoc rectification service
-│   ├── iep2a/        — Detectron2 layout detection
+│   ├── iep2a/        — PaddleOCR PP-StructureV2 layout detection
 │   └── iep2b/        — DocLayout-YOLO layout detection
 ├── shared/
+│   ├── google_docai/            ← Google Document AI integration
+│   │   ├── __init__.py
+│   │   ├── client.py            ← API client wrapper
+│   │   └── mapping.py           ← Google response → canonical LayoutDetectResponse
 │   ├── schemas/
 │   │   ├── ucf.py
 │   │   ├── preprocessing.py
@@ -316,7 +341,7 @@ If agreement cannot be achieved at that stage, the page is routed to pending_hum
 7. After rectification, a second geometry pass + normalization + validation cycle runs.
 8. Pages that fail all validation routes go to `pending_human_correction`.
 
-The IEP2 layout detection pipeline uses consensus agreement between two layout detectors (IEP2A + IEP2B). Consensus is an IEP2-only concept.
+The IEP2 layout detection pipeline uses two local candidate generators (IEP2A and IEP2B) with Google Document AI as the authoritative external adjudicator. When IEP2A and IEP2B agree, their agreed result is accepted. When they disagree or either fails, Google Document AI is called and its result is accepted as final. This is authoritative external adjudication — the term "consensus" does not apply to IEP2.
 
 ### 5.3 Shared Invariant
 
@@ -328,7 +353,8 @@ For IEP1: structural agreement between IEP1A and IEP1B is the authoritative safe
 
 High confidence from a single model is never sufficient for final auto-acceptance. This is not consensus voting; it is a two-stage quality gate requiring structural corroboration before final acceptance.
 
-For IEP2: consensus agreement between IEP2A and IEP2B on layout regions after both services map their native classes to the canonical LibraryAI layout ontology. Single-model auto-acceptance is prohibited. Consensus is the appropriate term for IEP2 because layout region matching involves a similarity-scored comparison across region sets, not a binary structural verification. Agreement between structurally diverse detectors reduces the probability of error but does not eliminate it; agreement is used as a gating signal, not as a guarantee of correctness.
+For IEP2: local agreement between IEP2A and IEP2B is the fast-path acceptance signal. Both services map their native classes to the canonical LibraryAI layout ontology before comparison. When they agree, their result is accepted without external calls. When they disagree or either service fails, Google Document AI is invoked as the authoritative external adjudicator, and its result is accepted as final. Single-model auto-acceptance without either local agreement or external adjudication is prohibited. The two-tier design (local agreement → external adjudication) ensures that layout detection never relies on a single model's output while keeping external API costs low by calling Google only on escalation.
+
 
 For all cases requiring rectification: the second geometry pass is mandatory. If rectification is unavailable or fails, the artifact is routed to `pending_human_correction`. Skipping the second geometry pass is not permitted for any low-trust or rescue-required artifact.
 
@@ -905,15 +931,16 @@ If `pipeline_mode == "preprocess"`:
 If `pipeline_mode == "layout"`:
 
 - enqueue for layout detection
-
-#### Step 9 — Layout Detection (IEP2A)
+#### Step 9 — Layout Detection (IEP2A — PaddleOCR)
 
 Update page status to "layout_detection".
 
 Invoke IEP2A via GPU backend:
 `iep2a_result = gpu_backend.invoke(component="iep2a", ...)`
 
-If IEP2A fails or returns unusable output: status="review", review_reasons=["layout_detection_failed"], return.
+If IEP2A fails or returns unusable output:
+  → `iep2a_result = None`
+  → proceed directly to Step 11 (external adjudication) — do NOT invoke IEP2B.
 
 **Shadow enqueue (best effort):**
 
@@ -925,22 +952,48 @@ Apply all three conditions:
 
 If all three pass: push shadow task to `libraryai:shadow_tasks`. Failure to enqueue must not affect live routing.
 
-#### Step 10 — Layout Detection (IEP2B)
+#### Step 10 — Layout Detection (IEP2B — DocLayout-YOLO)
 
 If IEP2A returned plausible output, invoke IEP2B:
 `iep2b_result = gpu_backend.invoke(component="iep2b", ...)`
 
-If IEP2B unavailable: `iep2b_result = None` (single-model mode).
+If IEP2B fails or returns unusable output: `iep2b_result = None`.
 
-#### Step 11 — Layout Consensus Gate
+#### Step 11 — Layout Agreement Gate
 
-`result = evaluate_layout_consensus(iep2a, iep2b_or_none, config)`
+Evaluate local agreement between IEP2A and IEP2B:
 
-#### Step 12 — Route After Layout Consensus
+`result = evaluate_layout_agreement(iep2a_result, iep2b_result, config)`
 
-If `layout_consensus.agreed == False`: status="review", review_reasons=["layout_consensus_failed"], return.
+**Decision logic:**
 
-If `layout_consensus.consensus_confidence < config.layout.min_consensus_confidence`: status="review", review_reasons=["layout_consensus_low_confidence"], return.
+- If both results are valid AND `result.local_agreement == True`:
+  → `layout_decision_source = "local_agreement"`
+  → `fallback_used = False`
+  → `final_layout_result` = IEP2A regions (primary detector)
+  → proceed to Step 13 (persist artifacts)
+
+- If either result is None (service failure) OR `result.local_agreement == False`:
+  → proceed to Step 12 (external adjudication)
+
+#### Step 12 — Authoritative External Adjudication (Google Document AI)
+
+Invoke Google Document AI on the preprocessed page artifact:
+`google_result = google_docai_client.detect_layout(image_uri, ...)`
+
+Map Google's response to canonical LayoutDetectResponse via `shared/google_docai/mapping.py`.
+
+**If Google Document AI succeeds:**
+  → `layout_decision_source = "google_document_ai"`
+  → `fallback_used = True`
+  → `final_layout_result` = Google's mapped result
+  → proceed to Step 13 (persist artifacts)
+
+**If Google Document AI fails (API error, timeout, mapping failure):**
+  → `status = "review"`
+  → `review_reasons = ["layout_external_adjudication_failed"]`
+  → record all available partial results in lineage
+  → return
 
 #### Step 13 — Persist Artifacts
 
@@ -949,6 +1002,8 @@ DB-first write order. For each artifact type (preprocessed, layout):
 1. BEGIN transaction → set artifact_state='pending' → COMMIT
 2. Write artifact to S3 at deterministic path
 3. UPDATE: set output_*_uri, set artifact_state='confirmed'
+
+Store `LayoutAdjudicationResult` in `job_pages.layout_adjudication_result` (JSONB).
 
 Update `eep_auto_accept_rate` Gauge (observability only).
 

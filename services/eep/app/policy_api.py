@@ -54,7 +54,7 @@ import logging
 from datetime import datetime
 from typing import Any
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -104,11 +104,7 @@ def _to_record(pv: PolicyVersion) -> PolicyRecord:
 
 def _current_policy(db: Session) -> PolicyVersion | None:
     """Return the most recently applied policy record, or None."""
-    return (
-        db.query(PolicyVersion)
-        .order_by(PolicyVersion.applied_at.desc())
-        .first()
-    )
+    return db.query(PolicyVersion).order_by(PolicyVersion.applied_at.desc()).first()
 
 
 def _parse_yaml_or_400(config_yaml: str) -> dict[str, Any]:

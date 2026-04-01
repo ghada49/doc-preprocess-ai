@@ -137,7 +137,7 @@ services:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
       - grafana_data:/var/lib/grafana
     ports:
-      - "3000:3000"
+      - "3001:3000"
     networks:
       - libraryai-net
     restart: unless-stopped
@@ -164,12 +164,14 @@ services:
     restart: unless-stopped
     depends_on:
       postgres:
-        condition: service_started
+        condition: service_healthy
       redis:
         condition: service_started
       minio:
         condition: service_started
-    command: ["uvicorn", "services.eep.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    command: >
+      sh -c "cd /app/services/eep && alembic upgrade head && cd /app &&
+             uvicorn services.eep.app.main:app --host 0.0.0.0 --port 8000 --reload"
 
   # ── EEP worker ───────────────────────────────────────────────────────────────
 

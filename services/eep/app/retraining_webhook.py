@@ -34,12 +34,13 @@ Exported:
 
 from __future__ import annotations
 
+import hmac
 import logging
+import os
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -48,6 +49,45 @@ from services.eep.app.db.session import get_session
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["mlops"])
+
+# ── Webhook secret ─────────────────────────────────────────────────────────────
+#
+# The webhook is secured with a shared secret passed in the
+# ``X-Webhook-Secret`` request header.
+#
+# Configuration:
+#   Environment variable: RETRAINING_WEBHOOK_SECRET
+#   Default (dev only):   "dev-webhook-secret-change-in-production"
+#
+# Alertmanager configuration:
+#   Set the shared secret in the Alertmanager webhook_config using the
+#   ``http_config.bearer_token`` or a custom header injected via a reverse
+#   proxy, then set RETRAINING_WEBHOOK_SECRET to the same value in EEP.
+#
+#   Example Alertmanager receiver config (custom_headers requires
+#   Alertmanager >= 0.26):
+#
+#     receivers:
+#       - name: 'libraryai-retraining'
+#         webhook_configs:
+#           - url: 'http://eep:8000/v1/retraining/webhook'
+#             http_config:
+#               custom_headers:
+#                 X-Webhook-Secret: '<secret>'
+#
+# When the environment variable is absent the default dev secret is used and a
+# startup warning is logged.  Set RETRAINING_WEBHOOK_SECRET to a strong random
+# value in all non-development environments.
+#
+_WEBHOOK_SECRET: str = os.environ.get(
+    "RETRAINING_WEBHOOK_SECRET", "dev-webhook-secret-change-in-production"
+)
+
+if _WEBHOOK_SECRET == "dev-webhook-secret-change-in-production":
+    logger.warning(
+        "retraining_webhook: RETRAINING_WEBHOOK_SECRET is not set; "
+        "using insecure dev default. Set this variable in production."
+    )
 
 _COOLDOWN_DAYS = 7
 
@@ -83,7 +123,7 @@ class _Alert(BaseModel):
 
     status: str = "firing"
     labels: _AlertLabels = Field(default_factory=_AlertLabels)
-    startsAt: str | None = None
+    starts_at: str | None = Field(default=None, alias="startsAt")
 
 
 class AlertmanagerPayload(BaseModel):
@@ -152,6 +192,26 @@ def _parse_fired_at(starts_at: str | None, fallback: datetime) -> datetime:
 # ── Endpoint ──────────────────────────────────────────────────────────────────
 
 
+def _verify_webhook_secret(x_webhook_secret: str | None) -> None:
+    """
+    Validate the X-Webhook-Secret header using a constant-time comparison.
+
+    Raises HTTP 401 when the header is absent or does not match the configured
+    secret.  Uses ``hmac.compare_digest`` to prevent timing attacks.
+    """
+    if x_webhook_secret is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing X-Webhook-Secret header.",
+        )
+    if not hmac.compare_digest(x_webhook_secret, _WEBHOOK_SECRET):
+        logger.warning("retraining_webhook: invalid secret — request rejected")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid webhook secret.",
+        )
+
+
 @router.post(
     "/v1/retraining/webhook",
     response_model=WebhookResponse,
@@ -160,6 +220,15 @@ def _parse_fired_at(starts_at: str | None, fallback: datetime) -> datetime:
 )
 def retraining_webhook(
     body: AlertmanagerPayload,
+    x_webhook_secret: str | None = Header(
+        default=None,
+        alias="X-Webhook-Secret",
+        description=(
+            "Shared secret for webhook authentication. "
+            "Must match the RETRAINING_WEBHOOK_SECRET environment variable. "
+            "Configure in Alertmanager via http_config.custom_headers."
+        ),
+    ),
     db: Session = Depends(get_session),
 ) -> WebhookResponse:
     """
@@ -173,10 +242,12 @@ def retraining_webhook(
     - All other firing alerts are recorded in ``retraining_triggers`` with
       ``status='pending'`` and ``cooldown_until = now + 7 days``.
 
-    Always returns 200 so Alertmanager does not retry the delivery.
+    Always returns 200 (after auth) so Alertmanager does not retry delivery.
 
-    **Auth:** none — internal Alertmanager endpoint.
+    **Auth:** shared secret via ``X-Webhook-Secret`` header.
+    Set ``RETRAINING_WEBHOOK_SECRET`` env var to the same value in EEP.
     """
+    _verify_webhook_secret(x_webhook_secret)
     now = datetime.now(UTC)
     results: list[TriggerResult] = []
 
@@ -193,9 +264,7 @@ def retraining_webhook(
 
         trigger_type = alert.labels.trigger_type
         if not trigger_type or trigger_type not in _TRIGGER_PERSISTENCE:
-            logger.warning(
-                "retraining_webhook: unknown trigger_type=%r — skipped", trigger_type
-            )
+            logger.warning("retraining_webhook: unknown trigger_type=%r — skipped", trigger_type)
             results.append(
                 TriggerResult(
                     trigger_id=None,
@@ -218,7 +287,7 @@ def retraining_webhook(
             )
             continue
 
-        fired_at = _parse_fired_at(alert.startsAt, now)
+        fired_at = _parse_fired_at(alert.starts_at, now)
         cooldown_until = now + timedelta(days=_COOLDOWN_DAYS)
 
         row = RetrainingTrigger(

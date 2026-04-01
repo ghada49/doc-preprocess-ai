@@ -29,7 +29,7 @@ from __future__ import annotations
 import os
 import pathlib
 from typing import Any, Protocol
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlsplit, urlunsplit
 
 # ── Protocol ───────────────────────────────────────────────────────────────────
 
@@ -104,11 +104,14 @@ class S3Backend:
                 "boto3 is required for s3:// artifact access but is not installed"
             ) from exc
 
+        access_key = os.environ.get("S3_ACCESS_KEY") or os.environ.get("S3_ACCESS_KEY_ID")
+        secret_key = os.environ.get("S3_SECRET_KEY") or os.environ.get("S3_SECRET_ACCESS_KEY")
+
         self._client: Any = boto3.client(
             "s3",
             endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
-            aws_access_key_id=os.environ.get("S3_ACCESS_KEY"),
-            aws_secret_access_key=os.environ.get("S3_SECRET_KEY"),
+            aws_access_key_id=access_key,
+            aws_secret_access_key=secret_key,
         )
 
     @staticmethod
@@ -134,6 +137,30 @@ class S3Backend:
     def put_bytes(self, uri: str, data: bytes) -> None:
         bucket, key = self._parse_uri(uri)
         self._client.put_object(Bucket=bucket, Key=key, Body=data)
+
+
+def rewrite_presigned_url_for_public_endpoint(url: str) -> str:
+    """
+    Rewrite a presigned S3 URL to a browser-reachable endpoint when configured.
+    """
+    public_endpoint = os.environ.get("S3_PUBLIC_ENDPOINT_URL")
+    if not public_endpoint:
+        return url
+
+    public_parts = urlsplit(public_endpoint)
+    if not public_parts.scheme or not public_parts.netloc:
+        return url
+
+    presigned_parts = urlsplit(url)
+    return urlunsplit(
+        (
+            public_parts.scheme,
+            public_parts.netloc,
+            presigned_parts.path,
+            presigned_parts.query,
+            presigned_parts.fragment,
+        )
+    )
 
 
 # ── Backend selector ───────────────────────────────────────────────────────────

@@ -72,6 +72,8 @@ mlartifacts/
 # Logs
 *.log
 logs/
+libraryai-frontend@0.1.0
+next
 
 # Jupyter
 .ipynb_checkpoints/

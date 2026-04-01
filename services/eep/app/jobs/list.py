@@ -44,13 +44,15 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime
+from typing import cast
 
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel
+from sqlalchemy import func as sqlfunc
 from sqlalchemy.orm import Session
 
 from services.eep.app.auth import CurrentUser, require_user
-from services.eep.app.db.models import Job
+from services.eep.app.db.models import Job, User
 from services.eep.app.db.session import get_session
 from shared.schemas.eep import JobStatusSummary
 
@@ -61,6 +63,19 @@ router = APIRouter()
 # ── Response schema ─────────────────────────────────────────────────────────────
 
 
+class JobListSummary(JobStatusSummary):
+    """
+    Extends JobStatusSummary with the display username for the job owner.
+
+    Added field:
+        created_by_username — username of the job creator (from users.username);
+                              None when created_by is null or the user record no
+                              longer exists (e.g. deactivated account).
+    """
+
+    created_by_username: str | None = None
+
+
 class JobListResponse(BaseModel):
     """
     Paginated job list response for GET /v1/jobs.
@@ -69,13 +84,13 @@ class JobListResponse(BaseModel):
         total      — total matching jobs (ignoring page/page_size)
         page       — current 1-indexed page
         page_size  — maximum items returned per page
-        items      — job summaries for this page
+        items      — job summaries for this page (each includes created_by_username)
     """
 
     total: int
     page: int
     page_size: int
-    items: list[JobStatusSummary]
+    items: list[JobListSummary]
 
 
 # ── Endpoint ────────────────────────────────────────────────────────────────────
@@ -137,7 +152,7 @@ def list_jobs(
     - ``page`` — 1-indexed (default 1)
     - ``page_size`` — items per page, max 200 (default 50)
     """
-    q = db.query(Job)
+    q = db.query(Job, User).outerjoin(User, User.user_id == Job.created_by)
 
     # ── Ownership scoping ────────────────────────────────────────────────────────
     if user.role != "admin":
@@ -150,9 +165,7 @@ def list_jobs(
     # ── Filters ──────────────────────────────────────────────────────────────────
     if search is not None:
         pattern = f"%{search}%"
-        q = q.filter(
-            Job.job_id.ilike(pattern) | Job.collection_id.ilike(pattern)
-        )
+        q = q.filter(Job.job_id.ilike(pattern) | Job.collection_id.ilike(pattern))
 
     if status is not None:
         q = q.filter(Job.status == status)
@@ -167,14 +180,17 @@ def list_jobs(
         q = q.filter(Job.created_at <= to_date)
 
     # ── Count ────────────────────────────────────────────────────────────────────
-    total: int = q.count()
+    total: int = q.with_entities(sqlfunc.count(Job.job_id)).scalar() or 0
 
     # ── Sort and paginate ─────────────────────────────────────────────────────────
     offset = (page - 1) * page_size
-    rows: list[Job] = q.order_by(Job.created_at.desc()).offset(offset).limit(page_size).all()
+    rows: list[tuple[Job, User | None]] = cast(
+        list[tuple[Job, User | None]],
+        q.order_by(Job.created_at.desc()).offset(offset).limit(page_size).all(),
+    )
 
     items = [
-        JobStatusSummary(
+        JobListSummary(
             job_id=job.job_id,
             collection_id=job.collection_id,
             material_type=job.material_type,  # type: ignore[arg-type]
@@ -183,6 +199,7 @@ def list_jobs(
             policy_version=job.policy_version,
             shadow_mode=job.shadow_mode,
             created_by=job.created_by,
+            created_by_username=u.username if u is not None else None,
             status=job.status,  # type: ignore[arg-type]
             page_count=job.page_count,
             accepted_count=job.accepted_count,
@@ -193,7 +210,7 @@ def list_jobs(
             updated_at=job.updated_at,
             completed_at=job.completed_at,
         )
-        for job in rows
+        for job, u in rows
     ]
 
     logger.debug(

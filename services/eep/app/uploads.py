@@ -43,6 +43,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from services.eep.app.auth import CurrentUser, require_user
+from shared.io.storage import rewrite_presigned_url_for_public_endpoint
 
 router = APIRouter()
 
@@ -54,13 +55,21 @@ _BUCKET: str = os.environ.get("S3_BUCKET_NAME", "libraryai")
 _EXPIRES_IN: int = int(os.environ.get("S3_PRESIGN_EXPIRES_SECONDS", "3600"))
 
 
+def _s3_access_key() -> str | None:
+    return os.environ.get("S3_ACCESS_KEY") or os.environ.get("S3_ACCESS_KEY_ID")
+
+
+def _s3_secret_key() -> str | None:
+    return os.environ.get("S3_SECRET_KEY") or os.environ.get("S3_SECRET_ACCESS_KEY")
+
+
 def _s3_client() -> Any:
     """Return a boto3 S3 client using the canonical env-var config."""
     return boto3.client(
         "s3",
         endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
-        aws_access_key_id=os.environ.get("S3_ACCESS_KEY"),
-        aws_secret_access_key=os.environ.get("S3_SECRET_KEY"),
+        aws_access_key_id=_s3_access_key(),
+        aws_secret_access_key=_s3_secret_key(),
     )
 
 
@@ -144,6 +153,7 @@ async def presign_otiff_upload(
             },
             ExpiresIn=_EXPIRES_IN,
         )
+        upload_url = rewrite_presigned_url_for_public_endpoint(upload_url)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

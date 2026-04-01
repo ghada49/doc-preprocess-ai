@@ -57,6 +57,34 @@ __all__ = [
 # redefine it here.  Any change to the state machine must be made in
 # shared/state_machine.py and will be reflected here automatically.
 VALID_TRANSITIONS: dict[str, frozenset[str]] = ALLOWED_TRANSITIONS
+_LAYOUT_TERMINAL_STATES: frozenset[str] = frozenset({"accepted", "review", "failed"})
+
+
+def _finalize_layout_transition(
+    session: Session,
+    page_id: str,
+    from_state: str,
+    to_state: str,
+) -> None:
+    """
+    Run post-layout bookkeeping after a successful layout terminal transition.
+
+    This is intentionally local to the centralized CAS transition helper so the
+    runtime hook fires in the same DB session/transaction without requiring the
+    still-unimplemented task runner to duplicate the call at multiple sites.
+    """
+    if from_state != "layout_detection" or to_state not in _LAYOUT_TERMINAL_STATES:
+        return
+
+    page = session.get(JobPage, page_id)
+    if not isinstance(page, JobPage):
+        return
+
+    # Local import avoids a module import cycle:
+    # page_state -> layout_completion -> ptiff_qa -> page_state.
+    from services.eep_worker.app.layout_completion import finalize_layout_page
+
+    finalize_layout_page(session, page)
 
 
 # ── Core API ───────────────────────────────────────────────────────────────────
@@ -146,4 +174,6 @@ def advance_page_state(
         .filter(JobPage.page_id == page_id, JobPage.status == from_state)
         .update(updates, synchronize_session="fetch")  # type: ignore[arg-type]
     )
+    if rows_affected > 0:
+        _finalize_layout_transition(session, page_id, from_state, to_state)
     return rows_affected > 0

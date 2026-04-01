@@ -24,6 +24,10 @@ _DATABASE_URL: str = os.environ.get(
     "DATABASE_URL",
     "postgresql+psycopg2://libraryai:changeme@localhost:5432/libraryai",
 )
+_DATABASE_URL = _DATABASE_URL.replace(
+    "postgresql+asyncpg://",
+    "postgresql+psycopg2://",
+)
 
 engine = create_engine(_DATABASE_URL)
 

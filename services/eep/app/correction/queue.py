@@ -8,7 +8,11 @@ Provides two read-only endpoints for the human correction workflow:
   GET /v1/correction-queue
       List all pages currently in pending_human_correction, with optional
       filtering by job_id, material_type, and review_reason.
-      Sorted by waiting duration (oldest first). Paginated via offset/limit.
+      Sorted by waiting duration (oldest first).
+
+      Pagination: supports both offset/limit (legacy) and page/page_size
+      (frontend-friendly). When page/page_size are provided they take
+      precedence; offset/limit remain for backward compatibility.
 
   GET /v1/correction-queue/{job_id}/{page_number}
       Return the full correction workspace for a single page.
@@ -24,7 +28,7 @@ Error responses:
   422 — multiple sub-pages pending and sub_page_index not specified
 
 Auth:
-  Enforced in Phase 7 (Packet 7.1) — not yet active.
+  require_user — non-admin callers see only their own jobs.
 
 Exported:
   router — FastAPI APIRouter (mounted in main.py)
@@ -39,7 +43,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy import func
-from sqlalchemy.orm import Session
+from sqlalchemy.orm import Session, aliased
 
 from services.eep.app.auth import CurrentUser, assert_job_ownership, require_user
 from services.eep.app.correction.workspace_assembly import (
@@ -86,16 +90,24 @@ class CorrectionQueueResponse(BaseModel):
     """
     Paginated correction queue list response.
 
+    Supports both pagination styles (all fields present in the response):
+      Legacy:   offset / limit
+      Frontend: page / page_size (1-indexed; page=1 is the first page)
+
     Fields:
-        total   — total matching pages (ignoring offset/limit)
-        offset  — number of items skipped
-        limit   — maximum items returned
-        items   — page entries for this page of results
+        total      — total matching pages (ignoring pagination)
+        offset     — number of items skipped (legacy; equals (page-1)*page_size)
+        limit      — maximum items returned (legacy; equals page_size)
+        page       — current 1-indexed page number
+        page_size  — items per page
+        items      — page entries for this page of results
     """
 
     total: int
     offset: int
     limit: int
+    page: int
+    page_size: int
     items: list[CorrectionQueueEntry]
 
 
@@ -113,8 +125,23 @@ def list_correction_queue(
     job_id: str | None = Query(default=None, description="Filter by job ID"),
     material_type: str | None = Query(default=None, description="Filter by material type"),
     review_reason: str | None = Query(default=None, description="Filter by review reason code"),
-    offset: int = Query(default=0, ge=0, description="Number of items to skip"),
-    limit: int = Query(default=50, ge=1, le=200, description="Maximum items to return"),
+    # Legacy pagination (offset/limit) — preserved for backward compatibility
+    offset: int = Query(default=0, ge=0, description="Items to skip (legacy pagination)."),
+    limit: int = Query(default=50, ge=1, le=200, description="Max items to return (legacy)."),
+    # Frontend-friendly pagination (page/page_size) — takes precedence when provided
+    page: int | None = Query(
+        default=None,
+        ge=1,
+        description=(
+            "1-indexed page number. When provided, overrides offset. " "Use with page_size."
+        ),
+    ),
+    page_size: int | None = Query(
+        default=None,
+        ge=1,
+        le=200,
+        description=("Items per page. When provided, overrides limit. " "Use with page."),
+    ),
     db: Session = Depends(get_session),
     user: CurrentUser = Depends(require_user),
 ) -> CorrectionQueueResponse:
@@ -124,19 +151,53 @@ def list_correction_queue(
     Results are sorted oldest-first by waiting duration
     (job_pages.status_updated_at ASC, NULLs last).
 
+    **Pagination**
+
+    Two styles are supported; ``page`` / ``page_size`` takes precedence
+    when provided:
+
+    - Legacy: ``offset`` / ``limit`` (default)
+    - Frontend: ``page`` (1-indexed) / ``page_size``
+
     **Filters**
 
     - ``job_id`` — restrict to a specific job
-    - ``material_type`` — one of book / newspaper / archival_document
+    - ``material_type`` — one of book / newspaper / archival_document / document
     - ``review_reason`` — pages whose review_reasons array contains this code
 
-    **Auth:** enforced in Phase 7 (Packet 7.1) — not yet active.
+    **Auth:** non-admin callers see only their own jobs.
     """
+    # Resolve effective pagination values
+    if page is not None or page_size is not None:
+        eff_page = page if page is not None else 1
+        eff_page_size = page_size if page_size is not None else limit
+        eff_offset = (eff_page - 1) * eff_page_size
+        eff_limit = eff_page_size
+    else:
+        eff_page_size = limit
+        eff_offset = offset
+        eff_limit = limit
+        eff_page = (offset // limit) + 1 if limit > 0 else 1
+
     q = (
         db.query(JobPage, Job)
         .join(Job, Job.job_id == JobPage.job_id)
         .filter(JobPage.status == "pending_human_correction")
     )
+
+    child_page = aliased(JobPage)
+    has_split_children = (
+        db.query(child_page.page_id)
+        .filter(
+            child_page.job_id == JobPage.job_id,
+            child_page.page_number == JobPage.page_number,
+            child_page.sub_page_index.isnot(None),
+        )
+        .exists()
+    )
+    # Once child review units exist for a parent page_number, the queue should
+    # show only those children, not the original parent row.
+    q = q.filter(~(JobPage.sub_page_index.is_(None) & has_split_children))
 
     # Scope to the authenticated user's own jobs unless they are admin.
     if user.role != "admin":
@@ -152,7 +213,9 @@ def list_correction_queue(
 
     total: int = q.with_entities(func.count(JobPage.page_id)).scalar() or 0
 
-    rows: list[Any] = q.order_by(JobPage.status_updated_at.asc()).offset(offset).limit(limit).all()
+    rows: list[Any] = (
+        q.order_by(JobPage.status_updated_at.asc()).offset(eff_offset).limit(eff_limit).all()
+    )
 
     items = [
         CorrectionQueueEntry(
@@ -168,7 +231,14 @@ def list_correction_queue(
         for page, job in rows
     ]
 
-    return CorrectionQueueResponse(total=total, offset=offset, limit=limit, items=items)
+    return CorrectionQueueResponse(
+        total=total,
+        offset=eff_offset,
+        limit=eff_limit,
+        page=eff_page,
+        page_size=eff_page_size,
+        items=items,
+    )
 
 
 @router.get(

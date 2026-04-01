@@ -33,6 +33,10 @@ _database_url = os.environ.get(
     "DATABASE_URL",
     "postgresql+psycopg2://libraryai:changeme@localhost:5432/libraryai",
 )
+_database_url = _database_url.replace(
+    "postgresql+asyncpg://",
+    "postgresql+psycopg2://",
+)
 config.set_main_option("sqlalchemy.url", _database_url)
 
 # ORM metadata used by Alembic for autogenerate support (Packet 1.6+).
