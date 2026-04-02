@@ -148,7 +148,8 @@ class LayoutDetectResponse(BaseModel):
         region_type_histogram — counts per RegionType string key
         column_structure      — inferred column layout; None if no text_block regions
         model_version         — model version string (e.g. git SHA or semver tag)
-        detector_type         — "detectron2" or "paddleocr" for IEP2A; "doclayout_yolo" for IEP2B
+        detector_type         — "detectron2" or "paddleocr_pp_doclayout_v2" for IEP2A;
+                                "doclayout_yolo" for IEP2B
         processing_time_ms    — wall-clock elapsed time in ms (>= 0)
         warnings              — advisory messages; empty list if none
     """
@@ -159,7 +160,7 @@ class LayoutDetectResponse(BaseModel):
     region_type_histogram: dict[str, int]
     column_structure: ColumnStructure | None = None
     model_version: str
-    detector_type: Literal["detectron2", "doclayout_yolo", "paddleocr"]
+    detector_type: Literal["detectron2", "doclayout_yolo", "paddleocr_pp_doclayout_v2"]
     processing_time_ms: Annotated[float, Field(ge=0.0)]
     warnings: list[str]
 

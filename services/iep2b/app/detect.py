@@ -1,61 +1,43 @@
 """
-services/iep2a/app/detect.py
+services/iep2b/app/detect.py
 -----------------------------
-IEP2A POST /v1/layout-detect router.
+IEP2B POST /v1/layout-detect router.
 
-Supports two execution modes selected by the IEP2A_USE_REAL_MODEL env var:
+Supports two execution modes selected by the IEP2B_USE_REAL_MODEL env var:
 
-  Stub mode  (IEP2A_USE_REAL_MODEL != "true", default):
+  Stub mode  (IEP2B_USE_REAL_MODEL != "true", default):
     Deterministic mock regions — all Phase 6 tests run in this mode.
-    Configurable via IEP2A_MOCK_FAIL / IEP2A_MOCK_CONFIDENCE /
-    IEP2A_MOCK_NOT_READY.
+    Configurable via IEP2B_MOCK_FAIL / IEP2B_MOCK_CONFIDENCE /
+    IEP2B_MOCK_NOT_READY.
 
-  Real mode  (IEP2A_USE_REAL_MODEL=true):
-    Runs the backend selected by IEP2A_LAYOUT_BACKEND (default: detectron2).
-    Production serving loads only from local in-image artifacts and warms
-    the model at startup so readiness reflects actual load success.
-    Failure simulation flags (IEP2A_MOCK_*) are ignored in real mode.
+  Real mode  (IEP2B_USE_REAL_MODEL=true):
+    Runs DocLayout-YOLO inference via the model loaded by model.py.
+    Failure simulation flags (IEP2B_MOCK_*) are ignored in real mode.
 
 Env vars — stub mode only:
-    IEP2A_MOCK_FAIL         "true"  → HTTP 500 (failure simulation)
-    IEP2A_MOCK_CONFIDENCE   float   → per-region confidence (default 0.87)
-    IEP2A_MOCK_NOT_READY    "true"  → /ready returns not-ready
+    IEP2B_MOCK_FAIL         "true"  → HTTP 500 (failure simulation)
+    IEP2B_MOCK_CONFIDENCE   float   → per-region confidence (default 0.87)
+    IEP2B_MOCK_NOT_READY    "true"  → /ready returns not-ready
 
 Env vars — real mode:
-    IEP2A_USE_REAL_MODEL    "true"  → enable real inference
-    IEP2A_LAYOUT_BACKEND    "detectron2" (default) | "paddleocr"
-
-  Detectron2 backend env vars (see model.py for full list):
-    IEP2A_WEIGHTS_PATH      local in-image checkpoint path
-                             (default: /opt/models/iep2a/model_final.pth)
-    IEP2A_LOCAL_WEIGHTS_PATH optional mounted local development override
-    IEP2A_CONFIG_PATH       local Detectron2 config path override
-    IEP2A_NUM_CLASSES       number of classes in the weights (default: 5)
-    IEP2A_SCORE_THRESH      detection confidence threshold (default: 0.5)
-    IEP2A_DEVICE            "cuda" or "cpu"
-    IEP2A_MODEL_VERSION     optional validation/override input; baked
+    IEP2B_USE_REAL_MODEL    "true"  → enable real inference
+    IEP2B_WEIGHTS_PATH      local in-image checkpoint path
+                             (default: /opt/models/iep2b/
+                             doclayout_yolo_docstructbench_imgsz1024.pt)
+    IEP2B_LOCAL_WEIGHTS_PATH optional mounted local development override
+    IEP2B_MODEL_VERSION     optional validation/override input; baked
                             `<weights>.version` metadata is authoritative
-
-  PaddleOCR backend env vars (see backends/paddleocr_backend.py):
-    IEP2A_PADDLE_MODEL_DIR             local in-image PP-DocLayoutV2 model directory
-    IEP2A_PADDLE_LOCAL_MODEL_DIR       optional mounted local development override
-    IEP2A_PADDLE_MODEL_VERSION         optional validation/override input; baked
-                                       `<model_dir>.version` metadata is authoritative
-    IEP2A_PADDLE_ALLOW_ONLINE_DOWNLOAD development-only escape hatch; default false
-    IEP2A_PADDLE_MODEL_SOURCE          optional online source selector (HF/BOS)
 """
 
 from __future__ import annotations
 
 import os
 import time
-from typing import Literal
 
 from fastapi import APIRouter, HTTPException
 
-from services.iep2a.app.postprocess import postprocess_regions
+from services.iep2b.app.postprocess import postprocess_regions
 from shared.schemas.layout import (
-    ColumnStructure,
     LayoutConfSummary,
     LayoutDetectRequest,
     LayoutDetectResponse,
@@ -64,7 +46,7 @@ from shared.schemas.layout import (
 )
 from shared.schemas.ucf import BoundingBox
 
-router = APIRouter(tags=["layout"])
+router = APIRouter(prefix="/v1", tags=["layout-detection"])
 
 _DEFAULT_CONFIDENCE = 0.87
 
@@ -78,18 +60,14 @@ def is_model_ready() -> bool:
     """
     Return True when the model (stub or real) is ready to serve requests.
 
-    Stub mode:  honour IEP2A_MOCK_NOT_READY env var.
-    Real mode:  delegate to the active backend's is_ready(); returns False
-                when no backend is initialized (startup still in progress or
-                initialization failed).
+    Stub mode:  honour IEP2B_MOCK_NOT_READY env var.
+    Real mode:  delegate to is_real_model_loaded().
     """
-    if os.environ.get("IEP2A_USE_REAL_MODEL", "false").lower() != "true":
-        return os.environ.get("IEP2A_MOCK_NOT_READY", "false").lower() != "true"
-    # Lazy import — backends package can be imported without ML deps installed.
-    from services.iep2a.app.backends.factory import get_active_backend_optional
+    if os.environ.get("IEP2B_USE_REAL_MODEL", "false").lower() != "true":
+        return os.environ.get("IEP2B_MOCK_NOT_READY", "false").lower() != "true"
+    from services.iep2b.app.model import is_real_model_loaded
 
-    backend = get_active_backend_optional()
-    return backend is not None and backend.is_ready()
+    return is_real_model_loaded()
 
 
 # ---------------------------------------------------------------------------
@@ -97,6 +75,7 @@ def is_model_ready() -> bool:
 # ---------------------------------------------------------------------------
 #
 # Coordinate space: notional 1000×1000 px normalised page image.
+# All five canonical RegionType values are represented.
 
 _MOCK_REGION_TEMPLATES: list[tuple[str, RegionType, BoundingBox]] = [
     (
@@ -138,30 +117,26 @@ _MOCK_REGION_TEMPLATES: list[tuple[str, RegionType, BoundingBox]] = [
 
 
 @router.post(
-    "/v1/layout-detect",
+    "/layout-detect",
     response_model=LayoutDetectResponse,
-    summary="Run IEP2A layout detection on a page artifact",
+    summary="Run IEP2B DocLayout-YOLO layout detection on a page artifact",
 )
 def layout_detect(body: LayoutDetectRequest) -> LayoutDetectResponse:
     """
-    Run IEP2A layout detection on the page image identified by body.image_uri.
+    Run IEP2B DocLayout-YOLO layout detection on the page image identified by
+    body.image_uri.
 
     In stub mode (default): returns deterministic mock regions.
-    In real mode (IEP2A_USE_REAL_MODEL=true): runs the backend selected by
-    IEP2A_LAYOUT_BACKEND.
+    In real mode (IEP2B_USE_REAL_MODEL=true): runs DocLayout-YOLO inference.
 
-    Returns LayoutDetectResponse (200) with detector_type matching the selected
-    backend.
+    Returns LayoutDetectResponse (200) with detector_type="doclayout_yolo".
     Returns HTTP 500 on detection failure or model load error.
     """
     t0 = time.monotonic()
 
-    _use_real = os.environ.get("IEP2A_USE_REAL_MODEL", "false").lower() == "true"
-
-    if not _use_real:
+    if os.environ.get("IEP2B_USE_REAL_MODEL", "false").lower() != "true":
         return _stub_response(body, t0)
-    else:
-        return _real_response(body, t0)
+    return _real_response(body, t0)
 
 
 # ---------------------------------------------------------------------------
@@ -171,17 +146,17 @@ def layout_detect(body: LayoutDetectRequest) -> LayoutDetectResponse:
 
 def _stub_response(body: LayoutDetectRequest, t0: float) -> LayoutDetectResponse:
     """Return the deterministic mock response (stub mode)."""
-    if os.environ.get("IEP2A_MOCK_FAIL", "false").lower() == "true":
+    if os.environ.get("IEP2B_MOCK_FAIL", "false").lower() == "true":
         raise HTTPException(
             status_code=500,
             detail={
                 "error_code": "layout_detection_failed",
-                "error_message": "IEP2A_MOCK_FAIL is set — simulated failure",
+                "error_message": "IEP2B_MOCK_FAIL is set — simulated failure",
             },
         )
 
     try:
-        confidence = float(os.environ.get("IEP2A_MOCK_CONFIDENCE", str(_DEFAULT_CONFIDENCE)))
+        confidence = float(os.environ.get("IEP2B_MOCK_CONFIDENCE", str(_DEFAULT_CONFIDENCE)))
         confidence = max(0.0, min(1.0, confidence))
     except ValueError:
         confidence = _DEFAULT_CONFIDENCE
@@ -191,8 +166,8 @@ def _stub_response(body: LayoutDetectRequest, t0: float) -> LayoutDetectResponse
         for rid, rtype, bbox in _MOCK_REGION_TEMPLATES
     ]
 
-    regions, col_struct = postprocess_regions(raw_regions)
-    return _assemble_response(regions, col_struct, t0, model_version="mock-stub-6.1")
+    regions = postprocess_regions(raw_regions)
+    return _assemble_response(regions, t0, model_version="mock-stub-iep2b-6.3")
 
 
 # ---------------------------------------------------------------------------
@@ -201,12 +176,16 @@ def _stub_response(body: LayoutDetectRequest, t0: float) -> LayoutDetectResponse
 
 
 def _real_response(body: LayoutDetectRequest, t0: float) -> LayoutDetectResponse:
-    """Run real backend inference and return the response."""
-    from services.iep2a.app.backends.base import ImageLoadError
-    from services.iep2a.app.backends.factory import get_active_backend
+    """Run DocLayout-YOLO inference and return the response."""
+    from services.iep2b.app.inference import (
+        load_image_for_yolo,
+        raw_detections_to_regions,
+        run_doclayout_yolo,
+    )
+    from services.iep2b.app.model import get_loaded_model_version, get_model
 
     try:
-        backend = get_active_backend()
+        model = get_model()
     except RuntimeError as exc:
         raise HTTPException(
             status_code=500,
@@ -217,8 +196,8 @@ def _real_response(body: LayoutDetectRequest, t0: float) -> LayoutDetectResponse
         ) from exc
 
     try:
-        result = backend.detect(body.image_uri)
-    except ImageLoadError as exc:
+        image = load_image_for_yolo(body.image_uri)
+    except Exception as exc:
         raise HTTPException(
             status_code=500,
             detail={
@@ -226,14 +205,11 @@ def _real_response(body: LayoutDetectRequest, t0: float) -> LayoutDetectResponse
                 "error_message": str(exc),
             },
         ) from exc
-    except RuntimeError as exc:
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error_code": "model_not_ready",
-                "error_message": str(exc),
-            },
-        ) from exc
+
+    try:
+        detections = run_doclayout_yolo(model, image)
+        raw_regions = raw_detections_to_regions(detections)
+        regions = postprocess_regions(raw_regions)
     except Exception as exc:
         raise HTTPException(
             status_code=500,
@@ -243,14 +219,7 @@ def _real_response(body: LayoutDetectRequest, t0: float) -> LayoutDetectResponse
             },
         ) from exc
 
-    return _assemble_response(
-        result.regions,
-        result.column_structure,
-        t0,
-        model_version=result.model_version,
-        detector_type=result.detector_type,
-        warnings=result.warnings,
-    )
+    return _assemble_response(regions, t0, model_version=get_loaded_model_version())
 
 
 # ---------------------------------------------------------------------------
@@ -260,12 +229,8 @@ def _real_response(body: LayoutDetectRequest, t0: float) -> LayoutDetectResponse
 
 def _assemble_response(
     regions: list[Region],
-    col_struct: ColumnStructure | None,
     t0: float,
     model_version: str,
-    detector_type: Literal[
-        "detectron2", "doclayout_yolo", "paddleocr_pp_doclayout_v2"
-    ] = "detectron2",
     warnings: list[str] | None = None,
 ) -> LayoutDetectResponse:
     n = len(regions)
@@ -286,9 +251,9 @@ def _assemble_response(
             low_conf_frac=round(low_conf_frac, 6),
         ),
         region_type_histogram=histogram,
-        column_structure=col_struct,
+        column_structure=None,
         model_version=model_version,
-        detector_type=detector_type,
+        detector_type="doclayout_yolo",
         processing_time_ms=elapsed_ms,
         warnings=warnings if warnings is not None else [],
     )

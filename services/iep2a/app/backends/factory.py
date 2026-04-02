@@ -8,7 +8,7 @@ The active backend is created and initialized once at service startup
 instance via get_active_backend().
 
 Backend selection env var:
-    IEP2A_LAYOUT_BACKEND = "detectron2" (default) | "paddleocr"
+    IEP2A_LAYOUT_BACKEND = "paddleocr" (default) | "detectron2"
 
 Initialization is a no-op when IEP2A_USE_REAL_MODEL != "true" (stub mode)
 so that the stub test path is unaffected.
@@ -52,7 +52,7 @@ def initialize_backend() -> None:
         logger.debug("IEP2A stub mode active — backend initialization skipped")
         return
 
-    backend_name = os.environ.get("IEP2A_LAYOUT_BACKEND", "detectron2").strip().lower()
+    backend_name = os.environ.get("IEP2A_LAYOUT_BACKEND", "paddleocr").strip().lower()
 
     logger.info(
         "IEP2A initializing layout backend",

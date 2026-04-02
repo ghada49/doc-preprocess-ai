@@ -33,17 +33,17 @@ class TestFactoryBackendSelection:
 
         factory.reset_for_testing()
 
-    def test_factory_defaults_to_detectron2(self, monkeypatch: pytest.MonkeyPatch) -> None:
+    def test_factory_defaults_to_paddleocr(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("IEP2A_USE_REAL_MODEL", "true")
         monkeypatch.delenv("IEP2A_LAYOUT_BACKEND", raising=False)
 
         import services.iep2a.app.backends.factory as factory
-        from services.iep2a.app.backends.detectron2_backend import Detectron2Backend
+        from services.iep2a.app.backends.paddleocr_backend import PaddleOCRBackend
 
-        with patch.object(Detectron2Backend, "initialize", return_value=None):
+        with patch.object(PaddleOCRBackend, "initialize", return_value=None):
             factory.initialize_backend()
 
-        assert isinstance(factory.get_active_backend_optional(), Detectron2Backend)
+        assert isinstance(factory.get_active_backend_optional(), PaddleOCRBackend)
 
     def test_factory_selects_paddleocr(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("IEP2A_USE_REAL_MODEL", "true")
@@ -200,7 +200,7 @@ class TestPaddleBackendDetect:
 
         result = backend.detect("file:///tmp/layout.png")
 
-        assert result.detector_type == "paddleocr"
+        assert result.detector_type == "paddleocr_pp_doclayout_v2"
         assert result.model_version == "pp-doclayoutv2-test"
         assert result.warnings == []
         assert len(result.regions) == 1
