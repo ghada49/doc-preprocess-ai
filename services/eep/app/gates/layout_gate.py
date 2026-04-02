@@ -4,7 +4,7 @@ services/eep/app/gates/layout_gate.py
 EEP layout consensus gate (Packet 6.5).
 
 Implements spec Section 7.4: greedy IoU-based one-to-one matching between
-IEP2A (Detectron2) and IEP2B (DocLayout-YOLO) canonical region lists, yielding
+IEP2A (PaddleOCR PP-DocLayoutV2) and IEP2B (DocLayout-YOLO) canonical region lists, yielding
 a LayoutConsensusResult that drives the downstream routing decision.
 
 Algorithm summary (spec Section 7.4):
@@ -159,7 +159,7 @@ def evaluate_layout_consensus(
     LayoutConsensusResult.
 
     Args:
-        iep2a_regions:  Post-processed canonical regions from IEP2A (Detectron2).
+        iep2a_regions:  Post-processed canonical regions from IEP2A (PaddleOCR PP-DocLayoutV2).
         iep2b_regions:  Post-processed canonical regions from IEP2B
                         (DocLayout-YOLO), or None when IEP2B is unavailable.
         config:         Gate policy thresholds; defaults to LayoutGateConfig().

@@ -34,7 +34,7 @@ class BackendResult:
     column_structure: ColumnStructure | None
     model_version: str
     #: Value for LayoutDetectResponse.detector_type
-    detector_type: Literal["detectron2", "doclayout_yolo", "paddleocr"]
+    detector_type: Literal["detectron2", "doclayout_yolo", "paddleocr_pp_doclayout_v2"]
     warnings: list[str] = field(default_factory=list)
 
 

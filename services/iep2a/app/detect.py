@@ -11,7 +11,7 @@ Supports two execution modes selected by the IEP2A_USE_REAL_MODEL env var:
     IEP2A_MOCK_NOT_READY.
 
   Real mode  (IEP2A_USE_REAL_MODEL=true):
-    Runs the backend selected by IEP2A_LAYOUT_BACKEND (default: detectron2).
+    Runs the backend selected by IEP2A_LAYOUT_BACKEND (default: paddleocr).
     Production serving loads only from local in-image artifacts and warms
     the model at startup so readiness reflects actual load success.
     Failure simulation flags (IEP2A_MOCK_*) are ignored in real mode.
@@ -23,7 +23,7 @@ Env vars — stub mode only:
 
 Env vars — real mode:
     IEP2A_USE_REAL_MODEL    "true"  → enable real inference
-    IEP2A_LAYOUT_BACKEND    "detectron2" (default) | "paddleocr"
+    IEP2A_LAYOUT_BACKEND    "paddleocr" (default) | "detectron2"
 
   Detectron2 backend env vars (see model.py for full list):
     IEP2A_WEIGHTS_PATH      local in-image checkpoint path
@@ -263,7 +263,9 @@ def _assemble_response(
     col_struct: ColumnStructure | None,
     t0: float,
     model_version: str,
-    detector_type: Literal["detectron2", "doclayout_yolo", "paddleocr"] = "detectron2",
+    detector_type: Literal[
+        "detectron2", "doclayout_yolo", "paddleocr_pp_doclayout_v2"
+    ] = "detectron2",
     warnings: list[str] | None = None,
 ) -> LayoutDetectResponse:
     n = len(regions)

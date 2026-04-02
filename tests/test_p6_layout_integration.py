@@ -1024,6 +1024,7 @@ class TestIep2aStartupWarmup:
     def test_real_mode_startup_warms_detectron2_model(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        import services.iep2a.app.backends.factory as iep2a_factory
         from services.iep2a.app import model as iep2a_model
         from services.iep2a.app.main import app as iep2a_main_app
 
@@ -1034,7 +1035,9 @@ class TestIep2aStartupWarmup:
             return object()
 
         iep2a_model.reset_for_testing()
+        iep2a_factory.reset_for_testing()
         monkeypatch.setenv("IEP2A_USE_REAL_MODEL", "true")
+        monkeypatch.setenv("IEP2A_LAYOUT_BACKEND", "detectron2")
         monkeypatch.setattr(iep2a_model, "get_predictor", _fake_get_predictor)
 
         try:
@@ -1042,12 +1045,14 @@ class TestIep2aStartupWarmup:
                 pass
         finally:
             iep2a_model.reset_for_testing()
+            iep2a_factory.reset_for_testing()
 
         assert calls["count"] == 1
 
     def test_real_mode_startup_failure_keeps_ready_false(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
+        import services.iep2a.app.backends.factory as iep2a_factory
         from services.iep2a.app import model as iep2a_model
         from services.iep2a.app.main import app as iep2a_main_app
 
@@ -1058,7 +1063,9 @@ class TestIep2aStartupWarmup:
             raise RuntimeError("detectron2 unavailable")
 
         iep2a_model.reset_for_testing()
+        iep2a_factory.reset_for_testing()
         monkeypatch.setenv("IEP2A_USE_REAL_MODEL", "true")
+        monkeypatch.setenv("IEP2A_LAYOUT_BACKEND", "detectron2")
         monkeypatch.setattr(iep2a_model, "get_predictor", _fake_get_predictor)
 
         try:
@@ -1066,6 +1073,7 @@ class TestIep2aStartupWarmup:
                 resp = client.get("/ready")
         finally:
             iep2a_model.reset_for_testing()
+            iep2a_factory.reset_for_testing()
 
         assert calls["count"] == 1
         assert resp.status_code == 503
@@ -1161,6 +1169,7 @@ class TestLocalArtifactLoaderHardening:
     def test_iep2a_response_model_version_uses_loaded_artifact_metadata(
         self, monkeypatch: pytest.MonkeyPatch, iep2a_client: TestClient
     ) -> None:
+        import services.iep2a.app.backends.factory as iep2a_factory
         from services.iep2a.app import model as iep2a_model
 
         fake_image = types.SimpleNamespace(shape=(120, 80, 3))
@@ -1177,7 +1186,9 @@ class TestLocalArtifactLoaderHardening:
             )
         ]
 
+        iep2a_factory.reset_for_testing()
         monkeypatch.setenv("IEP2A_USE_REAL_MODEL", "true")
+        monkeypatch.setenv("IEP2A_LAYOUT_BACKEND", "detectron2")
         monkeypatch.setenv("IEP2A_MODEL_VERSION", "stale-env-version")
         monkeypatch.setitem(sys.modules, "services.iep2a.app.inference", fake_inference)
         monkeypatch.setattr(iep2a_model, "get_predictor", lambda: object())
@@ -1186,8 +1197,12 @@ class TestLocalArtifactLoaderHardening:
             "get_loaded_model_version",
             lambda: "iep2a-artifact-v2026-03-25",
         )
+        iep2a_factory.initialize_backend()
 
-        response = iep2a_client.post("/v1/layout-detect", json=_VALID_PAYLOAD)
+        try:
+            response = iep2a_client.post("/v1/layout-detect", json=_VALID_PAYLOAD)
+        finally:
+            iep2a_factory.reset_for_testing()
 
         assert response.status_code == 200
         assert response.json()["model_version"] == "iep2a-artifact-v2026-03-25"

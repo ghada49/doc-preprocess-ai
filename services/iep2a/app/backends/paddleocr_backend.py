@@ -472,6 +472,6 @@ class PaddleOCRBackend(LayoutBackend):
             regions=regions,
             column_structure=col_struct,
             model_version=self._model_version,
-            detector_type="paddleocr",
+            detector_type="paddleocr_pp_doclayout_v2",
             warnings=warnings,
         )
