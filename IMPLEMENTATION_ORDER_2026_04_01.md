@@ -315,8 +315,8 @@ class CallGoogleDocumentAI:
 ---
 
 #### Task 2.2: Set Up Google Document AI Credentials & Config
-**Status:** ❌ MISSING
-**Files:** Kubernetes Secret, ConfigMap, env vars
+**Status:** ✅ COMPLETE
+**Files:** Kubernetes Secret, ConfigMap, env vars, eep_worker config loading
 **Duration:** 2-3 hours
 **Description:**
 
@@ -1559,7 +1559,7 @@ Document design decisions for future reference:
 | | ✅ 1.3: Test dual-model consensus | 2-3h | ✅ COMPLETE (186/186) |
 | | ✅ 1.4: Consensus test suite | 4-6h | ✅ COMPLETE (365/365) |
 | **P2** | ✅ 2.1: Google Document AI module | 8-10h | ✅ COMPLETE |
-| | 2.2: Google credentials & config setup | 2-3h | 🔴 CRITICAL ← **NEXT** |
+| | ✅ 2.2: Google credentials & config setup | 2-3h | ✅ COMPLETE |
 | **P3** | 3.1: LayoutAdjudicationResult schemas | 2-3h | 🔴 CRITICAL |
 | | 3.2: Refactor layout gate: adjudication | 4-6h | 🔴 CRITICAL |
 | | 3.3: New review reasons | 1h | 🟡 IMPORTANT |
@@ -1589,8 +1589,8 @@ Document design decisions for future reference:
 1. ✅ **P0.1** → Fix IEP2B router (1-2h) — **COMPLETE**
 2. ✅ **P1.1-1.4** → Layout infrastructure (5 tasks, 11-15h) — **COMPLETE**
 3. ✅ **P2.1** → Google Document AI module (8-10h) — **COMPLETE**
-4. **P2.2** → Google credentials & config (2-3h) — **NEXT**
-5. **P3.1-P3.3** → Adjudication schemas & gate (7-10h)
+4. ✅ **P2.2** → Google credentials & config (2-3h) — **COMPLETE**
+5. **P3.1-P3.3** → Adjudication schemas & gate (7-10h) — **NEXT**
 6. **P4.1-P4.2** → Worker integration & DB schema (9-12h)
 
 ### Week 3 (Type-Specific Geometry Models)
@@ -1614,8 +1614,8 @@ Document design decisions for future reference:
 
 ## Critical Path Summary
 
-**Completed (P0-P1-P2.1):** ~29-25 hours (IEP2B router + layout infra + Google integration)
-**Remaining critical path (P2.2-P4):** ~18-25 hours (config + adjudication logic + worker integration)
+**Completed (P0-P1-P2):** ~33-28 hours (IEP2B router + layout infra + Google module + config)
+**Remaining critical path (P3-P4):** ~16-22 hours (adjudication logic + worker integration)
 **Phase 5 (type-specific models):** ~48-65 hours (IEP0 + 6 geometry models)
 **Phase 6-7 (testing & docs):** ~20-31 hours
 
