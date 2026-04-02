@@ -1,26 +1,32 @@
 """
 shared.schemas.layout
 ---------------------
-IEP2A / IEP2B layout detection schemas and layout consensus result schema.
+IEP2A / IEP2B layout detection schemas, consensus result, and adjudication schemas.
 
-Both IEP2A (Detectron2) and IEP2B (DocLayout-YOLO) share the identical
+Both IEP2A (PaddleOCR / Detectron2) and IEP2B (DocLayout-YOLO) share the identical
 LayoutDetectRequest / LayoutDetectResponse contract. The detector_type field
 distinguishes which service produced the response.
 
 Exported:
-    RegionType           — canonical 5-class layout region type enum
-    Region               — single layout region with id, type, bbox, confidence
-    LayoutConfSummary    — mean confidence and low-confidence fraction summary
-    ColumnStructure      — inferred text column structure
-    LayoutDetectRequest  — request sent to IEP2A or IEP2B
-    LayoutDetectResponse — response from IEP2A or IEP2B
-    LayoutConsensusResult — result of the EEP layout consensus gate (IEP2A vs IEP2B)
+    RegionType                — canonical 5-class layout region type enum
+    Region                    — single layout region with id, type, bbox, confidence
+    LayoutConfSummary         — mean confidence and low-confidence fraction summary
+    ColumnStructure           — inferred text column structure
+    LayoutDetectRequest       — request sent to IEP2A or IEP2B
+    LayoutDetectResponse      — response from IEP2A or IEP2B
+    LayoutConsensusResult     — result of the EEP layout consensus gate (IEP2A vs IEP2B)
+                                (retained for backward compatibility; superseded by
+                                LayoutAdjudicationResult for new adjudication flow)
+    LayoutAdjudicationRequest — request context passed to the adjudication gate
+                                (documents why Google Document AI was consulted)
+    LayoutAdjudicationResult  — full result of the layout adjudication gate
+                                (local agreement fast path or Google fallback)
 """
 
 from __future__ import annotations
 
 from enum import StrEnum
-from typing import Annotated, Literal
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -179,6 +185,9 @@ class LayoutConsensusResult(BaseModel):
 
     Stored as JSONB in job_pages.layout_consensus_result.
 
+    Retained for backward compatibility.  New adjudication flow uses
+    LayoutAdjudicationResult instead.
+
     Fields:
         iep2a_region_count    — number of canonical regions from IEP2A
         iep2b_region_count    — number of canonical regions from IEP2B
@@ -206,3 +215,115 @@ class LayoutConsensusResult(BaseModel):
     agreed: bool
     consensus_confidence: float
     single_model_mode: bool
+
+
+# ── P3 adjudication schemas ────────────────────────────────────────────────────
+
+
+AdjudicationReason = Literal[
+    "local_disagreement",
+    "iep2a_failed",
+    "iep2b_failed",
+    "both_failed",
+]
+
+LayoutDecisionSource = Literal[
+    "local_agreement",
+    "google_document_ai",
+    "none",
+]
+
+
+class LayoutAdjudicationRequest(BaseModel):
+    """
+    Context passed to the layout adjudication gate when local consensus fails
+    or either IEP2 detector is unavailable.
+
+    Carries the IEP2A / IEP2B outputs (for audit/logging) and the reason
+    Google Document AI is being consulted.  Not sent directly to Google —
+    the adjudication gate uses ``image_uri`` to construct the actual Google
+    Document AI request.
+
+    Fields:
+        job_id        — job identifier
+        page_number   — 1-indexed page number
+        image_uri     — URI of the processed page image Google will analyse
+        material_type — document material type hint passed to Google
+        iep2a_result  — IEP2A response (None if IEP2A failed/unavailable)
+        iep2b_result  — IEP2B response (None if IEP2B failed/unavailable)
+        reason        — why the adjudication gate was triggered:
+                          "local_disagreement" — both ran but did not agree
+                          "iep2a_failed"       — IEP2A error or timeout
+                          "iep2b_failed"       — IEP2B error or timeout
+                          "both_failed"        — both detectors failed
+    """
+
+    job_id: str
+    page_number: Annotated[int, Field(ge=1)]
+    image_uri: str
+    material_type: MaterialType
+    iep2a_result: LayoutDetectResponse | None = None
+    iep2b_result: LayoutDetectResponse | None = None
+    reason: AdjudicationReason
+
+
+class LayoutAdjudicationResult(BaseModel):
+    """
+    Full result of the layout adjudication gate (Section 7.4 / 7.5 of spec).
+
+    Produced after running local IEP2A + IEP2B agreement and, when needed,
+    consulting Google Document AI as the final authoritative adjudicator.
+    Stored as JSONB in page_lineage.gate_results (adjudication key) once the
+    corresponding DB migration lands.
+
+    Fast path (local agreement):
+        agreed=True, layout_decision_source="local_agreement", fallback_used=False
+        final_layout_result = IEP2A canonical regions
+
+    Google fallback:
+        agreed=False, layout_decision_source="google_document_ai", fallback_used=True
+        final_layout_result = Google-mapped canonical regions
+
+    All methods failed:
+        agreed=False, layout_decision_source="none", fallback_used=True,
+        status="failed", final_layout_result=[]
+
+    Fields:
+        agreed                   — True only when IEP2A+IEP2B reached local agreement
+        consensus_confidence     — 0.6*match_ratio + 0.2*mean_iou + 0.2*type_match;
+                                   None when agreed=False (no local agreement to score)
+        layout_decision_source   — which system determined the final layout
+        fallback_used            — True if Google Document AI was consulted
+        iep2a_region_count       — number of canonical regions returned by IEP2A
+        iep2b_region_count       — None if IEP2B was unavailable
+        matched_regions          — number of matched IEP2A/IEP2B region pairs;
+                                   None when agreed=False (matching not applicable)
+        mean_matched_iou         — mean IoU across matched pairs; None when agreed=False
+        type_histogram_match     — per-type count agreement result; None when agreed=False
+        iep2a_result             — full IEP2A LayoutDetectResponse (None if IEP2A failed)
+        iep2b_result             — full IEP2B LayoutDetectResponse (None if unavailable)
+        google_document_ai_result — Google's raw response dict (None if not consulted)
+        final_layout_result      — canonical Region list used for acceptance routing
+        status                   — "done" = acceptance path reached; "failed" = all methods failed
+        error                    — error description when status="failed"; None otherwise
+        processing_time_ms       — total wall-clock time for the full adjudication pass
+        google_response_time_ms  — Google API call latency; None if not consulted
+    """
+
+    agreed: bool
+    consensus_confidence: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
+    layout_decision_source: LayoutDecisionSource
+    fallback_used: bool
+    iep2a_region_count: Annotated[int, Field(ge=0)]
+    iep2b_region_count: Annotated[int, Field(ge=0)] | None = None
+    matched_regions: Annotated[int, Field(ge=0)] | None = None
+    mean_matched_iou: Annotated[float, Field(ge=0.0, le=1.0)] | None = None
+    type_histogram_match: bool | None = None
+    iep2a_result: LayoutDetectResponse | None = None
+    iep2b_result: LayoutDetectResponse | None = None
+    google_document_ai_result: dict[str, Any] | None = None
+    final_layout_result: list[Region] = Field(default_factory=list)
+    status: Literal["done", "failed"]
+    error: str | None = None
+    processing_time_ms: Annotated[float, Field(ge=0.0)]
+    google_response_time_ms: Annotated[float, Field(ge=0.0)] | None = None
