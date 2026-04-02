@@ -1,11 +1,15 @@
 """
 services/eep/app/gates/layout_gate.py
 --------------------------------------
-EEP layout consensus gate (Packet 6.5).
+EEP layout consensus gate (Packet 6.5) and layout adjudication gate (P3.2).
 
-Implements spec Section 7.4: greedy IoU-based one-to-one matching between
-IEP2A (PaddleOCR PP-DocLayoutV2) and IEP2B (DocLayout-YOLO) canonical region lists, yielding
-a LayoutConsensusResult that drives the downstream routing decision.
+evaluate_layout_consensus — spec Section 7.4: greedy IoU-based one-to-one
+matching between IEP2A and IEP2B canonical region lists, yielding a
+LayoutConsensusResult that drives the downstream routing decision.
+
+evaluate_layout_adjudication — P3.2: wraps local consensus as a fast path
+and falls back to Google Document AI when local detectors disagree or are
+unavailable.  Returns a LayoutAdjudicationResult.
 
 Algorithm summary (spec Section 7.4):
   1. Greedy one-to-one matching by descending IoU.
@@ -23,17 +27,29 @@ Routing after this gate (spec Section 8.2, Step 12–13):
   consensus_confidence < min_conf (0.6)   → review / "layout_consensus_low_confidence"
 
 Exported:
-    LayoutGateConfig         — policy thresholds (spec Section 8.4 defaults)
-    evaluate_layout_consensus — main entry point
+    LayoutGateConfig              — policy thresholds (spec Section 8.4 defaults)
+    evaluate_layout_consensus     — original local-only entry point
+    evaluate_layout_adjudication  — new adjudication entry point (P3.2)
 """
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
-from shared.schemas.layout import LayoutConsensusResult, Region, RegionType
+from shared.schemas.layout import (
+    LayoutAdjudicationResult,
+    LayoutConsensusResult,
+    LayoutDetectResponse,
+    Region,
+    RegionType,
+)
 from shared.schemas.ucf import BoundingBox
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -227,4 +243,236 @@ def evaluate_layout_consensus(
         agreed=agreed,
         consensus_confidence=round(consensus_confidence, 6),
         single_model_mode=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Layout adjudication gate (P3.2)
+# ---------------------------------------------------------------------------
+
+
+async def evaluate_layout_adjudication(
+    iep2a_result: LayoutDetectResponse | None,
+    iep2b_result: LayoutDetectResponse | None,
+    google_client: Any | None,
+    image_bytes: bytes | None,
+    mime_type: str,
+    material_type: str,
+    image_uri: str,
+    config: LayoutGateConfig | None = None,
+) -> LayoutAdjudicationResult:
+    """
+    Run the full layout adjudication gate (P3.2 / spec Section 7.4–7.5).
+
+    Decision tree:
+      1. Both IEP2A and IEP2B succeeded → run local consensus.
+         a. agreed=True → fast path: return local_agreement result.
+         b. agreed=False → fall through to Google.
+      2. Either or both IEP2 detectors unavailable / failed → fall through
+         to Google (single-model or dual-failed path).
+      3. Google fallback:
+         a. google_client is None (not configured) → all-failed.
+         b. google_client returns non-empty regions → google_document_ai result.
+         c. google_client returns empty / None → all-failed.
+
+    Args:
+        iep2a_result   — LayoutDetectResponse from IEP2A, or None if it failed.
+        iep2b_result   — LayoutDetectResponse from IEP2B, or None if it failed.
+        google_client  — initialized CallGoogleDocumentAI instance, or None.
+        image_bytes    — raw page image bytes passed to Google (if available).
+        mime_type      — MIME type of image_bytes (e.g. "image/tiff").
+        material_type  — document material type hint ("book" / "newspaper" / …).
+        image_uri      — URI of the page image (used as fallback / for logging).
+        config         — gate policy thresholds; defaults to LayoutGateConfig().
+
+    Returns:
+        LayoutAdjudicationResult capturing the decision and all audit fields.
+    """
+    cfg = config if config is not None else LayoutGateConfig()
+    t_start = time.monotonic()
+
+    iep2a_region_count = len(iep2a_result.regions) if iep2a_result is not None else 0
+    iep2b_region_count = len(iep2b_result.regions) if iep2b_result is not None else None
+
+    # ── Path 1: Local consensus (both detectors available) ─────────────────
+    if iep2a_result is not None and iep2b_result is not None:
+        consensus = evaluate_layout_consensus(iep2a_result.regions, iep2b_result.regions, cfg)
+        if consensus.agreed:
+            elapsed = (time.monotonic() - t_start) * 1000.0
+            logger.info(
+                "layout_adjudication: local agreement — "
+                "matched=%d iou=%.3f conf=%.3f image_uri=%s",
+                consensus.matched_regions,
+                consensus.mean_matched_iou,
+                consensus.consensus_confidence,
+                image_uri,
+            )
+            return LayoutAdjudicationResult(
+                agreed=True,
+                consensus_confidence=consensus.consensus_confidence,
+                layout_decision_source="local_agreement",
+                fallback_used=False,
+                iep2a_region_count=iep2a_region_count,
+                iep2b_region_count=iep2b_region_count,
+                matched_regions=consensus.matched_regions,
+                mean_matched_iou=consensus.mean_matched_iou,
+                type_histogram_match=consensus.type_histogram_match,
+                iep2a_result=iep2a_result,
+                iep2b_result=iep2b_result,
+                google_document_ai_result=None,
+                final_layout_result=list(iep2a_result.regions),
+                status="done",
+                error=None,
+                processing_time_ms=round(elapsed, 2),
+                google_response_time_ms=None,
+            )
+        # Local detectors disagreed — fall through to Google.
+        logger.info(
+            "layout_adjudication: local disagreement (conf=%.3f) — "
+            "falling back to Google, image_uri=%s",
+            consensus.consensus_confidence,
+            image_uri,
+        )
+    else:
+        # One or both detectors unavailable.
+        logger.info(
+            "layout_adjudication: IEP2A=%s IEP2B=%s — falling back to Google, image_uri=%s",
+            "ok" if iep2a_result is not None else "None",
+            "ok" if iep2b_result is not None else "None",
+            image_uri,
+        )
+
+    # ── Path 2: Google fallback ─────────────────────────────────────────────
+    if google_client is None:
+        elapsed = (time.monotonic() - t_start) * 1000.0
+        logger.warning(
+            "layout_adjudication: Google client not available — all methods failed, image_uri=%s",
+            image_uri,
+        )
+        return LayoutAdjudicationResult(
+            agreed=False,
+            consensus_confidence=None,
+            layout_decision_source="none",
+            fallback_used=True,
+            iep2a_region_count=iep2a_region_count,
+            iep2b_region_count=iep2b_region_count,
+            matched_regions=None,
+            mean_matched_iou=None,
+            type_histogram_match=None,
+            iep2a_result=iep2a_result,
+            iep2b_result=iep2b_result,
+            google_document_ai_result=None,
+            final_layout_result=[],
+            status="failed",
+            error="Google Document AI not available; all layout detection methods failed",
+            processing_time_ms=round(elapsed, 2),
+            google_response_time_ms=None,
+        )
+
+    # Call Google Document AI.
+    t_google_start = time.monotonic()
+    google_response = await google_client.process_layout(
+        image_uri=image_uri,
+        material_type=material_type,
+        image_bytes=image_bytes,
+        mime_type=mime_type,
+    )
+    google_elapsed = (time.monotonic() - t_google_start) * 1000.0
+
+    if not google_response:
+        elapsed = (time.monotonic() - t_start) * 1000.0
+        logger.warning(
+            "layout_adjudication: Google returned no response — all methods failed, image_uri=%s",
+            image_uri,
+        )
+        return LayoutAdjudicationResult(
+            agreed=False,
+            consensus_confidence=None,
+            layout_decision_source="none",
+            fallback_used=True,
+            iep2a_region_count=iep2a_region_count,
+            iep2b_region_count=iep2b_region_count,
+            matched_regions=None,
+            mean_matched_iou=None,
+            type_histogram_match=None,
+            iep2a_result=iep2a_result,
+            iep2b_result=iep2b_result,
+            google_document_ai_result=None,
+            final_layout_result=[],
+            status="failed",
+            error="Google Document AI returned no response; all layout detection methods failed",
+            processing_time_ms=round(elapsed, 2),
+            google_response_time_ms=round(google_elapsed, 2),
+        )
+
+    # Map Google response to canonical regions.
+    elements = google_response.get("elements", [])
+    page_width = google_response.get("page_width", 1)
+    page_height = google_response.get("page_height", 1)
+    canonical_regions: list[Region] = google_client._map_google_to_canonical(
+        elements, page_width, page_height
+    )
+
+    # Store a compact audit summary (raw_response is not JSON-serialisable).
+    google_audit: dict[str, Any] = {
+        "region_count": google_response.get("region_count", len(elements)),
+        "page_width": page_width,
+        "page_height": page_height,
+    }
+
+    elapsed = (time.monotonic() - t_start) * 1000.0
+
+    if not canonical_regions:
+        logger.warning(
+            "layout_adjudication: Google returned 0 canonical regions — "
+            "all methods failed, image_uri=%s",
+            image_uri,
+        )
+        return LayoutAdjudicationResult(
+            agreed=False,
+            consensus_confidence=None,
+            layout_decision_source="none",
+            fallback_used=True,
+            iep2a_region_count=iep2a_region_count,
+            iep2b_region_count=iep2b_region_count,
+            matched_regions=None,
+            mean_matched_iou=None,
+            type_histogram_match=None,
+            iep2a_result=iep2a_result,
+            iep2b_result=iep2b_result,
+            google_document_ai_result=google_audit,
+            final_layout_result=[],
+            status="failed",
+            error=(
+                "Google Document AI returned 0 canonical regions; "
+                "all layout detection methods failed"
+            ),
+            processing_time_ms=round(elapsed, 2),
+            google_response_time_ms=round(google_elapsed, 2),
+        )
+
+    logger.info(
+        "layout_adjudication: Google success — %d regions, google_ms=%.0f, image_uri=%s",
+        len(canonical_regions),
+        google_elapsed,
+        image_uri,
+    )
+    return LayoutAdjudicationResult(
+        agreed=False,
+        consensus_confidence=None,
+        layout_decision_source="google_document_ai",
+        fallback_used=True,
+        iep2a_region_count=iep2a_region_count,
+        iep2b_region_count=iep2b_region_count,
+        matched_regions=None,
+        mean_matched_iou=None,
+        type_histogram_match=None,
+        iep2a_result=iep2a_result,
+        iep2b_result=iep2b_result,
+        google_document_ai_result=google_audit,
+        final_layout_result=canonical_regions,
+        status="done",
+        error=None,
+        processing_time_ms=round(elapsed, 2),
+        google_response_time_ms=round(google_elapsed, 2),
     )
