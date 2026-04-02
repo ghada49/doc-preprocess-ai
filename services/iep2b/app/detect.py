@@ -81,32 +81,32 @@ _MOCK_REGION_TEMPLATES: list[tuple[str, RegionType, BoundingBox]] = [
     (
         "r1",
         RegionType.title,
-        BoundingBox(x_min=50.0, y_min=30.0, x_max=950.0, y_max=120.0),
+        BoundingBox(x_min=60.0, y_min=40.0, x_max=960.0, y_max=130.0),
     ),
     (
         "r2",
         RegionType.text_block,
-        BoundingBox(x_min=50.0, y_min=140.0, x_max=450.0, y_max=600.0),
+        BoundingBox(x_min=60.0, y_min=150.0, x_max=460.0, y_max=610.0),
     ),
     (
         "r3",
         RegionType.text_block,
-        BoundingBox(x_min=510.0, y_min=140.0, x_max=950.0, y_max=600.0),
+        BoundingBox(x_min=520.0, y_min=150.0, x_max=960.0, y_max=610.0),
     ),
     (
         "r4",
         RegionType.image,
-        BoundingBox(x_min=50.0, y_min=620.0, x_max=450.0, y_max=900.0),
+        BoundingBox(x_min=60.0, y_min=630.0, x_max=460.0, y_max=910.0),
     ),
     (
         "r5",
         RegionType.caption,
-        BoundingBox(x_min=50.0, y_min=910.0, x_max=450.0, y_max=960.0),
+        BoundingBox(x_min=60.0, y_min=920.0, x_max=460.0, y_max=970.0),
     ),
     (
         "r6",
         RegionType.table,
-        BoundingBox(x_min=510.0, y_min=620.0, x_max=950.0, y_max=960.0),
+        BoundingBox(x_min=520.0, y_min=630.0, x_max=960.0, y_max=970.0),
     ),
 ]
 

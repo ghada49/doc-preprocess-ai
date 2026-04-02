@@ -30,7 +30,7 @@ import logging
 
 from sqlalchemy.orm import Session
 
-from services.eep.app.correction.ptiff_qa import _maybe_close_split_parent
+from services.eep.app.correction._split_parent import _maybe_close_split_parent
 from services.eep.app.db.models import JobPage
 
 logger = logging.getLogger(__name__)

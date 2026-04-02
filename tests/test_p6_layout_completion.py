@@ -14,7 +14,7 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock, patch
 
-from services.eep.app.correction.ptiff_qa import _maybe_close_split_parent
+from services.eep.app.correction._split_parent import _maybe_close_split_parent
 from services.eep_worker.app.layout_completion import finalize_layout_page
 
 
@@ -111,7 +111,7 @@ class TestMaybeCloseSplitParent:
         session = _make_parent_close_session(parent, [child_0, child_1])
 
         with patch(
-            "services.eep.app.correction.ptiff_qa.advance_page_state",
+            "services.eep.app.correction._split_parent.advance_page_state",
             return_value=True,
         ) as mock_advance:
             closed = _maybe_close_split_parent(session, "job-001", 3)

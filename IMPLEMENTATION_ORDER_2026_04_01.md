@@ -161,8 +161,8 @@ Before any other work, IEP2B must be fixed. Without it, the layout gate cannot t
 ---
 
 #### Task 1.4: Create Comprehensive Dual-Model Layout Detection Test Suite
-**Status:** ✅ EFFECTIVELY COMPLETE (93/97 tests PASS)
-**Files:** `tests/test_p6_layout_*.py` (97 comprehensive tests)
+**Status:** ✅ COMPLETE (365/365 tests PASS)
+**Files:** `tests/test_p6_layout_*.py` + `tests/test_p6_iep2a_*.py` + `tests/test_p6_iep2b_*.py` (365 tests)
 **Duration:** 4-6 hours
 **Description:**
 - ✅ Unit tests for consensus gate:
@@ -192,7 +192,7 @@ Before any other work, IEP2B must be fixed. Without it, the layout gate cannot t
 - [x] Tested type histogram mismatch
 - [x] Tested IoU thresholds (edge cases at 0.5, 0.7, 1.0)
 - [x] Integration tests: full pipeline with both models
-- [x] 93/97 tests pass with PaddleOCR + DocLayout-YOLO
+- [x] 365/365 tests pass with PaddleOCR + DocLayout-YOLO
 
 ---
 
@@ -1345,9 +1345,9 @@ Document design decisions for future reference:
 | **P0** | ✅ P0.1: Create IEP2B detect.py router | 1-2h | ✅ COMPLETE |
 | **P1** | ✅ 1.1: Change IEP2A default to PaddleOCR | 1-2h | ✅ COMPLETE |
 | | ✅ 1.2: Verify response schemas | 1h | ✅ COMPLETE |
-| | ✅ 1.3: Test dual-model consensus | 2-3h | ✅ EFFECTIVELY COMPLETE (93/97) |
-| | 1.4: Consensus test suite | 4-6h | 🟡 IMPORTANT |
-| **P2** | 2.1: Google Document AI module | 8-10h | 🔴 CRITICAL |
+| | ✅ 1.3: Test dual-model consensus | 2-3h | ✅ COMPLETE (186/186) |
+| | ✅ 1.4: Consensus test suite | 4-6h | ✅ COMPLETE (365/365) |
+| **P2** | 2.1: Google Document AI module | 8-10h | 🔴 CRITICAL ← **NEXT** |
 | | 2.2: Google credentials & config setup | 2-3h | 🔴 CRITICAL |
 | **P3** | 3.1: LayoutAdjudicationResult schemas | 2-3h | 🔴 CRITICAL |
 | | 3.2: Refactor layout gate: adjudication | 4-6h | 🔴 CRITICAL |
@@ -1373,8 +1373,8 @@ Document design decisions for future reference:
 1. ✅ **P0.1** → Fix IEP2B router (1-2h, BLOCKER) — **COMPLETE**
 2. ✅ **P1.1** → Change IEP2A default to PaddleOCR (1-2h) — **COMPLETE**
 3. ✅ **P1.2** → Verify response schemas (1h) — **COMPLETE**
-4. ✅ **P1.3** → Test dual-model consensus (2-3h) — **EFFECTIVELY COMPLETE** (93/97 tests pass)
-5. **P1.4** → Create comprehensive test suite (4-6h) — **NEXT**
+4. ✅ **P1.3** → Test dual-model consensus (2-3h) — **COMPLETE** (186/186 tests pass)
+5. ✅ **P1.4** → Create comprehensive test suite (4-6h) — **COMPLETE** (365/365 tests pass)
 6. **P2.1** → Build Google Document AI module (8-10h) — UNBLOCKED
 7. **P3.1** → Create LayoutAdjudicationResult schema (2-3h)
 
