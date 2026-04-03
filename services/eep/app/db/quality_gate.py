@@ -12,17 +12,27 @@ Gate types (spec Section 13 — quality_gate_log.gate_type CHECK):
     geometry_selection_post_rectification — second-pass geometry (Step 6.5)
     artifact_validation                — first artifact quality check (Step 5)
     artifact_validation_final          — post-rectification validation (Step 7)
-    layout                             — layout consensus gate (Step 13)
+    layout                             — layout consensus / adjudication gate (Step 13)
 
 Route decisions (spec Section 13 — quality_gate_log.route_decision CHECK):
     accepted               — artifact valid, proceeds downstream
     rectification          — artifact invalid, IEP1D fallback triggered
     pending_human_correction — failures requiring human review
-    review                 — layout consensus failures or permanent issues
+    review                 — layout failures or permanent issues requiring human review
+
+Review reasons (quality_gate_log.review_reason — informational, not DB-constrained):
+    layout_consensus_failed            — IEP2A and IEP2B disagreed (old local-only path)
+    layout_consensus_low_confidence    — local agreement confidence below threshold
+    layout_adjudication_google_failed  — Google was called but returned error or timeout
+    layout_adjudication_google_implausible — Google returned empty or invalid layout
+    layout_adjudication_failed         — both local layout methods and Google failed
+    layout_single_model_mode           — only one local layout model available;
+                                         local agreement was impossible
 
 Exported:
     VALID_GATE_TYPES      — frozenset of allowed gate_type values
     VALID_ROUTE_DECISIONS — frozenset of allowed route_decision values
+    VALID_REVIEW_REASONS  — frozenset of recognised review_reason strings (P4.1+)
     log_gate              — insert an immutable quality_gate_log row
 """
 
@@ -37,6 +47,7 @@ from services.eep.app.db.models import QualityGateLog
 __all__ = [
     "VALID_GATE_TYPES",
     "VALID_ROUTE_DECISIONS",
+    "VALID_REVIEW_REASONS",
     "log_gate",
 ]
 
@@ -58,6 +69,20 @@ VALID_ROUTE_DECISIONS: frozenset[str] = frozenset(
         "rectification",
         "pending_human_correction",
         "review",
+    }
+)
+
+VALID_REVIEW_REASONS: frozenset[str] = frozenset(
+    {
+        # ── Local consensus path (pre-adjudication) ──────────────────────────
+        "layout_consensus_failed",  # IEP2A and IEP2B disagreed
+        "layout_consensus_low_confidence",  # local agreement confidence below threshold
+        # ── Adjudication path (P3.2+) ───────────────────────────────────────
+        "layout_adjudication_google_failed",  # Google called but returned error/timeout
+        "layout_adjudication_google_implausible",  # Google returned empty or invalid layout
+        "layout_adjudication_failed",  # both local and Google failed
+        "layout_single_model_mode",  # only one local model available;
+        # local agreement was impossible
     }
 )
 
