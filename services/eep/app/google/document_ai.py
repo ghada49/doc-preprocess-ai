@@ -60,7 +60,8 @@ class GoogleDocumentAIConfig:
         timeout_layout_seconds   — Timeout for layout API calls (default 90s)
         timeout_cleanup_seconds  — Timeout for cleanup API calls (default 120s)
         max_retries           — Max transient retries (default 2)
-        fallback_on_timeout   — Route to review if Google times out (default True)
+        fallback_on_timeout   — Legacy config flag retained for compatibility;
+                                IEP2 now falls back to local display output on timeout
         credentials_file      — Path to service account key JSON
     """
 

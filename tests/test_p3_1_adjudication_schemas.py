@@ -195,8 +195,36 @@ class TestLayoutAdjudicationResult:
             "google_response_time_ms": 850.0,
         }
 
-    def _all_failed_result(self) -> dict[str, Any]:
-        """Represents the failure path: all methods failed."""
+    def _local_fallback_result(self) -> dict[str, Any]:
+        """Represents the no-review local fallback after Google hard failure."""
+        return {
+            "agreed": False,
+            "consensus_confidence": None,
+            "layout_decision_source": "local_fallback_unverified",
+            "fallback_used": True,
+            "iep2a_region_count": 2,
+            "iep2b_region_count": 1,
+            "matched_regions": None,
+            "mean_matched_iou": None,
+            "type_histogram_match": None,
+            "iep2a_result": None,
+            "iep2b_result": None,
+            "google_document_ai_result": {
+                "attempted": True,
+                "success": False,
+                "hard_failure": True,
+                "local_fallback_source": "iep2a",
+                "error": "Google timeout",
+            },
+            "final_layout_result": [_region("r1").model_dump(), _region("r2").model_dump()],
+            "status": "done",
+            "error": None,
+            "processing_time_ms": 500.0,
+            "google_response_time_ms": 125.0,
+        }
+
+    def _legacy_failed_result(self) -> dict[str, Any]:
+        """Legacy payload retained for backward compatibility."""
         return {
             "agreed": False,
             "consensus_confidence": None,
@@ -253,28 +281,35 @@ class TestLayoutAdjudicationResult:
 
     # ── All-failed path ────────────────────────────────────────────────────────
 
-    def test_all_failed_construction(self) -> None:
-        result = LayoutAdjudicationResult(**self._all_failed_result())
+    def test_local_fallback_construction(self) -> None:
+        result = LayoutAdjudicationResult(**self._local_fallback_result())
         assert result.agreed is False
-        assert result.status == "failed"
-        assert result.error == "All layout detection methods failed"
-        assert result.final_layout_result == []
-        assert result.layout_decision_source == "none"
+        assert result.status == "done"
+        assert result.error is None
+        assert len(result.final_layout_result) == 2
+        assert result.layout_decision_source == "local_fallback_unverified"
+        assert result.google_document_ai_result is not None
+        assert result.google_document_ai_result["hard_failure"] is True
 
-    def test_failed_with_no_error_message_allowed(self) -> None:
-        data = {**self._all_failed_result(), "error": None}
+    def test_legacy_failed_with_no_error_message_allowed(self) -> None:
+        data = {**self._legacy_failed_result(), "error": None}
         result = LayoutAdjudicationResult(**data)
         assert result.error is None
+
+    def test_legacy_failed_payload_still_valid(self) -> None:
+        result = LayoutAdjudicationResult(**self._legacy_failed_result())
+        assert result.status == "failed"
+        assert result.layout_decision_source == "none"
 
     # ── Field defaults ─────────────────────────────────────────────────────────
 
     def test_final_layout_result_defaults_to_empty_list(self) -> None:
-        data = {k: v for k, v in self._all_failed_result().items() if k != "final_layout_result"}
+        data = {k: v for k, v in self._legacy_failed_result().items() if k != "final_layout_result"}
         result = LayoutAdjudicationResult(**data)
         assert result.final_layout_result == []
 
     def test_iep2b_region_count_none_for_single_model(self) -> None:
-        result = LayoutAdjudicationResult(**self._all_failed_result())
+        result = LayoutAdjudicationResult(**self._legacy_failed_result())
         assert result.iep2b_region_count is None
 
     # ── Constraint validation ──────────────────────────────────────────────────

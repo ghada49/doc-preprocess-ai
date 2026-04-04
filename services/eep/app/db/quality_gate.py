@@ -21,6 +21,8 @@ Route decisions (spec Section 13 — quality_gate_log.route_decision CHECK):
     review                 — layout failures or permanent issues requiring human review
 
 Review reasons (quality_gate_log.review_reason — informational, not DB-constrained):
+    The IEP2 worker no longer routes adjudication outcomes to review, but these
+    strings are retained for backward compatibility and historical audit data.
     layout_consensus_failed            — IEP2A and IEP2B disagreed (old local-only path)
     layout_consensus_low_confidence    — local agreement confidence below threshold
     layout_adjudication_google_failed  — Google was called but returned error or timeout

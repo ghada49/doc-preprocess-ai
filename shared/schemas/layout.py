@@ -19,8 +19,9 @@ Exported:
                                 LayoutAdjudicationResult for new adjudication flow)
     LayoutAdjudicationRequest — request context passed to the adjudication gate
                                 (documents why Google Document AI was consulted)
-    LayoutAdjudicationResult  — full result of the layout adjudication gate
-                                (local agreement fast path or Google fallback)
+LayoutAdjudicationResult  — full result of the layout adjudication gate
+                                (local agreement fast path, Google result,
+                                or local fallback when Google hard-fails)
 """
 
 from __future__ import annotations
@@ -230,6 +231,7 @@ AdjudicationReason = Literal[
 LayoutDecisionSource = Literal[
     "local_agreement",
     "google_document_ai",
+    "local_fallback_unverified",
     "none",
 ]
 
@@ -283,17 +285,26 @@ class LayoutAdjudicationResult(BaseModel):
     Google fallback:
         agreed=False, layout_decision_source="google_document_ai", fallback_used=True
         final_layout_result = Google-mapped canonical regions
+        A technically successful Google call may still return zero regions.
+        That is treated as a valid empty result, not a failure.
 
-    All methods failed:
-        agreed=False, layout_decision_source="none", fallback_used=True,
-        status="failed", final_layout_result=[]
+    Google hard-failure fallback:
+        agreed=False, layout_decision_source="local_fallback_unverified"
+        final_layout_result = best available local result (IEP2A, else IEP2B, else [])
+        status="done" because IEP2 remains display-producing and never routes to review
+
+    Legacy all-failed payloads:
+        Older persisted results may still contain layout_decision_source="none"
+        and status="failed". The schema continues to accept those for backward
+        compatibility, but new IEP2 adjudication should emit a displayable result.
 
     Fields:
         agreed                   — True only when IEP2A+IEP2B reached local agreement
         consensus_confidence     — 0.6*match_ratio + 0.2*mean_iou + 0.2*type_match;
                                    None when agreed=False (no local agreement to score)
         layout_decision_source   — which system determined the final layout
-        fallback_used            — True if Google Document AI was consulted
+                                   ("none" retained for backward compatibility only)
+        fallback_used            — True if Google Document AI was actually attempted
         iep2a_region_count       — number of canonical regions returned by IEP2A
         iep2b_region_count       — None if IEP2B was unavailable
         matched_regions          — number of matched IEP2A/IEP2B region pairs;
@@ -302,10 +313,12 @@ class LayoutAdjudicationResult(BaseModel):
         type_histogram_match     — per-type count agreement result; None when agreed=False
         iep2a_result             — full IEP2A LayoutDetectResponse (None if IEP2A failed)
         iep2b_result             — full IEP2B LayoutDetectResponse (None if unavailable)
-        google_document_ai_result — Google's raw response dict (None if not consulted)
+        google_document_ai_result — compact Google audit metadata; also used to
+                                   preserve hard-failure vs empty-success distinction
         final_layout_result      — canonical Region list used for acceptance routing
-        status                   — "done" = acceptance path reached; "failed" = all methods failed
-        error                    — error description when status="failed"; None otherwise
+        status                   — "done" for the current IEP2 display policy;
+                                   "failed" retained only for legacy payloads
+        error                    — legacy failure description when status="failed"
         processing_time_ms       — total wall-clock time for the full adjudication pass
         google_response_time_ms  — Google API call latency; None if not consulted
     """

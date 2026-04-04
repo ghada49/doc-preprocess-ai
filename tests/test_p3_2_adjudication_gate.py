@@ -6,8 +6,8 @@ P3.2 — Focused async tests for evaluate_layout_adjudication.
 Tests the five key decision paths:
   1. Local agreement fast path → agreed=True, layout_decision_source="local_agreement"
   2. Local disagreement + Google success → layout_decision_source="google_document_ai"
-  3. Local disagreement + Google returns empty regions → status="failed"
-  4. Local disagreement + google_client=None → status="failed"
+  3. Local disagreement + Google returns empty regions → done/google_document_ai
+  4. Local disagreement + Google hard-fails → done/local_fallback_unverified
   5. Single-model (iep2b=None) + Google success → layout_decision_source="google_document_ai"
 
 Does not test any worker routing or DB logic.
@@ -107,6 +107,13 @@ def _mock_google_client_none_response() -> MagicMock:
     """Google client whose process_layout returns None (total failure)."""
     client = MagicMock()
     client.process_layout = AsyncMock(return_value=None)
+    return client
+
+
+def _mock_google_client_exception(exc: Exception) -> MagicMock:
+    """Google client whose process_layout raises a hard failure."""
+    client = MagicMock()
+    client.process_layout = AsyncMock(side_effect=exc)
     return client
 
 
@@ -349,7 +356,7 @@ class TestGoogleFallbackSuccess:
 
 class TestGoogleFallbackEmpty:
     @pytest.mark.asyncio
-    async def test_google_empty_regions_is_failed(self) -> None:
+    async def test_google_empty_regions_is_done_from_google(self) -> None:
         iep2a = _detect_response(_DISAGREE_IEP2A)
         iep2b = _detect_response(_DISAGREE_IEP2B, detector_type="doclayout_yolo")
         client = _mock_google_client_empty()
@@ -362,12 +369,36 @@ class TestGoogleFallbackEmpty:
             material_type="book",
             image_uri="s3://bucket/p.tiff",
         )
-        assert result.status == "failed"
-        assert result.layout_decision_source == "none"
+        assert result.status == "done"
+        assert result.layout_decision_source == "google_document_ai"
+        assert result.fallback_used is True
         assert result.final_layout_result == []
+        assert result.google_document_ai_result is not None
+        assert result.google_document_ai_result["empty_result"] is True
 
     @pytest.mark.asyncio
-    async def test_google_none_response_is_failed(self) -> None:
+    async def test_google_empty_result_preserves_audit_metadata(self) -> None:
+        iep2a = _detect_response(_DISAGREE_IEP2A)
+        iep2b = _detect_response(_DISAGREE_IEP2B, detector_type="doclayout_yolo")
+        client = _mock_google_client_empty()
+        result = await evaluate_layout_adjudication(
+            iep2a_result=iep2a,
+            iep2b_result=iep2b,
+            google_client=client,
+            image_bytes=None,
+            mime_type="image/tiff",
+            material_type="book",
+            image_uri="s3://bucket/p.tiff",
+        )
+        assert result.error is None
+        assert result.google_document_ai_result is not None
+        assert result.google_document_ai_result["region_count"] == 0
+        assert result.google_document_ai_result["success"] is True
+
+
+class TestGoogleHardFailureFallback:
+    @pytest.mark.asyncio
+    async def test_google_none_response_uses_local_fallback(self) -> None:
         iep2a = _detect_response(_DISAGREE_IEP2A)
         iep2b = _detect_response(_DISAGREE_IEP2B, detector_type="doclayout_yolo")
         client = _mock_google_client_none_response()
@@ -380,15 +411,19 @@ class TestGoogleFallbackEmpty:
             material_type="book",
             image_uri="s3://bucket/p.tiff",
         )
-        assert result.status == "failed"
-        assert result.layout_decision_source == "none"
-        assert result.error is not None
+        assert result.status == "done"
+        assert result.layout_decision_source == "local_fallback_unverified"
+        assert result.fallback_used is True
+        assert result.final_layout_result == iep2a.regions
+        assert result.error is None
+        assert result.google_document_ai_result is not None
+        assert result.google_document_ai_result["hard_failure"] is True
 
     @pytest.mark.asyncio
-    async def test_google_empty_error_message_set(self) -> None:
+    async def test_google_timeout_uses_local_fallback(self) -> None:
         iep2a = _detect_response(_DISAGREE_IEP2A)
         iep2b = _detect_response(_DISAGREE_IEP2B, detector_type="doclayout_yolo")
-        client = _mock_google_client_empty()
+        client = _mock_google_client_exception(TimeoutError("google layout timeout"))
         result = await evaluate_layout_adjudication(
             iep2a_result=iep2a,
             iep2b_result=iep2b,
@@ -398,8 +433,52 @@ class TestGoogleFallbackEmpty:
             material_type="book",
             image_uri="s3://bucket/p.tiff",
         )
-        assert result.error is not None
-        assert len(result.error) > 0
+        assert result.status == "done"
+        assert result.layout_decision_source == "local_fallback_unverified"
+        assert result.fallback_used is True
+        assert result.final_layout_result == iep2a.regions
+        assert result.google_response_time_ms is not None
+        assert result.google_document_ai_result is not None
+        assert "timeout" in result.google_document_ai_result["error"].lower()
+
+    @pytest.mark.asyncio
+    async def test_both_local_models_empty_and_google_timeout_returns_empty_layout(self) -> None:
+        iep2a = _detect_response([])
+        iep2b = _detect_response([], detector_type="doclayout_yolo")
+        client = _mock_google_client_exception(TimeoutError("google layout timeout"))
+        result = await evaluate_layout_adjudication(
+            iep2a_result=iep2a,
+            iep2b_result=iep2b,
+            google_client=client,
+            image_bytes=None,
+            mime_type="image/tiff",
+            material_type="book",
+            image_uri="s3://bucket/p.tiff",
+        )
+        assert result.status == "done"
+        assert result.layout_decision_source == "local_fallback_unverified"
+        assert result.final_layout_result == []
+
+    @pytest.mark.asyncio
+    async def test_google_timeout_uses_iep2b_when_iep2a_has_no_regions(self) -> None:
+        iep2a = _detect_response([])
+        iep2b_regions = [_region("r1"), _region("r2")]
+        iep2b = _detect_response(iep2b_regions, detector_type="doclayout_yolo")
+        client = _mock_google_client_exception(TimeoutError("google layout timeout"))
+        result = await evaluate_layout_adjudication(
+            iep2a_result=iep2a,
+            iep2b_result=iep2b,
+            google_client=client,
+            image_bytes=None,
+            mime_type="image/tiff",
+            material_type="book",
+            image_uri="s3://bucket/p.tiff",
+        )
+        assert result.status == "done"
+        assert result.layout_decision_source == "local_fallback_unverified"
+        assert result.final_layout_result == iep2b_regions
+        assert result.google_document_ai_result is not None
+        assert result.google_document_ai_result["local_fallback_source"] == "iep2b"
 
 
 # ── Path 4: Local disagreement + google_client=None ───────────────────────────
@@ -407,7 +486,7 @@ class TestGoogleFallbackEmpty:
 
 class TestNoGoogleClientPath:
     @pytest.mark.asyncio
-    async def test_no_google_client_with_disagreement_is_failed(self) -> None:
+    async def test_no_google_client_with_disagreement_uses_local_fallback(self) -> None:
         iep2a = _detect_response(_DISAGREE_IEP2A)
         iep2b = _detect_response(_DISAGREE_IEP2B, detector_type="doclayout_yolo")
         result = await evaluate_layout_adjudication(
@@ -419,13 +498,16 @@ class TestNoGoogleClientPath:
             material_type="book",
             image_uri="s3://bucket/p.tiff",
         )
-        assert result.status == "failed"
-        assert result.layout_decision_source == "none"
-        assert result.fallback_used is True
+        assert result.status == "done"
+        assert result.layout_decision_source == "local_fallback_unverified"
+        assert result.fallback_used is False
+        assert result.final_layout_result == iep2a.regions
         assert result.google_response_time_ms is None
+        assert result.google_document_ai_result is not None
+        assert result.google_document_ai_result["attempted"] is False
 
     @pytest.mark.asyncio
-    async def test_both_failed_no_google_is_failed(self) -> None:
+    async def test_both_failed_no_google_returns_done_empty_result(self) -> None:
         """Both IEP2A and IEP2B failed (None) and Google is not available."""
         result = await evaluate_layout_adjudication(
             iep2a_result=None,
@@ -436,10 +518,11 @@ class TestNoGoogleClientPath:
             material_type="book",
             image_uri="s3://bucket/p.tiff",
         )
-        assert result.status == "failed"
-        assert result.layout_decision_source == "none"
+        assert result.status == "done"
+        assert result.layout_decision_source == "local_fallback_unverified"
         assert result.iep2a_region_count == 0
         assert result.iep2b_region_count is None
+        assert result.final_layout_result == []
 
 
 # ── Path 5: Single-model (iep2b=None) + Google success ────────────────────────

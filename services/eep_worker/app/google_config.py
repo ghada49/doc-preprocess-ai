@@ -158,7 +158,8 @@ def load_google_config() -> GoogleDocumentAIConfig:
         GOOGLE_TIMEOUT_LAYOUT_SECONDS   — Layout call timeout seconds (default: 90)
         GOOGLE_TIMEOUT_CLEANUP_SECONDS  — Cleanup call timeout seconds (default: 120)
         GOOGLE_MAX_RETRIES              — Max transient-error retries (default: 2)
-        GOOGLE_FALLBACK_ON_TIMEOUT      — Route to review on timeout (default: true)
+        GOOGLE_FALLBACK_ON_TIMEOUT      — Legacy config flag; IEP2 now falls back
+                                          to local display output on timeout
         GOOGLE_CREDENTIALS_PATH         — Path to service account JSON file
                                           (default: /var/secrets/google/key.json)
 

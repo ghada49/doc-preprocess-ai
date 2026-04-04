@@ -18,8 +18,10 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from services.eep.app.redis_client import get_redis
 from services.eep_worker.app.google_config import get_google_worker_state, initialize_google
 from services.eep_worker.app.watchdog import StaleTaskReport, TaskWatchdog
+from services.eep_worker.app.worker_loop import build_worker_config, run_worker_loop
 from shared.logging_config import setup_logging
 from shared.middleware import configure_observability
 
@@ -55,7 +57,7 @@ def _on_stale(report: StaleTaskReport) -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Start the in-process watchdog loop; initialize Google Document AI config."""
+    """Start the worker runtime loop, watchdog loop, and Google config."""
     # ── P2.2: Google Document AI startup validation ────────────────────────────
     # Loads config from env vars, checks credentials file, initialises client.
     # State is stored in google_config._state and read via get_google_worker_state().
@@ -65,17 +67,35 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         "ENABLED" if get_google_worker_state().enabled else "DISABLED",
     )
 
+    redis_client = get_redis()
+    worker_config = build_worker_config()
+
     # ── Watchdog background task ───────────────────────────────────────────────
-    bg = asyncio.create_task(watchdog.run_watch_loop(on_stale=_on_stale))
+    watchdog_bg = asyncio.create_task(watchdog.run_watch_loop(on_stale=_on_stale))
+    worker_bg = asyncio.create_task(
+        run_worker_loop(
+            redis_client,
+            worker_config,
+            watchdog=watchdog,
+        )
+    )
     logger.info("eep_worker: watchdog background task started")
+    logger.info("eep_worker: worker runtime loop started as %s", worker_config.worker_id)
     try:
         yield
     finally:
-        bg.cancel()
+        worker_bg.cancel()
+        watchdog_bg.cancel()
         try:
-            await bg
+            await worker_bg
         except asyncio.CancelledError:
             pass
+        try:
+            await watchdog_bg
+        except asyncio.CancelledError:
+            pass
+        await worker_config.backend.close()
+        logger.info("eep_worker: worker runtime loop stopped")
         logger.info("eep_worker: watchdog background task stopped")
 
 

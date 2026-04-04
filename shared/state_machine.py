@@ -67,7 +67,7 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "layout_detection": frozenset(
         {
             "accepted",  # layout consensus passes (Step 14)
-            "review",  # layout disagreement or IEP2A failure (Step 13)
+            "review",  # legacy/manual review path remains allowed from layout_detection
             "failed",  # infrastructure failure; retries exhausted
         }
     ),

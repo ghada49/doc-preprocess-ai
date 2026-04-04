@@ -68,11 +68,15 @@ from services.eep.app.db.page_state import advance_page_state
 from services.eep.app.db.session import get_session
 from services.eep.app.queue import enqueue_page_task
 from services.eep.app.redis_client import get_redis
+from shared.schemas.eep import TERMINAL_PAGE_STATES
 from shared.schemas.queue import PageTask
 from shared.state_machine import validate_transition
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+
+# ── Exported constants ───────────────────────────────────────────────────────────
+_WORKER_TERMINAL_STATES = TERMINAL_PAGE_STATES
 
 
 # ── Response models ─────────────────────────────────────────────────────────────
