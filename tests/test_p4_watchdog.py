@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -83,9 +83,9 @@ def _make_page(
     page.status = status
     # status_updated_at: set to "recent" (non-stale) by default
     page.status_updated_at = (
-        status_updated_at if status_updated_at is not None else datetime.now(tz=UTC)
+        status_updated_at if status_updated_at is not None else datetime.now(tz=timezone.utc)
     )
-    page.created_at = created_at or datetime.now(tz=UTC)
+    page.created_at = created_at or datetime.now(tz=timezone.utc)
     return page
 
 
@@ -271,7 +271,7 @@ class TestReconcileOnce:
         """preprocessing page updated recently → skipped_active."""
         page = _make_page(
             status="preprocessing",
-            status_updated_at=datetime.now(tz=UTC),
+            status_updated_at=datetime.now(tz=timezone.utc),
         )
         result = _run_reconcile(
             processing_items=[_TASK_JSON],
@@ -283,7 +283,7 @@ class TestReconcileOnce:
 
     def test_stale_preprocessing_page_is_requeued(self) -> None:
         """preprocessing page with old status_updated_at → requeued."""
-        old_ts = datetime.now(tz=UTC) - timedelta(seconds=1000)
+        old_ts = datetime.now(tz=timezone.utc) - timedelta(seconds=1000)
         page = _make_page(status="preprocessing", status_updated_at=old_ts)
         r = _make_redis(processing_items=[_TASK_JSON])
         session = MagicMock()
@@ -296,7 +296,7 @@ class TestReconcileOnce:
 
     def test_stale_page_at_max_retries_is_dead_lettered(self) -> None:
         """Stale page with retry_count >= max_task_retries → dead-lettered."""
-        old_ts = datetime.now(tz=UTC) - timedelta(seconds=1000)
+        old_ts = datetime.now(tz=timezone.utc) - timedelta(seconds=1000)
         maxed_task = PageTask(
             task_id=_TASK_ID,
             job_id=_JOB_ID,

@@ -67,7 +67,7 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import cast
 from uuid import uuid4
 
@@ -227,7 +227,7 @@ def claim_task(
         pipe.execute()
         return None
 
-    claimed_at = datetime.now(tz=UTC)
+    claimed_at = datetime.now(timezone.utc)
 
     # Record ownership (best-effort; not relied on for safety).
     try:

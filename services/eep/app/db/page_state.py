@@ -35,7 +35,7 @@ Exported:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -148,7 +148,7 @@ def advance_page_state(
             f"{sorted(VALID_TRANSITIONS.get(from_state, frozenset()))}"
         ) from exc
 
-    now = datetime.now(tz=UTC)
+    now = datetime.now(timezone.utc)
 
     updates: dict[str, Any] = {
         "status": to_state,

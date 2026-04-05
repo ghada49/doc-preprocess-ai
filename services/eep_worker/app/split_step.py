@@ -256,6 +256,7 @@ async def run_split_normalization(
     iep1b_circuit_breaker: CircuitBreaker,
     backend: GPUBackend,
     session: Session,
+    iep1d_execution_timeout_seconds: float | None = None,
     proxy_config: ProxyConfig | None = None,
     gate_config: PreprocessingGateConfig | None = None,
 ) -> SplitOutcome:
@@ -294,6 +295,9 @@ async def run_split_normalization(
         iep1a_circuit_breaker:  Per-worker CircuitBreaker for IEP1A.
         iep1b_circuit_breaker:  Per-worker CircuitBreaker for IEP1B.
         backend:                Shared GPUBackend instance.
+        iep1d_execution_timeout_seconds:
+                                Optional warm-inference timeout override for the
+                                IEP1D rectification call only.
         session:                SQLAlchemy session (caller owns commit/rollback).
         proxy_config:           ProxyConfig; defaults to ProxyConfig().
         gate_config:            Policy thresholds; defaults to PreprocessingGateConfig().
@@ -344,6 +348,7 @@ async def run_split_normalization(
             iep1a_circuit_breaker=iep1a_circuit_breaker,
             iep1b_circuit_breaker=iep1b_circuit_breaker,
             backend=backend,
+            iep1d_execution_timeout_seconds=iep1d_execution_timeout_seconds,
             session=session,
             storage=storage,
             image_loader=image_loader,
@@ -388,6 +393,7 @@ async def run_split_normalization(
             iep1a_circuit_breaker=iep1a_circuit_breaker,
             iep1b_circuit_breaker=iep1b_circuit_breaker,
             backend=backend,
+            iep1d_execution_timeout_seconds=iep1d_execution_timeout_seconds,
             session=session,
             storage=storage,
             image_loader=image_loader,

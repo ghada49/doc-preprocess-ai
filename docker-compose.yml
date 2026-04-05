@@ -436,10 +436,13 @@ services:
       dockerfile: services/iep1d/Dockerfile
     volumes:
       - .:/app
+      # Development-only override for a mounted UVDoc checkpoint.
+      - "${IEP1D_LOCAL_WEIGHTS_DIR:-./models/iep1d}:/dev-models/iep1d:ro"
     environment:
       PYTHONPATH: /app
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
+      IEP1D_LOCAL_WEIGHTS_PATH: /dev-models/iep1d/best_model.pkl
     env_file: .env
     ports:
       - "8003:8003"

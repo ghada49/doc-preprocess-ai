@@ -27,7 +27,7 @@ auth is tested for 401/403 cases.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -44,7 +44,7 @@ from services.eep.app.db.session import get_session
 # Constants / helpers
 # ---------------------------------------------------------------------------
 
-_TS = datetime(2025, 3, 1, 9, 0, 0, tzinfo=UTC)
+_TS = datetime(2025, 3, 1, 9, 0, 0, tzinfo=timezone.utc)
 _ADMIN_USER = CurrentUser(user_id="admin-001", role="admin")
 
 

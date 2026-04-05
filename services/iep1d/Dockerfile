@@ -16,12 +16,13 @@ ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Install minimal runtime deps needed for health/metrics endpoints
-# ML model deps (ultralytics, detectron2, etc.) are added in Phase 2/6
+# Install runtime deps needed for UVDoc inference + artifact I/O.
+COPY services/iep1d/requirements-real.txt /tmp/requirements-real.txt
 RUN uv pip install --system \
     "fastapi>=0.110.0" \
     "uvicorn[standard]>=0.27.0" \
-    "prometheus-client>=0.20.0"
+    "prometheus-client>=0.20.0" \
+    -r /tmp/requirements-real.txt
 
 # Source code is volume-mounted in development (see docker-compose.yml)
 # CMD is supplied by docker-compose.yml

@@ -14,7 +14,7 @@ import socket
 import time
 import uuid
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -107,6 +107,7 @@ class WorkerConfig:
     iep2a_endpoint: str
     iep2b_endpoint: str
     backend: GPUBackend
+    iep1d_execution_timeout_seconds: float
     iep1a_circuit_breaker: CircuitBreaker
     iep1b_circuit_breaker: CircuitBreaker
     iep1d_circuit_breaker: CircuitBreaker
@@ -147,6 +148,10 @@ def build_worker_config(worker_id: str | None = None) -> WorkerConfig:
     backend_kind = os.environ.get("GPU_BACKEND", "local").strip().lower()
     cold_start_timeout = _env_float("COLD_START_TIMEOUT_SECONDS", 120.0)
     execution_timeout = _env_float("EXECUTION_TIMEOUT_SECONDS", 30.0)
+    iep1d_execution_timeout = _env_float(
+        "IEP1D_EXECUTION_TIMEOUT_SECONDS",
+        max(execution_timeout, 180.0),
+    )
 
     if backend_kind == "runpod":
         backend: GPUBackend = RunpodBackend(
@@ -176,6 +181,7 @@ def build_worker_config(worker_id: str | None = None) -> WorkerConfig:
         iep2a_endpoint=_service_endpoint("IEP2A_URL", "http://iep2a:8004", "/v1/layout-detect"),
         iep2b_endpoint=_service_endpoint("IEP2B_URL", "http://iep2b:8005", "/v1/layout-detect"),
         backend=backend,
+        iep1d_execution_timeout_seconds=iep1d_execution_timeout,
         iep1a_circuit_breaker=CircuitBreaker("iep1a", cb_cfg),
         iep1b_circuit_breaker=CircuitBreaker("iep1b", cb_cfg),
         iep1d_circuit_breaker=CircuitBreaker("iep1d", cb_cfg),
@@ -249,7 +255,7 @@ def _find_lineage(
 def _sync_job_summary(session: Session, job: Job) -> None:
     pages = session.query(JobPage).filter_by(job_id=job.job_id).all()
     leaf_pages = [page for page in pages if page.status != "split"]
-    now = datetime.now(tz=UTC)
+    now = datetime.now(timezone.utc)
 
     job.accepted_count = sum(1 for page in leaf_pages if page.status == "accepted")
     job.review_count = sum(1 for page in leaf_pages if page.status == "review")
@@ -764,6 +770,7 @@ async def _run_preprocessing(
                 iep1a_circuit_breaker=config.iep1a_circuit_breaker,
                 iep1b_circuit_breaker=config.iep1b_circuit_breaker,
                 backend=config.backend,
+                iep1d_execution_timeout_seconds=config.iep1d_execution_timeout_seconds,
                 session=session,
                 storage=rescue_storage,
                 image_loader=rescue_loader,

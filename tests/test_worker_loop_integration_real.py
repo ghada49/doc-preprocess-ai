@@ -10,7 +10,7 @@ using in-memory implementations where necessary.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from unittest.mock import Mock
 
 # Import actual implementation
@@ -137,7 +137,7 @@ class RealStateTransitionTest:
         if page.status == "accepted":
             job.accepted_count += 1
         job.status = "done"
-        job.completed_at = datetime.now(tz=UTC)
+        job.completed_at = datetime.now(tz=timezone.utc)
 
         print(f"  Job Status: {job.status}")
         print(f"  Accepted Pages: {job.accepted_count}")

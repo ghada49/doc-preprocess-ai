@@ -67,7 +67,7 @@ Exported:
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import cast
 
 import redis as redis_lib
@@ -168,7 +168,7 @@ def get_dashboard_summary(
 
     **Auth:** admin role required (403 for non-admin callers).
     """
-    now = datetime.now(tz=UTC)
+    now = datetime.now(timezone.utc)
     one_hour_ago = now - timedelta(hours=1)
 
     # throughput: terminal pages completed in the rolling last hour
@@ -280,7 +280,7 @@ def get_service_health(
 
     **Auth:** admin role required (403 for non-admin callers).
     """
-    now = datetime.now(tz=UTC)
+    now = datetime.now(timezone.utc)
     window_start = now - timedelta(hours=window_hours)
 
     def _stage_rate(name_filters: list[str]) -> float:

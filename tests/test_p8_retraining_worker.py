@@ -35,7 +35,7 @@ All DB interactions are mocked via MagicMock sessions.
 from __future__ import annotations
 
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import MagicMock, call, patch
 
@@ -54,7 +54,7 @@ from services.retraining_worker.app.task import (
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_NOW = datetime(2026, 3, 28, 12, 0, 0, tzinfo=UTC)
+_NOW = datetime(2026, 3, 28, 12, 0, 0, tzinfo=timezone.utc)
 
 
 # ── Trigger / Job / ModelVersion mock factories ───────────────────────────────

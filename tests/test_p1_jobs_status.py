@@ -22,7 +22,7 @@ PostgreSQL-specific JSONB DDL incompatibility with SQLite.
 from __future__ import annotations
 
 from collections.abc import Callable, Generator
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -40,7 +40,7 @@ from services.eep.app.jobs.status import _derive_job_status, router
 # ORM object builders
 # ---------------------------------------------------------------------------
 
-_NOW = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
+_NOW = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def _job(**kwargs: Any) -> Job:

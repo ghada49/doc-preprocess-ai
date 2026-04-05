@@ -20,7 +20,7 @@ Definition of done:
   - job configuration schema includes ptiff_qa_mode field
 """
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import pytest
 from pydantic import ValidationError
@@ -38,7 +38,7 @@ from shared.schemas.eep import (
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
-_NOW = datetime(2026, 3, 19, 12, 0, 0, tzinfo=UTC)
+_NOW = datetime(2026, 3, 19, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def _page_input(n: int = 1) -> PageInput:

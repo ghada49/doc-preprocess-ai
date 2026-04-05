@@ -27,7 +27,7 @@ from __future__ import annotations
 import json
 import re
 from collections.abc import Generator
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -102,7 +102,7 @@ def _make_mock_session() -> MagicMock:
         if isinstance(obj, Job):
             # Simulate server-side default: set created_at so the endpoint
             # can include it in the response.
-            obj.created_at = datetime.now(tz=UTC)
+            obj.created_at = datetime.now(tz=timezone.utc)
 
     session.refresh.side_effect = _refresh
     return session

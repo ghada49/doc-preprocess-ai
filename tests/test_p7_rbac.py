@@ -17,7 +17,7 @@ effect here and real auth enforcement is exercised.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -34,7 +34,7 @@ from services.eep.app.jobs.status import router
 # Helpers
 # ---------------------------------------------------------------------------
 
-_NOW = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
+_NOW = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
 
 def _make_job_mock(created_by: str | None = "user-abc") -> MagicMock:

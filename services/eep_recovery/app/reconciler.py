@@ -57,7 +57,7 @@ import dataclasses
 import logging
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import cast
 
 import redis as redis_lib
@@ -246,13 +246,13 @@ def _is_stale(page: JobPage, task_timeout_seconds: float) -> bool:
     created_at.  Both are expected to be timezone-aware (UTC) per the DB
     schema.  Naive datetimes are treated as UTC.
     """
-    now = datetime.now(tz=UTC)
+    now = datetime.now(timezone.utc)
     ref: datetime | None = page.status_updated_at or page.created_at
     if ref is None:
         # No timestamp at all — conservatively treat as stale.
         return True
     if ref.tzinfo is None:
-        ref = ref.replace(tzinfo=UTC)
+        ref = ref.replace(tzinfo=timezone.utc)
     age_seconds = (now - ref).total_seconds()
     return age_seconds > task_timeout_seconds
 

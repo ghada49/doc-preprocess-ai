@@ -30,9 +30,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
-from typing import Callable
+from collections.abc import Callable
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 
 from sqlalchemy.orm import Session
 
@@ -84,7 +84,7 @@ def reconcile_once(db: Session, config: ReconcileConfig | None = None) -> Reconc
         ReconcileResult with counts of recovered rows.
     """
     cfg = config or ReconcileConfig()
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     cutoff = now - timedelta(minutes=cfg.job_timeout_minutes)
     result = ReconcileResult()
 
@@ -115,9 +115,7 @@ def reconcile_once(db: Session, config: ReconcileConfig | None = None) -> Reconc
 
     # ── Pass 2: Orphaned processing triggers ──────────────────────────────────
     stuck_triggers = (
-        db.query(RetrainingTrigger)
-        .filter(RetrainingTrigger.status == "processing")
-        .all()
+        db.query(RetrainingTrigger).filter(RetrainingTrigger.status == "processing").all()
     )
     for trigger in stuck_triggers:
         # No linked job — worker died before creating one
@@ -148,9 +146,7 @@ def reconcile_once(db: Session, config: ReconcileConfig | None = None) -> Reconc
             )
         elif linked_job.status == "failed":
             trigger.status = "failed"
-            trigger.notes = (
-                f"Recovered by reconciler: linked job {linked_job.job_id} failed"
-            )
+            trigger.notes = f"Recovered by reconciler: linked job {linked_job.job_id} failed"
             result.recovered_triggers += 1
             logger.warning(
                 "reconcile_once: trigger_id=%s marked failed (linked job failed)",
@@ -185,8 +181,7 @@ async def run_reconciliation_loop(
     """
     cfg = config or ReconcileConfig()
     logger.info(
-        "retraining_recovery: reconciliation loop started "
-        "(interval=%.0fs timeout=%dmin)",
+        "retraining_recovery: reconciliation loop started " "(interval=%.0fs timeout=%dmin)",
         interval_seconds,
         cfg.job_timeout_minutes,
     )

@@ -34,7 +34,7 @@ Session is mocked — no live database required.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -129,7 +129,7 @@ def _make_gate(
     gate.iep1a_geometry = iep1a_geometry
     gate.iep1b_geometry = iep1b_geometry
     gate.selected_model = selected_model
-    gate.created_at = datetime.now(tz=UTC)
+    gate.created_at = datetime.now(tz=timezone.utc)
     return gate
 
 

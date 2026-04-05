@@ -162,6 +162,7 @@ def _make_image() -> np.ndarray:
 async def _run_split(
     norm_side_effects: list[NormalizationOutcome],
     rescue_side_effects: list[RescueOutcome] | None = None,
+    iep1d_execution_timeout_seconds: float | None = None,
 ) -> SplitOutcome:
     """
     Run run_split_normalization with mocked normalization and rescue flows.
@@ -208,6 +209,7 @@ async def _run_split(
             iep1b_circuit_breaker=cb_b,
             backend=MagicMock(),
             session=MagicMock(),
+            iep1d_execution_timeout_seconds=iep1d_execution_timeout_seconds,
         )
         # Make mocks accessible for assertion via result metadata trick
         result._mock_norm = mock_norm  # type: ignore[attr-defined]
@@ -331,6 +333,7 @@ class TestRunSplitNormalization:
                 iep1b_circuit_breaker=cb_b,
                 backend=MagicMock(),
                 session=MagicMock(),
+                iep1d_execution_timeout_seconds=240.0,
             )
 
         mock_rescue.assert_called_once()
@@ -340,6 +343,7 @@ class TestRunSplitNormalization:
         assert call_kwargs["artifact_uri"] == _LEFT_URI
         assert call_kwargs["rescue_output_uri"] == _LEFT_RESCUE_URI
         assert call_kwargs["rectified_proxy_uri"] == _LEFT_PROXY_URI
+        assert call_kwargs["iep1d_execution_timeout_seconds"] == 240.0
 
     @pytest.mark.asyncio
     async def test_left_rescue_succeeds(self) -> None:

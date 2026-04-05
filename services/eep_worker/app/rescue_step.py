@@ -52,9 +52,10 @@ Exported:
 from __future__ import annotations
 
 import dataclasses
+import logging
 import time
 from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 
 import cv2
@@ -83,6 +84,7 @@ from services.eep_worker.app.normalization_step import (
 )
 from shared.gpu.backend import BackendError, BackendErrorKind, GPUBackend
 from shared.io.storage import StorageBackend
+from shared.metrics import IEP1D_QUALITY_GATE_DECISIONS, IEP1D_REJECTION_REASONS
 from shared.schemas.geometry import GeometryResponse
 from shared.schemas.iep1d import RectifyResponse
 from shared.schemas.preprocessing import PreprocessBranchResponse
@@ -91,6 +93,9 @@ __all__ = [
     "RescueOutcome",
     "run_rescue_flow",
 ]
+
+logger = logging.getLogger(__name__)
+_IEP1D_CONF_THRESHOLD = 0.6
 
 
 # ── Result type ────────────────────────────────────────────────────────────────
@@ -169,6 +174,7 @@ async def _call_iep1d(
     cb: CircuitBreaker,
     lineage_id: str,
     session: Session,
+    execution_timeout_seconds: float | None = None,
 ) -> tuple[RectifyResponse | None, dict[str, str] | None]:
     """
     Invoke IEP1D POST /v1/rectify.  Never raises — all errors become a (None, error_dict) return.
@@ -183,7 +189,7 @@ async def _call_iep1d(
     """
     # ── Circuit breaker open → skip ───────────────────────────────────────────
     if not cb.allow_call():
-        now = datetime.now(tz=UTC)
+        now = datetime.now(timezone.utc)
         _log_invocation(
             session,
             lineage_id,
@@ -197,7 +203,7 @@ async def _call_iep1d(
         )
         return None, {"kind": "circuit_open", "message": "Circuit breaker open for 'iep1d'"}
 
-    invoked_at = datetime.now(tz=UTC)
+    invoked_at = datetime.now(timezone.utc)
     payload: dict[str, Any] = {
         "job_id": job_id,
         "page_number": page_number,
@@ -206,10 +212,14 @@ async def _call_iep1d(
     }
 
     try:
-        raw: dict[str, Any] = await backend.call(endpoint, payload)
+        raw: dict[str, Any] = await backend.call(
+            endpoint,
+            payload,
+            execution_timeout_seconds=execution_timeout_seconds,
+        )
         response = RectifyResponse.model_validate(raw)
         cb.record_success()
-        completed_at = datetime.now(tz=UTC)
+        completed_at = datetime.now(timezone.utc)
         duration_ms = (completed_at - invoked_at).total_seconds() * 1000
         _log_invocation(
             session,
@@ -220,13 +230,21 @@ async def _call_iep1d(
             duration_ms,
             "success",
             None,
-            None,
+            {
+                "rectified_image_uri": response.rectified_image_uri,
+                "rectification_confidence": response.rectification_confidence,
+                "skew_residual_before": response.skew_residual_before,
+                "skew_residual_after": response.skew_residual_after,
+                "border_score_before": response.border_score_before,
+                "border_score_after": response.border_score_after,
+                "processing_time_ms": response.processing_time_ms,
+            },
         )
         return response, None
 
     except BackendError as exc:
         cb.record_failure(exc.kind)
-        completed_at = datetime.now(tz=UTC)
+        completed_at = datetime.now(timezone.utc)
         duration_ms = (completed_at - invoked_at).total_seconds() * 1000
         is_timeout = exc.kind in (
             BackendErrorKind.COLD_START_TIMEOUT,
@@ -248,7 +266,7 @@ async def _call_iep1d(
 
     except ValidationError as exc:
         cb.record_failure(None)
-        completed_at = datetime.now(tz=UTC)
+        completed_at = datetime.now(timezone.utc)
         duration_ms = (completed_at - invoked_at).total_seconds() * 1000
         msg = f"Malformed rectify response from IEP1D: {exc}"
         _log_invocation(
@@ -266,7 +284,7 @@ async def _call_iep1d(
 
     except Exception as exc:
         cb.record_failure(None)
-        completed_at = datetime.now(tz=UTC)
+        completed_at = datetime.now(timezone.utc)
         duration_ms = (completed_at - invoked_at).total_seconds() * 1000
         msg = f"Unexpected error from IEP1D: {exc}"
         _log_invocation(
@@ -380,6 +398,7 @@ async def run_rescue_flow(
     session: Session,
     storage: StorageBackend,
     image_loader: Callable[[str], ArtifactImageDimensions],
+    iep1d_execution_timeout_seconds: float | None = None,
     is_split_child: bool = False,
     page_index: int = 0,
     proxy_config: ProxyConfig | None = None,
@@ -421,6 +440,9 @@ async def run_rescue_flow(
         iep1a_circuit_breaker:  Per-worker CircuitBreaker for IEP1A.
         iep1b_circuit_breaker:  Per-worker CircuitBreaker for IEP1B.
         backend:                Shared GPUBackend instance.
+        iep1d_execution_timeout_seconds:
+                                Optional warm-inference timeout override for the
+                                IEP1D rectification call only.
         session:                SQLAlchemy session (caller owns commit/rollback).
         storage:                StorageBackend instance.
         image_loader:           Callable(uri) → ArtifactImageDimensions; used by the
@@ -451,6 +473,7 @@ async def run_rescue_flow(
         material_type=material_type,
         endpoint=iep1d_endpoint,
         backend=backend,
+        execution_timeout_seconds=iep1d_execution_timeout_seconds,
         cb=iep1d_circuit_breaker,
         lineage_id=lineage_id,
         session=session,
@@ -466,9 +489,49 @@ async def run_rescue_flow(
             t0=t0,
         )
 
-    # ── Step 6.5 — Load rectified artifact and derive proxy ───────────────────
-    raw_bytes = storage.get_bytes(rectify_response.rectified_image_uri)
-    rectified_image = decode_otiff(raw_bytes, uri=rectify_response.rectified_image_uri)
+    # ── Step 6 — IEP1D quality gate (advisory mode) ───────────────────────────
+    _r_low_conf = rectify_response.rectification_confidence < _IEP1D_CONF_THRESHOLD
+    _r_skew = rectify_response.skew_residual_after >= rectify_response.skew_residual_before
+    _r_border = rectify_response.border_score_after < rectify_response.border_score_before
+    _r_warning = (
+        "skew_residual_not_improved" in rectify_response.warnings
+        or "border_score_not_improved" in rectify_response.warnings
+    )
+    _use_rectified = not (_r_low_conf or _r_skew or _r_border or _r_warning)
+    _iep1d_decision = "rectified_accepted" if _use_rectified else "rectification_rejected"
+
+    _rejection_reasons = [
+        reason
+        for reason, active in (
+            ("low_confidence", _r_low_conf),
+            ("skew_not_improved", _r_skew),
+            ("border_regressed", _r_border),
+            ("warning_veto", _r_warning),
+        )
+        if active
+    ]
+    logger.info(
+        {
+            "event": "iep1d_decision",
+            "decision": _iep1d_decision,
+            "confidence": rectify_response.rectification_confidence,
+            "skew_before": rectify_response.skew_residual_before,
+            "skew_after": rectify_response.skew_residual_after,
+            "border_before": rectify_response.border_score_before,
+            "border_after": rectify_response.border_score_after,
+            "warnings": rectify_response.warnings,
+            "rejection_reasons": _rejection_reasons,
+        }
+    )
+    IEP1D_QUALITY_GATE_DECISIONS.labels(decision=_iep1d_decision).inc()
+    for _reason in _rejection_reasons:
+        IEP1D_REJECTION_REASONS.labels(reason=_reason).inc()
+
+    _artifact_uri = rectify_response.rectified_image_uri if _use_rectified else artifact_uri
+
+    # ── Step 6.5 — Load chosen artifact and derive proxy ─────────────────────
+    raw_bytes = storage.get_bytes(_artifact_uri)
+    rectified_image = decode_otiff(raw_bytes, uri=_artifact_uri)
 
     proxy_h, proxy_w = _derive_and_store_proxy(
         rectified_image, material_type, rectified_proxy_uri, storage, proxy_config

@@ -20,13 +20,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 from fastapi.responses import Response
-from prometheus_client import (
-    CONTENT_TYPE_LATEST,
-    Counter,
-    Gauge,
-    Histogram,
-    generate_latest,
-)
+from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
 
 # ── Bucket sets ───────────────────────────────────────────────────────────────
 
@@ -221,6 +215,20 @@ IEP1D_GPU_INFERENCE_SECONDS = Histogram(
     buckets=_GPU_SECONDS_BUCKETS,
 )
 
+IEP1D_QUALITY_GATE_DECISIONS = Counter(
+    "iep1d_quality_gate_decisions_total",
+    "IEP1D quality gate decision count",
+    ["decision"],
+    # decision label values: rectified_accepted, rectification_rejected
+)
+
+IEP1D_REJECTION_REASONS = Counter(
+    "iep1d_rejection_reasons_total",
+    "IEP1D quality gate rejection reason count (multiple reasons may fire per event)",
+    ["reason"],
+    # reason label values: low_confidence, skew_not_improved, border_regressed, warning_veto
+)
+
 # ── IEP2A metrics ─────────────────────────────────────────────────────────────
 
 IEP2A_REGION_CONFIDENCE = Histogram(
@@ -298,6 +306,7 @@ SHADOW_CONF_DELTA = Histogram(
 
 
 # ── /metrics endpoint factory ─────────────────────────────────────────────────
+
 
 def make_metrics_router() -> APIRouter:
     """

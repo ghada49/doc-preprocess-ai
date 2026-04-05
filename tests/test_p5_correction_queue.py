@@ -29,7 +29,7 @@ assemble_correction_workspace is patched for detail endpoint tests.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -81,7 +81,7 @@ def _make_page(
     page.status = status
     page.review_reasons = review_reasons
     page.output_image_uri = output_image_uri
-    page.status_updated_at = status_updated_at or datetime(2026, 3, 1, tzinfo=UTC)
+    page.status_updated_at = status_updated_at or datetime(2026, 3, 1, tzinfo=timezone.utc)
     return page
 
 
@@ -184,7 +184,7 @@ class TestListCorrectionQueue:
             page_number=3,
             review_reasons=["geometry_sanity_failed"],
             output_image_uri="s3://bucket/norm.tiff",
-            status_updated_at=datetime(2026, 3, 10, 8, 0, 0, tzinfo=UTC),
+            status_updated_at=datetime(2026, 3, 10, 8, 0, 0, tzinfo=timezone.utc),
         )
 
         session = _make_list_session(rows=[(page, job)], total=1)

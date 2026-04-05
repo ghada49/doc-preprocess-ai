@@ -38,7 +38,7 @@ import hmac
 import logging
 import os
 import uuid
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
@@ -248,7 +248,7 @@ def retraining_webhook(
     Set ``RETRAINING_WEBHOOK_SECRET`` env var to the same value in EEP.
     """
     _verify_webhook_secret(x_webhook_secret)
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
     results: list[TriggerResult] = []
 
     for alert in body.alerts:

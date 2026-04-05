@@ -63,7 +63,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -360,7 +360,7 @@ def _apply_split_correction(
 
     The caller is responsible for db.commit() after this function returns.
     """
-    now = datetime.now(tz=UTC)
+    now = datetime.now(timezone.utc)
 
     # Step A — Fetch parent lineage row
     # Data-integrity requirement: parent lineage must exist.
@@ -584,7 +584,7 @@ def _apply_single_page_correction(
     src_data = get_backend(page.output_image_uri).get_bytes(page.output_image_uri)
     get_backend(corrected_uri).put_bytes(corrected_uri, src_data)
 
-    now = datetime.now(tz=UTC)
+    now = datetime.now(timezone.utc)
     correction_fields: dict[str, Any] = {
         "crop_box": body.crop_box,
         "deskew_angle": body.deskew_angle,
