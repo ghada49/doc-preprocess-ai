@@ -1,0 +1,7 @@
+names:
+  0: page_left
+  1: page_right
+path: .
+train: train.txt
+val: val.txt
+test: test.txt
