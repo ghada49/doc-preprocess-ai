@@ -80,6 +80,7 @@ next
 *.ipynb
 # Track documented training notebooks (override *.ipynb above)
 !training_iep1A/*.ipynb
+!training process/Notebooks/**/*.ipynb
 
 # Terraform / infra secrets
 *.tfstate
