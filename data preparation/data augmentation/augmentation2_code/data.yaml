@@ -1,0 +1,19 @@
+# ==============================================================================
+# YOLOv8 Dataset Configuration — Augmentation 2 (2 rotations, 126 images)
+# ==============================================================================
+#
+# Classes:
+#   0: page_left  — the left page in a two-page spread
+#   1: page_right — the right page in a two-page spread
+#
+# Note: When running in Colab, the training notebook overwrites this file
+# with absolute Colab paths. This version uses relative paths for local use.
+# ==============================================================================
+
+names:
+  0: page_left
+  1: page_right
+path: .
+train: train.txt
+val: val.txt
+test: test.txt
