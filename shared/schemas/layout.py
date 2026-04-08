@@ -282,14 +282,17 @@ class LayoutAdjudicationResult(BaseModel):
         agreed=True, layout_decision_source="local_agreement", fallback_used=False
         final_layout_result = IEP2A canonical regions
 
-    Google fallback:
-        agreed=False, layout_decision_source="google_document_ai", fallback_used=True
-        final_layout_result = Google-mapped canonical regions
+    Google adjudication (local disagreement or single-model):
+        agreed=False, layout_decision_source="google_document_ai", fallback_used=False
+        final_layout_result = Google-mapped canonical regions (may be empty)
         A technically successful Google call may still return zero regions.
         That is treated as a valid empty result, not a failure.
+        fallback_used=False because Google was the intended adjudicator, not a fallback.
 
     Google hard-failure fallback:
         agreed=False, layout_decision_source="local_fallback_unverified"
+        fallback_used=True when Google was attempted but hard-failed (exception, no response)
+        fallback_used=False when Google was not available (no client configured)
         final_layout_result = best available local result (IEP2A, else IEP2B, else [])
         status="done" because IEP2 remains display-producing and never routes to review
 
@@ -304,7 +307,10 @@ class LayoutAdjudicationResult(BaseModel):
                                    None when agreed=False (no local agreement to score)
         layout_decision_source   — which system determined the final layout
                                    ("none" retained for backward compatibility only)
-        fallback_used            — True if Google Document AI was actually attempted
+        fallback_used            — True only when Google was attempted but hard-failed,
+                                   forcing use of a degraded local result;
+                                   False on local agreement, Google success (any region count),
+                                   or when Google was simply not configured
         iep2a_region_count       — number of canonical regions returned by IEP2A
         iep2b_region_count       — None if IEP2B was unavailable
         matched_regions          — number of matched IEP2A/IEP2B region pairs;

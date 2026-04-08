@@ -13,7 +13,7 @@ import os
 import socket
 import time
 import uuid
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -46,6 +46,7 @@ from services.eep.app.queue import (
 )
 from services.eep_worker.app.circuit_breaker import CircuitBreaker, CircuitBreakerConfig
 from services.eep_worker.app.concurrency import WorkerSlotContext, initialize_semaphore
+from services.eep_worker.app.downsample_step import run_downsample_step
 from services.eep_worker.app.geometry_invocation import (
     GeometryInvocationResult,
     GeometryServiceError,
@@ -61,7 +62,11 @@ from services.eep_worker.app.intake import (
     derive_proxy,
     load_otiff,
 )
-from services.eep_worker.app.layout_step import LayoutTransitionError, complete_layout_detection
+from services.eep_worker.app.layout_step import (
+    LayoutTransitionError,
+    complete_layout_detection,
+    run_layout_adjudication_only,
+)
 from services.eep_worker.app.normalization_step import (
     NormalizationOutcome,
     run_normalization_and_first_validation,
@@ -71,8 +76,9 @@ from services.eep_worker.app.task import build_gate_config
 from services.eep_worker.app.watchdog import TaskWatchdog
 from shared.gpu.backend import BackendError, GPUBackend, LocalHTTPBackend, RunpodBackend
 from shared.io.storage import get_backend
-from shared.schemas.layout import LayoutDetectResponse
+from shared.schemas.layout import LayoutDetectResponse, Region
 from shared.schemas.preprocessing import PreprocessBranchResponse
+from shared.schemas.ucf import BoundingBox
 from shared.schemas.queue import PageTask
 
 logger = logging.getLogger(__name__)
@@ -555,6 +561,117 @@ def _write_layout_artifact(uri: str, payload: dict[str, Any]) -> None:
     get_backend(uri).put_bytes(uri, data)
 
 
+# ── Inline layout helpers ─────────────────────────────────────────────────────
+
+
+def _best_layout_artifact_uri(
+    page: JobPage,
+    branch_response: PreprocessBranchResponse | None = None,
+) -> str | None:
+    """Select the best available artifact URI for inline layout detection.
+
+    Priority (highest first):
+      1. branch_response.processed_image_uri  — freshly normalized artifact
+      2. page.output_image_uri                — normalized artifact from an earlier pass
+      3. page.input_image_uri                 — original uploaded OTIFF (last resort)
+    """
+    if branch_response is not None:
+        return branch_response.processed_image_uri
+    return page.output_image_uri or page.input_image_uri
+
+
+async def _run_layout_inline(
+    *,
+    session: Session,
+    page: JobPage,
+    job: Job,
+    config: WorkerConfig,
+    lineage: PageLineage | None,
+    material_type: str,
+    best_artifact_uri: str | None,
+    task_started_at: float,
+) -> None:
+    """Best-effort inline layout detection for pages routing to pending_human_correction.
+
+    Called when ``job.pipeline_mode != 'preprocess'`` and
+    ``job.ptiff_qa_mode == 'auto_continue'`` and a page is about to enter
+    ``pending_human_correction``.  Runs IEP2A + IEP2B adjudication and
+    persists ``layout_consensus_result`` WITHOUT transitioning page state.
+
+    All failures are logged and swallowed — the preprocessing routing to
+    ``pending_human_correction`` must never be blocked by a layout error.
+    """
+    if best_artifact_uri is None:
+        logger.debug(
+            "worker_loop: inline layout skipped (no artifact) job=%s page=%d",
+            job.job_id,
+            page.page_number,
+        )
+        return
+
+    try:
+        image_bytes: bytes | None = None
+        try:
+            image_bytes = get_backend(best_artifact_uri).get_bytes(best_artifact_uri)
+        except Exception as load_exc:
+            logger.warning(
+                "worker_loop: inline layout could not load bytes job=%s page=%d uri=%s error=%s",
+                job.job_id,
+                page.page_number,
+                best_artifact_uri,
+                load_exc,
+            )
+
+        iep2a_result = await _call_layout_service(
+            service_name="iep2a",
+            endpoint=config.iep2a_endpoint,
+            job_id=job.job_id,
+            page_number=page.page_number,
+            image_uri=best_artifact_uri,
+            material_type=material_type,
+            backend=config.backend,
+            circuit_breaker=config.iep2a_circuit_breaker,
+        )
+        iep2b_result = await _call_layout_service(
+            service_name="iep2b",
+            endpoint=config.iep2b_endpoint,
+            job_id=job.job_id,
+            page_number=page.page_number,
+            image_uri=best_artifact_uri,
+            material_type=material_type,
+            backend=config.backend,
+            circuit_breaker=config.iep2b_circuit_breaker,
+        )
+
+        adjudication = await run_layout_adjudication_only(
+            session=session,
+            page=page,
+            lineage_id=lineage.lineage_id if lineage is not None else None,
+            material_type=material_type,
+            image_uri=best_artifact_uri,
+            iep2a_result=iep2a_result,
+            iep2b_result=iep2b_result,
+            image_bytes=image_bytes,
+            mime_type=_mime_type_for_uri(best_artifact_uri),
+            total_processing_ms=(time.monotonic() - task_started_at) * 1000.0,
+        )
+        logger.info(
+            "worker_loop: inline layout persisted job=%s page=%d uri=%s source=%s regions=%d",
+            job.job_id,
+            page.page_number,
+            best_artifact_uri,
+            adjudication.layout_decision_source,
+            len(adjudication.final_layout_result),
+        )
+    except Exception as exc:
+        logger.warning(
+            "worker_loop: inline layout failed (non-fatal) job=%s page=%d error=%s",
+            job.job_id,
+            page.page_number,
+            exc,
+        )
+
+
 async def _run_preprocessing(
     *,
     session: Session,
@@ -599,6 +716,28 @@ async def _run_preprocessing(
     if lineage.input_image_hash is None:
         lineage.input_image_hash = current_hash
         _commit(session)
+
+    downsample_uri = _artifact_uri(
+        page.input_image_uri,
+        job.job_id,
+        "downsampled",
+        page.page_number,
+        page.sub_page_index,
+        ".tiff",
+    )
+    downsample_backend = get_backend(downsample_uri)
+    try:
+        downsample_result = run_downsample_step(
+            full_res_image=full_res_image,
+            source_artifact_uri=page.input_image_uri,
+            output_uri=downsample_uri,
+            storage=downsample_backend,
+        )
+        existing_gate = lineage.gate_results or {}
+        lineage.gate_results = {**existing_gate, "downsample": asdict(downsample_result)}
+        _commit(session)
+    except Exception as exc:
+        raise RetryableTaskError(f"downsampling failed: {exc}") from exc
 
     proxy_uri = _artifact_uri(
         page.input_image_uri,
@@ -653,6 +792,17 @@ async def _run_preprocessing(
 
     if selection.route_decision == "pending_human_correction" or selection.selected is None:
         review_reason = selection.review_reason or "geometry_selection_failed"
+        if job.pipeline_mode != "preprocess" and job.ptiff_qa_mode == "auto_continue":
+            await _run_layout_inline(
+                session=session,
+                page=page,
+                job=job,
+                config=config,
+                lineage=lineage,
+                material_type=material_type,
+                best_artifact_uri=_best_layout_artifact_uri(page),
+                task_started_at=task_started_at,
+            )
         _complete_pending_human_correction(
             session,
             page=page,
@@ -661,20 +811,12 @@ async def _run_preprocessing(
             from_state=current_state,
             review_reason=review_reason,
             total_processing_ms=(time.monotonic() - task_started_at) * 1000.0,
+            output_image_uri=page.output_image_uri,
         )
         return "ack"
 
-    if selection.selected.response.split_required:
-        _complete_pending_human_correction(
-            session,
-            page=page,
-            job=job,
-            lineage=lineage,
-            from_state=current_state,
-            review_reason="split_required",
-            total_processing_ms=(time.monotonic() - task_started_at) * 1000.0,
-        )
-        return "ack"
+    # split_required check is deferred until after normalization so the reviewer
+    # has a preprocessed artifact (output_image_uri) to work with.
 
     output_uri = _artifact_uri(
         page.input_image_uri,
@@ -705,6 +847,34 @@ async def _run_preprocessing(
 
     branch_response = norm_outcome.branch_response
     quality_summary = _quality_summary_dict(branch_response)
+
+    if selection.selected.response.split_required:
+        # Normalization has now run so the reviewer has a preprocessed artifact
+        # (branch_response.processed_image_uri) to open and split.
+        confirm_preprocessed_artifact(session, lineage.lineage_id)
+        if job.pipeline_mode != "preprocess" and job.ptiff_qa_mode == "auto_continue":
+            await _run_layout_inline(
+                session=session,
+                page=page,
+                job=job,
+                config=config,
+                lineage=lineage,
+                material_type=material_type,
+                best_artifact_uri=_best_layout_artifact_uri(page, branch_response),
+                task_started_at=task_started_at,
+            )
+        _complete_pending_human_correction(
+            session,
+            page=page,
+            job=job,
+            lineage=lineage,
+            from_state=current_state,
+            review_reason="split_required",
+            total_processing_ms=(time.monotonic() - task_started_at) * 1000.0,
+            output_image_uri=branch_response.processed_image_uri,
+            quality_summary=quality_summary,
+        )
+        return "ack"
 
     if page.status == "preprocessing" and norm_outcome.route == "rescue_required":
         advanced = advance_page_state(
@@ -754,6 +924,23 @@ async def _run_preprocessing(
         rescue_storage = get_backend(rescue_output_uri)
         rescue_loader = make_cv2_image_loader(rescue_storage)
 
+        google_cleanup_output_uri = _artifact_uri(
+            page.input_image_uri,
+            job.job_id,
+            "google_cleanup",
+            page.page_number,
+            page.sub_page_index,
+            ".tiff",
+        )
+        google_cleanup_proxy_uri = _artifact_uri(
+            page.input_image_uri,
+            job.job_id,
+            "google_cleanup_proxy",
+            page.page_number,
+            page.sub_page_index,
+            ".png",
+        )
+
         try:
             rescue_outcome: RescueOutcome = await run_rescue_flow(
                 artifact_uri=branch_response.processed_image_uri,
@@ -775,6 +962,8 @@ async def _run_preprocessing(
                 storage=rescue_storage,
                 image_loader=rescue_loader,
                 gate_config=gate_config,
+                google_cleanup_output_uri=google_cleanup_output_uri,
+                google_cleanup_proxy_uri=google_cleanup_proxy_uri,
             )
         except Exception as exc:
             raise RetryableTaskError(f"rescue flow failed: {exc}") from exc
@@ -805,6 +994,17 @@ async def _run_preprocessing(
             )
             if rescue_branch is not None:
                 confirm_preprocessed_artifact(session, lineage.lineage_id)
+            if job.pipeline_mode != "preprocess" and job.ptiff_qa_mode == "auto_continue":
+                await _run_layout_inline(
+                    session=session,
+                    page=page,
+                    job=job,
+                    config=config,
+                    lineage=lineage,
+                    material_type=material_type,
+                    best_artifact_uri=_best_layout_artifact_uri(page, rescue_branch),
+                    task_started_at=task_started_at,
+                )
             _complete_pending_human_correction(
                 session,
                 page=page,
@@ -887,6 +1087,61 @@ async def _run_preprocessing(
     return "ack"
 
 
+def _extract_downsample_gate(lineage: PageLineage) -> dict[str, Any] | None:
+    """Return the validated downsample gate dict from lineage, or None if absent/incomplete."""
+    gate = (lineage.gate_results or {}).get("downsample")
+    if not gate:
+        return None
+    for key in (
+        "downsampled_artifact_uri",
+        "original_width",
+        "original_height",
+        "downsampled_width",
+        "downsampled_height",
+    ):
+        if not gate.get(key):
+            return None
+    if gate["downsampled_width"] <= 0 or gate["downsampled_height"] <= 0:
+        return None
+    if gate["original_width"] <= 0 or gate["original_height"] <= 0:
+        return None
+    return gate
+
+
+def _rescale_layout_response(
+    response: LayoutDetectResponse | None,
+    scale_x: float,
+    scale_y: float,
+) -> LayoutDetectResponse | None:
+    """
+    Return a new LayoutDetectResponse with region bboxes rescaled to canonical coordinates.
+
+    Rescaling formula (downsample-space → canonical/original-space):
+        canonical_x = downsample_x * scale_x  (scale_x = original_width / downsampled_width)
+        canonical_y = downsample_y * scale_y  (scale_y = original_height / downsampled_height)
+
+    Returns the original response unchanged when response is None or both scale factors
+    equal 1.0 (no downsample was applied).
+    """
+    if response is None or (scale_x == 1.0 and scale_y == 1.0):
+        return response
+    rescaled = [
+        Region(
+            id=r.id,
+            type=r.type,
+            confidence=r.confidence,
+            bbox=BoundingBox(
+                x_min=r.bbox.x_min * scale_x,
+                y_min=r.bbox.y_min * scale_y,
+                x_max=r.bbox.x_max * scale_x,
+                y_max=r.bbox.y_max * scale_y,
+            ),
+        )
+        for r in response.regions
+    ]
+    return response.model_copy(update={"regions": rescaled})
+
+
 async def _run_layout(
     *,
     session: Session,
@@ -922,15 +1177,56 @@ async def _run_layout(
         return "ack"
 
     material_type = _resolve_material_type_placeholder(session, job, page)
+
+    logger.info(
+        "worker_loop: starting layout detection job=%s page=%d uri=%s",
+        job.job_id,
+        page.page_number,
+        image_uri,
+    )
+
+    # Select layout input artifact: prefer precomputed downsample when available.
+    downsample_gate = _extract_downsample_gate(lineage)
+    if downsample_gate is not None:
+        layout_image_uri = downsample_gate["downsampled_artifact_uri"]
+        downsample_metadata: dict[str, Any] = {
+            "layout_input_source": "downsampled",
+            "layout_input_artifact_uri": layout_image_uri,
+            "layout_input_width": downsample_gate["downsampled_width"],
+            "layout_input_height": downsample_gate["downsampled_height"],
+            "canonical_output_width": downsample_gate["original_width"],
+            "canonical_output_height": downsample_gate["original_height"],
+            "coordinate_rescaled": True,
+            "coordinate_scale_factor": downsample_gate.get("scale_factor", 1.0),
+        }
+        logger.info(
+            "worker_loop: using downsampled artifact for layout job=%s page=%d uri=%s",
+            job.job_id,
+            page.page_number,
+            layout_image_uri,
+        )
+    else:
+        layout_image_uri = image_uri
+        downsample_metadata = {
+            "layout_input_source": "original",
+            "layout_input_artifact_uri": image_uri,
+            "layout_input_width": None,
+            "layout_input_height": None,
+            "canonical_output_width": None,
+            "canonical_output_height": None,
+            "coordinate_rescaled": False,
+            "coordinate_scale_factor": 1.0,
+        }
+
     image_bytes: bytes | None = None
     try:
-        image_bytes = get_backend(image_uri).get_bytes(image_uri)
+        image_bytes = get_backend(layout_image_uri).get_bytes(layout_image_uri)
     except Exception:
         logger.warning(
             "worker_loop: could not load image bytes for Google fallback job=%s page=%d uri=%s",
             job.job_id,
             page.page_number,
-            image_uri,
+            layout_image_uri,
         )
 
     iep2a_result = await _call_layout_service(
@@ -938,7 +1234,7 @@ async def _run_layout(
         endpoint=config.iep2a_endpoint,
         job_id=job.job_id,
         page_number=page.page_number,
-        image_uri=image_uri,
+        image_uri=layout_image_uri,
         material_type=material_type,
         backend=config.backend,
         circuit_breaker=config.iep2a_circuit_breaker,
@@ -948,11 +1244,18 @@ async def _run_layout(
         endpoint=config.iep2b_endpoint,
         job_id=job.job_id,
         page_number=page.page_number,
-        image_uri=image_uri,
+        image_uri=layout_image_uri,
         material_type=material_type,
         backend=config.backend,
         circuit_breaker=config.iep2b_circuit_breaker,
     )
+
+    # Rescale IEP2A and IEP2B outputs back to canonical (original-resolution) coordinates.
+    if downsample_gate is not None:
+        _scale_x = downsample_gate["original_width"] / downsample_gate["downsampled_width"]
+        _scale_y = downsample_gate["original_height"] / downsample_gate["downsampled_height"]
+        iep2a_result = _rescale_layout_response(iep2a_result, _scale_x, _scale_y)
+        iep2b_result = _rescale_layout_response(iep2b_result, _scale_x, _scale_y)
 
     try:
         layout_result = await complete_layout_detection(
@@ -960,13 +1263,14 @@ async def _run_layout(
             page=page,
             lineage_id=lineage.lineage_id,
             material_type=material_type,
-            image_uri=image_uri,
+            image_uri=layout_image_uri,
             iep2a_result=iep2a_result,
             iep2b_result=iep2b_result,
             image_bytes=image_bytes,
-            mime_type=_mime_type_for_uri(image_uri),
+            mime_type=_mime_type_for_uri(layout_image_uri),
             total_processing_ms=(time.monotonic() - task_started_at) * 1000.0,
             output_layout_uri=None,
+            downsample_metadata=downsample_metadata,
         )
     except LayoutTransitionError:
         logger.warning(
@@ -977,6 +1281,15 @@ async def _run_layout(
         return "ack"
     except Exception as exc:
         raise RetryableTaskError(f"layout adjudication failed: {exc}") from exc
+
+    if layout_result.adjudication.layout_decision_source == "google_document_ai":
+        logger.info(
+            "worker_loop: Google adjudication triggered job=%s page=%d regions=%d fallback_used=%s",
+            job.job_id,
+            page.page_number,
+            len(layout_result.adjudication.final_layout_result),
+            layout_result.adjudication.fallback_used,
+        )
 
     output_layout_uri = _artifact_uri(
         page.input_image_uri,
@@ -998,6 +1311,15 @@ async def _run_layout(
     confirm_layout_artifact(session, lineage.lineage_id)
     _sync_job_summary(session, job)
     _commit(session)
+
+    logger.info(
+        "worker_loop: layout result persisted job=%s page=%d source=%s regions=%d uri=%s",
+        job.job_id,
+        page.page_number,
+        layout_result.adjudication.layout_decision_source,
+        len(layout_result.adjudication.final_layout_result),
+        output_layout_uri,
+    )
     return "ack"
 
 

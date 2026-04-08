@@ -383,8 +383,11 @@ def _apply_split_correction(
         )
 
     # Step B — Validate source URI
-    # Data-integrity requirement: parent must have a source artifact URI.
-    if parent.output_image_uri is None:
+    # Prefer output_image_uri (preprocessed artifact); fall back to input_image_uri
+    # (original uploaded OTIFF) when preprocessing did not yet produce an output
+    # (e.g. page went to pending_human_correction before normalization completed).
+    source_uri: str | None = parent.output_image_uri or parent.input_image_uri
+    if source_uri is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=(
@@ -394,9 +397,9 @@ def _apply_split_correction(
             ),
         )
 
-    parent_backend = get_backend(parent.output_image_uri)
-    parent_image_bytes = parent_backend.get_bytes(parent.output_image_uri)
-    parent_image = _decode_split_source_image(parent.output_image_uri, parent_image_bytes)
+    parent_backend = get_backend(source_uri)
+    parent_image_bytes = parent_backend.get_bytes(source_uri)
+    parent_image = _decode_split_source_image(source_uri, parent_image_bytes)
     gate = _fetch_latest_geometry_gate(db, parent.job_id, parent.page_number)
     resolved_split_x = _resolve_split_x(
         requested_split_x=body.split_x,
@@ -411,7 +414,7 @@ def _apply_split_correction(
         "split_x": resolved_split_x,
     }
     child_artifacts = _build_split_child_artifacts(
-        parent.output_image_uri,
+        source_uri,
         parent_image,
         resolved_split_x,
     )
@@ -423,7 +426,7 @@ def _apply_split_correction(
     # can continue in Page 0 / Page 1 workspaces.
     for sub_idx in (0, 1):
         child_uri = _derive_child_corrected_uri(
-            parent.output_image_uri, parent.job_id, parent.page_number, sub_idx
+            source_uri, parent.job_id, parent.page_number, sub_idx
         )
 
         # Create or reuse child JobPage (idempotent).
@@ -570,7 +573,10 @@ def _apply_single_page_correction(
             ),
         )
 
-    if page.output_image_uri is None:
+    # Prefer output_image_uri (preprocessed artifact); fall back to input_image_uri
+    # (original uploaded OTIFF) when preprocessing did not produce an output yet.
+    source_uri: str | None = page.output_image_uri or page.input_image_uri
+    if source_uri is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=(
@@ -579,9 +585,9 @@ def _apply_single_page_correction(
             ),
         )
 
-    corrected_uri = _derive_corrected_uri(page.output_image_uri)
-    assert corrected_uri is not None  # guaranteed: output_image_uri is non-None above
-    src_data = get_backend(page.output_image_uri).get_bytes(page.output_image_uri)
+    corrected_uri = _derive_corrected_uri(source_uri)
+    assert corrected_uri is not None  # guaranteed: source_uri is non-None above
+    src_data = get_backend(source_uri).get_bytes(source_uri)
     get_backend(corrected_uri).put_bytes(corrected_uri, src_data)
 
     now = datetime.now(timezone.utc)

@@ -82,9 +82,15 @@ from services.eep_worker.app.normalization_step import (
     NormalizationOutcome,
     run_normalization_and_first_validation,
 )
+from services.eep.app.google.document_ai import run_google_cleanup
+from services.eep_worker.app.google_config import get_google_worker_state
 from shared.gpu.backend import BackendError, BackendErrorKind, GPUBackend
 from shared.io.storage import StorageBackend
-from shared.metrics import IEP1D_QUALITY_GATE_DECISIONS, IEP1D_REJECTION_REASONS
+from shared.metrics import (
+    GOOGLE_CLEANUP_DECISIONS,
+    IEP1D_QUALITY_GATE_DECISIONS,
+    IEP1D_REJECTION_REASONS,
+)
 from shared.schemas.geometry import GeometryResponse
 from shared.schemas.iep1d import RectifyResponse
 from shared.schemas.preprocessing import PreprocessBranchResponse
@@ -130,6 +136,8 @@ class RescueOutcome:
     rectify_response: RectifyResponse | None
     second_selection_result: GeometrySelectionResult | None
     duration_ms: float
+    google_cleanup_used: bool = dataclasses.field(default=False)
+    third_selection_result: GeometrySelectionResult | None = dataclasses.field(default=None)
 
 
 # ── ServiceInvocation logging (same pattern as geometry_invocation._log_invocation) ──
@@ -363,6 +371,8 @@ def _pending(
     branch_response: PreprocessBranchResponse | None,
     validation_result: ArtifactValidationResult | None,
     t0: float,
+    google_cleanup_used: bool = False,
+    third_selection_result: GeometrySelectionResult | None = None,
 ) -> RescueOutcome:
     """Construct a pending_human_correction RescueOutcome."""
     return RescueOutcome(
@@ -373,6 +383,215 @@ def _pending(
         rectify_response=rectify_response,
         second_selection_result=second_selection_result,
         duration_ms=(time.monotonic() - t0) * 1000.0,
+        google_cleanup_used=google_cleanup_used,
+        third_selection_result=third_selection_result,
+    )
+
+
+# ── Google cleanup helpers ─────────────────────────────────────────────────────
+
+
+async def _call_google_cleanup(
+    *,
+    image_bytes: bytes,
+    job_id: str,
+    config: Any,
+) -> tuple[bytes | None, str]:
+    """
+    Invoke Google Document AI cleanup.  Never raises.
+
+    Returns:
+        (cleaned_bytes, status_label) where status_label is one of:
+          "cleanup_accepted" — cleaned_bytes is non-empty
+          "cleanup_failed"   — Google returned None or empty bytes
+    """
+    try:
+        cleaned, meta = await run_google_cleanup(image_bytes, job_id=job_id, config=config)
+    except Exception as exc:
+        logger.warning({"event": "google_cleanup_error", "error": str(exc)})
+        GOOGLE_CLEANUP_DECISIONS.labels(decision="cleanup_failed").inc()
+        return None, "cleanup_failed"
+
+    if not cleaned:
+        logger.info(
+            {
+                "event": "google_cleanup_result",
+                "decision": "cleanup_failed",
+                "meta": meta,
+            }
+        )
+        GOOGLE_CLEANUP_DECISIONS.labels(decision="cleanup_failed").inc()
+        return None, "cleanup_failed"
+
+    logger.info(
+        {
+            "event": "google_cleanup_result",
+            "decision": "cleanup_accepted",
+            "bytes": len(cleaned),
+            "meta": meta,
+        }
+    )
+    GOOGLE_CLEANUP_DECISIONS.labels(decision="cleanup_accepted").inc()
+    return cleaned, "cleanup_accepted"
+
+
+async def _run_google_third_pass(
+    *,
+    raw_bytes: bytes,
+    job_id: str,
+    page_number: int,
+    lineage_id: str,
+    material_type: str,
+    google_cleanup_output_uri: str,
+    google_cleanup_proxy_uri: str,
+    rescue_output_uri: str,
+    iep1a_endpoint: str,
+    iep1b_endpoint: str,
+    iep1a_circuit_breaker: CircuitBreaker,
+    iep1b_circuit_breaker: CircuitBreaker,
+    backend: GPUBackend,
+    session: Session,
+    storage: StorageBackend,
+    image_loader: Callable[[str], ArtifactImageDimensions],
+    is_split_child: bool,
+    page_index: int,
+    proxy_config: ProxyConfig | None,
+    gate_config: PreprocessingGateConfig | None,
+    rectify_response: RectifyResponse | None,
+    second_selection_result: GeometrySelectionResult | None,
+    t0: float,
+    config: Any,
+) -> RescueOutcome | None:
+    """
+    Run Google cleanup + third geometry pass.
+
+    Returns a RescueOutcome when the third pass completes (success or failure).
+    Returns None when Google cleanup itself produced no bytes — caller should
+    fall through to the existing pending_human_correction path.
+    """
+    cleaned_bytes, _status = await _call_google_cleanup(
+        image_bytes=raw_bytes,
+        job_id=job_id,
+        config=config,
+    )
+    if cleaned_bytes is None:
+        return None
+
+    # ── Store cleaned artifact ────────────────────────────────────────────────
+    storage.put_bytes(google_cleanup_output_uri, cleaned_bytes)
+    cleaned_image = decode_otiff(cleaned_bytes, uri=google_cleanup_output_uri)
+
+    # ── Derive proxy for third geometry pass ─────────────────────────────────
+    proxy_h3, proxy_w3 = _derive_and_store_proxy(
+        cleaned_image, material_type, google_cleanup_proxy_uri, storage, proxy_config
+    )
+
+    # ── Third geometry pass (IEP1A + IEP1B) ──────────────────────────────────
+    try:
+        third_invocation = await invoke_geometry_services(
+            job_id=job_id,
+            page_number=page_number,
+            lineage_id=lineage_id,
+            proxy_image_uri=google_cleanup_proxy_uri,
+            material_type=material_type,
+            proxy_width=proxy_w3,
+            proxy_height=proxy_h3,
+            iep1a_endpoint=iep1a_endpoint,
+            iep1b_endpoint=iep1b_endpoint,
+            iep1a_circuit_breaker=iep1a_circuit_breaker,
+            iep1b_circuit_breaker=iep1b_circuit_breaker,
+            backend=backend,
+            session=session,
+            gate_config=gate_config,
+        )
+    except GeometryServiceError:
+        return _pending(
+            "geometry_services_failed_post_google_cleanup",
+            rectify_response=rectify_response,
+            second_selection_result=second_selection_result,
+            branch_response=None,
+            validation_result=None,
+            t0=t0,
+            google_cleanup_used=True,
+        )
+
+    third_selection = third_invocation.selection_result
+
+    # ── Unexpected split guard (split children only) ──────────────────────────
+    if is_split_child and _any_model_reports_split(
+        third_invocation.iep1a_result, third_invocation.iep1b_result
+    ):
+        return _pending(
+            "geometry_unexpected_split_on_child",
+            rectify_response=rectify_response,
+            second_selection_result=second_selection_result,
+            branch_response=None,
+            validation_result=None,
+            t0=t0,
+            google_cleanup_used=True,
+            third_selection_result=third_selection,
+        )
+
+    # ── Route check on third-pass selection ──────────────────────────────────
+    if third_selection.route_decision != "accepted":
+        if third_selection.structural_agreement is False:
+            third_reason = "structural_disagreement_post_google_cleanup"
+        elif third_selection.route_decision == "pending_human_correction":
+            third_reason = third_selection.review_reason or "pending_human_correction"
+        else:
+            third_reason = "low_geometry_trust_post_google_cleanup"
+        return _pending(
+            third_reason,
+            rectify_response=rectify_response,
+            second_selection_result=second_selection_result,
+            branch_response=None,
+            validation_result=None,
+            t0=t0,
+            google_cleanup_used=True,
+            third_selection_result=third_selection,
+        )
+
+    # ── Third-pass IEP1C normalization ────────────────────────────────────────
+    assert (
+        third_selection.selected is not None
+    ), "route_decision=='accepted' guarantees a selected candidate"
+    third_norm: NormalizationOutcome = run_normalization_and_first_validation(
+        full_res_image=cleaned_image,
+        selected_geometry=third_selection.selected.response,
+        selected_model=third_selection.selected.model,
+        geometry_route_decision=third_selection.route_decision,
+        proxy_width=proxy_w3,
+        proxy_height=proxy_h3,
+        output_uri=rescue_output_uri,
+        storage=storage,
+        image_loader=image_loader,
+        page_index=page_index,
+        gate_config=gate_config,
+    )
+
+    if third_norm.route == "accept_now":
+        return RescueOutcome(
+            route="accept_now",
+            review_reason=None,
+            branch_response=third_norm.branch_response,
+            validation_result=third_norm.validation_result,
+            rectify_response=rectify_response,
+            second_selection_result=second_selection_result,
+            duration_ms=(time.monotonic() - t0) * 1000.0,
+            google_cleanup_used=True,
+            third_selection_result=third_selection,
+        )
+
+    return RescueOutcome(
+        route="pending_human_correction",
+        review_reason="artifact_validation_failed",
+        branch_response=third_norm.branch_response,
+        validation_result=third_norm.validation_result,
+        rectify_response=rectify_response,
+        second_selection_result=second_selection_result,
+        duration_ms=(time.monotonic() - t0) * 1000.0,
+        google_cleanup_used=True,
+        third_selection_result=third_selection,
     )
 
 
@@ -403,6 +622,8 @@ async def run_rescue_flow(
     page_index: int = 0,
     proxy_config: ProxyConfig | None = None,
     gate_config: PreprocessingGateConfig | None = None,
+    google_cleanup_output_uri: str | None = None,
+    google_cleanup_proxy_uri: str | None = None,
 ) -> RescueOutcome:
     """
     Execute Steps 6, 6.5, and 7 of the EEP pipeline: rectify → second geometry pass →
@@ -589,6 +810,40 @@ async def run_rescue_flow(
         else:
             # route_decision == "rectification" (low geometry trust after rescue)
             reason = "low_geometry_trust_post_rectification"
+
+        # ── Google cleanup fallback (Step 5 → third geometry pass) ───────────
+        if google_cleanup_output_uri and google_cleanup_proxy_uri:
+            _gs = get_google_worker_state()
+            if _gs.enabled and _gs.config:
+                _google_outcome = await _run_google_third_pass(
+                    raw_bytes=raw_bytes,
+                    job_id=job_id,
+                    page_number=page_number,
+                    lineage_id=lineage_id,
+                    material_type=material_type,
+                    google_cleanup_output_uri=google_cleanup_output_uri,
+                    google_cleanup_proxy_uri=google_cleanup_proxy_uri,
+                    rescue_output_uri=rescue_output_uri,
+                    iep1a_endpoint=iep1a_endpoint,
+                    iep1b_endpoint=iep1b_endpoint,
+                    iep1a_circuit_breaker=iep1a_circuit_breaker,
+                    iep1b_circuit_breaker=iep1b_circuit_breaker,
+                    backend=backend,
+                    session=session,
+                    storage=storage,
+                    image_loader=image_loader,
+                    is_split_child=is_split_child,
+                    page_index=page_index,
+                    proxy_config=proxy_config,
+                    gate_config=gate_config,
+                    rectify_response=rectify_response,
+                    second_selection_result=selection_result,
+                    t0=t0,
+                    config=_gs.config,
+                )
+                if _google_outcome is not None:
+                    return _google_outcome
+
         return _pending(
             reason,
             rectify_response=rectify_response,
@@ -629,6 +884,39 @@ async def run_rescue_flow(
         )
 
     # norm_outcome.route == "rescue_required" → final validation failed
+    # ── Google cleanup fallback (Step 5 → third geometry pass) ─────────────────
+    if google_cleanup_output_uri and google_cleanup_proxy_uri:
+        _gs = get_google_worker_state()
+        if _gs.enabled and _gs.config:
+            _google_outcome = await _run_google_third_pass(
+                raw_bytes=raw_bytes,
+                job_id=job_id,
+                page_number=page_number,
+                lineage_id=lineage_id,
+                material_type=material_type,
+                google_cleanup_output_uri=google_cleanup_output_uri,
+                google_cleanup_proxy_uri=google_cleanup_proxy_uri,
+                rescue_output_uri=rescue_output_uri,
+                iep1a_endpoint=iep1a_endpoint,
+                iep1b_endpoint=iep1b_endpoint,
+                iep1a_circuit_breaker=iep1a_circuit_breaker,
+                iep1b_circuit_breaker=iep1b_circuit_breaker,
+                backend=backend,
+                session=session,
+                storage=storage,
+                image_loader=image_loader,
+                is_split_child=is_split_child,
+                page_index=page_index,
+                proxy_config=proxy_config,
+                gate_config=gate_config,
+                rectify_response=rectify_response,
+                second_selection_result=selection_result,
+                t0=t0,
+                config=_gs.config,
+            )
+            if _google_outcome is not None:
+                return _google_outcome
+
     return RescueOutcome(
         route="pending_human_correction",
         review_reason="artifact_validation_failed",

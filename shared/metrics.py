@@ -229,6 +229,28 @@ IEP1D_REJECTION_REASONS = Counter(
     # reason label values: low_confidence, skew_not_improved, border_regressed, warning_veto
 )
 
+# ── Google Document AI cleanup metrics ────────────────────────────────────────
+
+GOOGLE_CLEANUP_DECISIONS = Counter(
+    "google_cleanup_decisions_total",
+    "Google Document AI cleanup decision count in rescue flow",
+    ["decision"],
+    # decision label values: cleanup_accepted, cleanup_failed
+)
+
+# ── Google Document AI layout adjudication metrics ────────────────────────────
+
+GOOGLE_LAYOUT_ADJUDICATION_DECISIONS = Counter(
+    "google_layout_adjudication_decisions_total",
+    "Google Document AI layout adjudication decision count in IEP2 gate",
+    ["source"],
+    # source label values:
+    #   local_agreement          — IEP2A+IEP2B agreed; Google not called
+    #   google_document_ai       — Google called and succeeded (including empty result)
+    #   local_fallback_unverified — Google hard-failed; best local result used
+    #   google_skipped           — Google client not available; local fallback used
+)
+
 # ── IEP2A metrics ─────────────────────────────────────────────────────────────
 
 IEP2A_REGION_CONFIDENCE = Histogram(

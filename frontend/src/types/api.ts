@@ -142,6 +142,75 @@ export interface JobDetailResponse {
   pages: JobPage[];
 }
 
+export type LayoutRegionType =
+  | "text_block"
+  | "title"
+  | "table"
+  | "image"
+  | "caption";
+
+export interface LayoutBoundingBox {
+  x_min: number;
+  y_min: number;
+  x_max: number;
+  y_max: number;
+}
+
+export interface LayoutRegion {
+  id: string;
+  type: LayoutRegionType;
+  bbox: LayoutBoundingBox;
+  confidence: number;
+}
+
+export interface LayoutConfSummary {
+  mean_conf: number;
+  low_conf_frac: number;
+}
+
+export interface LayoutColumnStructure {
+  column_count: number;
+  column_boundaries: number[];
+}
+
+export interface LayoutDetectResponse {
+  region_schema_version: "v1";
+  regions: LayoutRegion[];
+  layout_conf_summary: LayoutConfSummary;
+  region_type_histogram: Record<string, number>;
+  column_structure: LayoutColumnStructure | null;
+  model_version: string;
+  detector_type: string;
+  processing_time_ms: number;
+  warnings: string[];
+}
+
+export type LayoutDecisionSource =
+  | "local_agreement"
+  | "google_document_ai"
+  | "local_fallback_unverified"
+  | "none";
+
+export interface LayoutAdjudicationResult {
+  agreed: boolean;
+  consensus_confidence: number | null;
+  layout_decision_source: LayoutDecisionSource;
+  fallback_used: boolean;
+  iep2a_region_count: number;
+  iep2b_region_count: number | null;
+  matched_regions: number | null;
+  mean_matched_iou: number | null;
+  type_histogram_match: boolean | null;
+  iep2a_result: LayoutDetectResponse | null;
+  iep2b_result: LayoutDetectResponse | null;
+  google_document_ai_result: Record<string, unknown> | null;
+  final_layout_result: LayoutRegion[];
+  status: "done" | "failed";
+  error: string | null;
+  processing_time_ms: number;
+  google_response_time_ms: number | null;
+}
+
 export interface JobsListResponse {
   total: number;
   page: number;

@@ -26,6 +26,7 @@ import logging
 import os
 import time
 from dataclasses import dataclass, field
+from io import BytesIO
 from typing import Any
 
 from shared.schemas.layout import Region, RegionType
@@ -36,6 +37,7 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "GoogleDocumentAIConfig",
     "CallGoogleDocumentAI",
+    "convert_image_bytes_to_pdf",
     "run_google_layout_analysis",
     "run_google_cleanup",
 ]
@@ -163,6 +165,70 @@ class _WrappedElement:
     confidence: float
 
 
+def _bounding_poly_has_geometry(bounding_poly: Any) -> bool:
+    """Return True when a BoundingPoly carries any usable vertices."""
+    if bounding_poly is None:
+        return False
+
+    try:
+        if list(getattr(bounding_poly, "normalized_vertices", [])):
+            return True
+    except Exception:
+        pass
+
+    try:
+        if list(getattr(bounding_poly, "vertices", [])):
+            return True
+    except Exception:
+        pass
+
+    return False
+
+
+def _summarize_layout_response(document: Any, pages: list[Any]) -> dict[str, Any]:
+    """Extract response-shape diagnostics for audit/debugging."""
+    try:
+        text_length = len(getattr(document, "text", "") or "") if document else 0
+    except Exception:
+        text_length = 0
+
+    try:
+        document_layout = getattr(document, "document_layout", None) if document else None
+        blocks = list(getattr(document_layout, "blocks", [])) if document_layout else []
+    except Exception:
+        blocks = []
+
+    return {
+        "document_layout_block_count": len(blocks),
+        "pages_count": len(pages),
+        "text_length": text_length,
+        "document_layout_blocks_have_geometry": any(
+            _bounding_poly_has_geometry(getattr(block, "bounding_box", None)) for block in blocks
+        ),
+    }
+
+
+def _derive_empty_reason(
+    *,
+    canonical_region_count: int,
+    document_layout_block_count: int,
+    pages_count: int,
+    text_length: int,
+    document_layout_blocks_have_geometry: bool,
+) -> str | None:
+    """Explain an empty successful Google layout result when possible."""
+    if canonical_region_count > 0:
+        return None
+
+    if document_layout_block_count > 0 and not document_layout_blocks_have_geometry:
+        return "semantic_blocks_without_geometry"
+
+    if document_layout_block_count == 0 and pages_count == 0 and text_length == 0:
+        return "no_layout_content_returned"
+
+    return None
+
+
 # ───────────────────────────────────────────────────────────────────────────────
 # Error Classification
 # ───────────────────────────────────────────────────────────────────────────────
@@ -184,6 +250,52 @@ class GoogleAPIPermanentError(GoogleAPIError):
     """Permanent error (do not retry)."""
 
     pass
+
+
+def convert_image_bytes_to_pdf(image_bytes: bytes) -> bytes:
+    """
+    Convert a single image into a one-page PDF without changing its pixel geometry.
+
+    The PDF is written at 72 DPI so the page's MediaBox width/height numerically
+    match the source pixel width/height. Google Layout Parser reports page-space
+    coordinates, so this 1:1 numeric mapping keeps downstream bounding boxes in
+    the same coordinate system as the original image.
+    """
+    try:
+        from PIL import Image
+    except ImportError as exc:  # pragma: no cover - deployment dependency
+        raise RuntimeError("Pillow is required for image-to-PDF conversion") from exc
+
+    with Image.open(BytesIO(image_bytes)) as source_image:
+        source_image.load()
+        width, height = source_image.size
+        if width <= 0 or height <= 0:
+            raise ValueError(f"Invalid image dimensions: {width}x{height}")
+
+        working_image = source_image
+        if working_image.mode in {"RGBA", "LA"} or (
+            working_image.mode == "P" and "transparency" in working_image.info
+        ):
+            flattened = Image.new("RGBA", working_image.size, (255, 255, 255, 255))
+            working_image = Image.alpha_composite(
+                flattened,
+                working_image.convert("RGBA"),
+            ).convert("RGB")
+        elif working_image.mode != "RGB":
+            working_image = working_image.convert("RGB")
+
+        pdf_buffer = BytesIO()
+        # Force a 1:1 numeric mapping between source pixels and PDF page units.
+        working_image.save(pdf_buffer, format="PDF", resolution=72.0)
+
+    logger.debug(
+        "Converting image to PDF for Layout Parser: original_dimensions=%dx%d pdf_dimensions=%dx%d",
+        width,
+        height,
+        width,
+        height,
+    )
+    return pdf_buffer.getvalue()
 
 
 def _classify_error(error: Exception, http_status: int | None = None) -> tuple[str, str]:
@@ -279,12 +391,19 @@ class CallGoogleDocumentAI:
             return False
 
         try:
+            from google.api_core.client_options import ClientOptions
             from google.cloud import documentai_v1  # noqa: F401
 
             os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = creds_file
-            self._client = documentai_v1.DocumentProcessorServiceClient()
+            api_endpoint = _build_api_endpoint(self.config.location)
+            self._client = documentai_v1.DocumentProcessorServiceClient(
+                client_options=ClientOptions(api_endpoint=api_endpoint)
+            )
             self._credentials_valid = True
-            logger.info("CallGoogleDocumentAI: client initialized successfully")
+            logger.info(
+                "CallGoogleDocumentAI: client initialized successfully (endpoint=%s)",
+                api_endpoint,
+            )
             return True
 
         except ImportError as e:
@@ -334,6 +453,34 @@ class CallGoogleDocumentAI:
         if not await self._lazy_init():
             return None
 
+        # Capture source pixel dimensions before PDF conversion.
+        # Layout Parser v2+ may return pages=[] when returnBoundingBoxes is
+        # enabled; in that case block.bounding_box.normalizedVertices are in
+        # [0, 1] and we need the original image size to denormalize correctly.
+        self._source_width: int | None = None
+        self._source_height: int | None = None
+        if image_bytes and mime_type.lower().startswith("image/"):
+            try:
+                from PIL import Image
+
+                with Image.open(BytesIO(image_bytes)) as _src:
+                    self._source_width, self._source_height = _src.size
+            except Exception:
+                pass  # leave None; _call_google_api_sync falls back to 1000×1000
+
+        prepared_bytes = image_bytes
+        prepared_mime_type = mime_type
+        if image_bytes and mime_type.lower().startswith("image/"):
+            try:
+                prepared_bytes = convert_image_bytes_to_pdf(image_bytes)
+                prepared_mime_type = "application/pdf"
+            except Exception as exc:
+                logger.exception(
+                    "process_layout: failed to convert image to PDF before Google call: %s",
+                    exc,
+                )
+                return None
+
         start_time = time.time()
         attempt = 0
         last_error: Exception | None = None
@@ -351,18 +498,24 @@ class CallGoogleDocumentAI:
 
                 result = await self._call_google_api_with_timeout(
                     image_uri=image_uri,
-                    image_bytes=image_bytes,
-                    mime_type=mime_type,
+                    image_bytes=prepared_bytes,
+                    mime_type=prepared_mime_type,
                     timeout_sec=self.config.timeout_layout_seconds,
                 )
 
                 elapsed_ms = (time.time() - start_time) * 1000
                 logger.info(
                     "process_layout: success after %d attempt(s), job_id=%s, "
-                    "regions=%d, elapsed=%.0fms",
+                    "regions=%d, blocks=%d, pages=%d, text_length=%d, "
+                    "blocks_have_geometry=%s, empty_reason=%s, elapsed=%.0fms",
                     attempt,
                     job_id or "unknown",
                     result.get("region_count", 0),
+                    result.get("document_layout_block_count", 0),
+                    result.get("pages_count", 0),
+                    result.get("text_length", 0),
+                    result.get("document_layout_blocks_have_geometry", False),
+                    result.get("empty_reason"),
                     elapsed_ms,
                 )
                 return result
@@ -408,19 +561,111 @@ class CallGoogleDocumentAI:
         job_id: str | None = None,
     ) -> bytes | None:
         """
-        Process image for artifact cleanup using Google Document AI (stub).
+        Process image for artifact cleanup using Google Document AI.
 
-        Reserved for IEP1 rescue. Returns None until processor_id_cleanup
-        is provisioned and this method is fully implemented.
+        Calls the cleanup processor (processor_id_cleanup) and extracts
+        the rendered page image from the response.  Returns None when:
+          - processor_id_cleanup is not configured
+          - credentials are unavailable
+          - the API returns no rendered page image
+          - any transient error exhausts retries
+          - any permanent error occurs
 
         Args:
-            image_bytes — Raw image bytes
+            image_bytes — Raw image bytes (PNG or TIFF)
             job_id      — Job ID for logging (optional)
 
         Returns:
-            Cleaned image bytes, or None if not implemented / failed
+            Cleaned image bytes, or None on any failure.
         """
-        logger.debug("process_cleanup: not yet implemented (reserved for IEP1 rescue)")
+        if not self.config.processor_id_cleanup:
+            logger.debug(
+                "process_cleanup: processor_id_cleanup not configured, skipping (job_id=%s)",
+                job_id or "unknown",
+            )
+            return None
+
+        if not await self._lazy_init():
+            return None
+
+        mime_type = _detect_mime_type(image_bytes)
+        start_time = time.time()
+        attempt = 0
+        last_error: Exception | None = None
+
+        while attempt <= self.config.max_retries:
+            attempt += 1
+            try:
+                logger.debug(
+                    "process_cleanup: attempt %d/%d, job_id=%s",
+                    attempt,
+                    self.config.max_retries + 1,
+                    job_id or "unknown",
+                )
+
+                loop = asyncio.get_event_loop()
+                cleaned = await asyncio.wait_for(
+                    loop.run_in_executor(
+                        None,
+                        self._call_google_cleanup_sync,
+                        image_bytes,
+                        mime_type,
+                    ),
+                    timeout=self.config.timeout_cleanup_seconds,
+                )
+
+                elapsed_ms = (time.time() - start_time) * 1000
+                logger.info(
+                    "process_cleanup: success after %d attempt(s), job_id=%s, "
+                    "has_image=%s, elapsed=%.0fms",
+                    attempt,
+                    job_id or "unknown",
+                    cleaned is not None,
+                    elapsed_ms,
+                )
+                return cleaned
+
+            except TimeoutError as e:
+                last_error = e
+                logger.warning(
+                    "process_cleanup: timeout on attempt %d (job_id=%s)",
+                    attempt,
+                    job_id or "unknown",
+                )
+                if attempt <= self.config.max_retries:
+                    wait_sec = 2 ** (attempt - 1)
+                    await asyncio.sleep(wait_sec)
+                continue
+
+            except GoogleAPITransientError as e:
+                last_error = e
+                logger.warning(
+                    "process_cleanup: transient error on attempt %d: %s",
+                    attempt,
+                    e,
+                )
+                if attempt <= self.config.max_retries:
+                    wait_sec = 2 ** (attempt - 1)
+                    await asyncio.sleep(wait_sec)
+                continue
+
+            except GoogleAPIPermanentError as e:
+                logger.error(
+                    "process_cleanup: permanent error (job_id=%s): %s",
+                    job_id or "unknown",
+                    e,
+                )
+                return None
+
+        elapsed_ms = (time.time() - start_time) * 1000
+        logger.error(
+            "process_cleanup: exhausted max retries (%d), job_id=%s, "
+            "last_error=%s, elapsed=%.0fms",
+            self.config.max_retries + 1,
+            job_id or "unknown",
+            last_error,
+            elapsed_ms,
+        )
         return None
 
     async def _call_google_api_with_timeout(
@@ -484,6 +729,11 @@ class CallGoogleDocumentAI:
               - page_width: int (from Google response or default 1000)
               - page_height: int (from Google response or default 1000)
               - region_count: int
+              - document_layout_block_count: int
+              - pages_count: int
+              - text_length: int
+              - document_layout_blocks_have_geometry: bool
+              - empty_reason: str | None
         """
         try:
             from google.cloud import documentai_v1
@@ -497,6 +747,34 @@ class CallGoogleDocumentAI:
                 self.config.processor_id_layout,
             )
 
+            # Layout Parser: explicitly request page-level fields.
+            # The Layout Parser does not populate document.pages by default.
+            # Adding them to the field_mask instructs the API to include
+            # paragraph/block/table spatial data in the response, which is
+            # required for positional bbox resolution in Strategy 2/3.
+            from google.protobuf import field_mask_pb2
+
+            _layout_field_mask = field_mask_pb2.FieldMask(
+                paths=[
+                    "text",
+                    "entities",
+                    "document_layout",
+                    "pages.dimension",
+                    "pages.paragraphs",
+                    "pages.blocks",
+                    "pages.tables",
+                    "pages.visual_elements",
+                ]
+            )
+
+            _process_options = documentai_v1.ProcessOptions(
+                layout_config=documentai_v1.ProcessOptions.LayoutConfig(
+                    return_bounding_boxes=True,
+                    enable_image_annotation=True,
+                    enable_table_annotation=True,
+                )
+            )
+
             if image_bytes:
                 request = documentai_v1.ProcessRequest(
                     name=processor_name,
@@ -504,37 +782,95 @@ class CallGoogleDocumentAI:
                         content=image_bytes,
                         mime_type=mime_type,
                     ),
+                    field_mask=_layout_field_mask,
+                    process_options=_process_options,
                 )
             else:
                 request = documentai_v1.ProcessRequest(
                     name=processor_name,
                     gcs_document=documentai_v1.GcsDocument(gcs_uri=image_uri),
+                    field_mask=_layout_field_mask,
+                    process_options=_process_options,
                 )
 
             response = self._client.process_document(request=request)
+
+            # ── Capture raw SDK response as JSON (for debugging / audit) ──────
+            _raw_response_json: str | None = None
+            try:
+                # proto-plus: type(obj).to_json(obj) serializes all fields
+                _raw_response_json = type(response).to_json(response)
+            except Exception as _ser_exc:
+                try:
+                    # fallback: protobuf MessageToJson on the underlying _pb
+                    from google.protobuf.json_format import MessageToJson
+
+                    _raw_response_json = MessageToJson(response._pb)
+                except Exception:
+                    logger.debug(
+                        "_call_google_api_sync: could not serialize raw response: %s", _ser_exc
+                    )
+
             document = response.document
             pages = list(document.pages) if document and document.pages else []
+            if not pages:
+                logger.warning(
+                    "_call_google_api_sync: document.pages is empty after API call "
+                    "(job_id=%s) — Layout Parser processor did not return page-level "
+                    "spatial data; bbox resolution via page.paragraphs will be skipped",
+                    getattr(self, "_job_id", "unknown"),
+                )
 
-            # Extract page dimensions from first page
+            # Resolve page dimensions for bbox denormalization.
+            # Priority 1: Google's reported page dimensions (pages non-empty).
+            # Priority 2: Source image dimensions captured before PDF conversion
+            #             (Layout Parser v2+ with returnBoundingBoxes returns
+            #             pages=[] but block.bounding_box.normalizedVertices is
+            #             in [0, 1] relative to the original image size).
+            # Priority 3: Conservative 1000×1000 fallback.
             page_width = 1000
             page_height = 1000
             if pages and hasattr(pages[0], "dimension") and pages[0].dimension:
                 w = int(pages[0].dimension.width)
                 h = int(pages[0].dimension.height)
+                # Image inputs are wrapped in a 72 DPI single-page PDF whose MediaBox
+                # matches the source pixel dimensions, so Google page coordinates can
+                # continue to be interpreted as original image coordinates.
                 if w > 0:
                     page_width = w
                 if h > 0:
                     page_height = h
+            elif getattr(self, "_source_width", None) and getattr(self, "_source_height", None):
+                page_width = self._source_width  # type: ignore[assignment]
+                page_height = self._source_height  # type: ignore[assignment]
+                logger.debug(
+                    "_call_google_api_sync: pages empty — using source image dimensions "
+                    "%dx%d for normalizedVertices denormalization",
+                    page_width,
+                    page_height,
+                )
 
+            diagnostics = _summarize_layout_response(document, pages)
             elements = _extract_elements_from_response(document, pages)
+            diagnostics["empty_reason"] = _derive_empty_reason(
+                canonical_region_count=len(elements),
+                document_layout_block_count=diagnostics["document_layout_block_count"],
+                pages_count=diagnostics["pages_count"],
+                text_length=diagnostics["text_length"],
+                document_layout_blocks_have_geometry=diagnostics[
+                    "document_layout_blocks_have_geometry"
+                ],
+            )
 
             return {
                 "raw_response": response,
+                "raw_response_json": _raw_response_json,
                 "pages": pages,
                 "elements": elements,
                 "page_width": page_width,
                 "page_height": page_height,
                 "region_count": len(elements),
+                **diagnostics,
             }
 
         except (GoogleAPITransientError, GoogleAPIPermanentError):
@@ -684,6 +1020,67 @@ class CallGoogleDocumentAI:
 
         return BoundingBox(x_min=x_min, y_min=y_min, x_max=x_max, y_max=y_max)
 
+    def _call_google_cleanup_sync(
+        self,
+        image_bytes: bytes,
+        mime_type: str,
+    ) -> bytes | None:
+        """
+        Synchronous call to Google Document AI cleanup processor (runs in thread pool).
+
+        Sends image_bytes to the cleanup processor and returns the rendered page
+        image from the response if the processor emits one.
+
+        Returns:
+            bytes of the cleaned/rendered page image, or None if the processor
+            response contains no image content.
+
+        Raises:
+            GoogleAPIPermanentError — credentials missing, bad config, 4xx errors
+            GoogleAPITransientError — network errors, timeouts, 429/5xx errors
+        """
+        try:
+            from google.cloud import documentai_v1
+
+            if not self._client:
+                raise GoogleAPIPermanentError("Google client not initialized")
+
+            processor_name = _build_processor_name(
+                self.config.project_id,
+                self.config.location,
+                self.config.processor_id_cleanup,
+            )
+
+            request = documentai_v1.ProcessRequest(
+                name=processor_name,
+                raw_document=documentai_v1.RawDocument(
+                    content=image_bytes,
+                    mime_type=mime_type,
+                ),
+            )
+
+            response = self._client.process_document(request=request)
+            document = response.document
+
+            # Extract rendered page image from the response if the processor emits one
+            if document and document.pages:
+                page = document.pages[0]
+                if hasattr(page, "image") and page.image and page.image.content:
+                    content = bytes(page.image.content)
+                    if content:
+                        return content
+
+            return None
+
+        except (GoogleAPITransientError, GoogleAPIPermanentError):
+            raise
+        except Exception as e:
+            classification, reason = _classify_error(e)
+            if classification == "transient":
+                raise GoogleAPITransientError(reason) from e
+            else:
+                raise GoogleAPIPermanentError(reason) from e
+
 
 # ───────────────────────────────────────────────────────────────────────────────
 # Internal helpers
@@ -695,6 +1092,22 @@ def _build_processor_name(project_id: str, location: str, processor_id: str) -> 
     return f"projects/{project_id}/locations/{location}/processors/{processor_id}"
 
 
+def _build_api_endpoint(location: str) -> str:
+    """Build the regional Document AI API endpoint for a processor location."""
+    normalized = (location or "us").strip().lower()
+    return f"{normalized}-documentai.googleapis.com"
+
+
+def _detect_mime_type(data: bytes) -> str:
+    """Detect MIME type from image byte signature. Returns 'image/png' as default."""
+    if len(data) >= 4:
+        if data[:4] in (b"\x49\x49\x2A\x00", b"\x4D\x4D\x00\x2A"):
+            return "image/tiff"
+        if data[:4] == b"\x89PNG":
+            return "image/png"
+    return "image/png"
+
+
 def _extract_elements_from_response(
     document: Any,
     pages: list[Any],
@@ -703,21 +1116,58 @@ def _extract_elements_from_response(
     Extract typed _WrappedElement list from a Google Document AI response.
 
     Strategy:
-      1. Entity-based processor (e.g. Form Parser, Enterprise Document AI):
-         If document.entities is non-empty and entities have page_anchor,
-         extract entities — each has type_ and bounding_poly.
-      2. Page-element-based processor (Layout Parser):
-         Extract from typed page collections:
-           - page.blocks  → type "PARAGRAPH"
-           - page.tables  → type "TABLE"
-           - page.paragraphs → type "PARAGRAPH" (fallback if no blocks)
+      1. Entity-based processor (Form Parser, Enterprise Document AI):
+         document.entities with page_anchor → bounding_poly per entity.
+      2. document.document_layout.blocks (Layout Parser v1+):
+         The Layout Parser primary output. Each DocumentLayoutBlock carries a
+         bounding_box (BoundingPoly) and a one-of kind field (text_block,
+         table_block, list_block, image_block) that determines the canonical type.
+         text_block.type_ further distinguishes paragraph vs section-header.
+         This strategy is tried before page-level extraction; if it yields
+         elements it is returned immediately.
+      3. Page-element-based (older processors / Layout Parser page-level fallback):
+         - page.blocks     → PARAGRAPH  (OCR/Form Parser primary)
+         - page.tables     → TABLE      (always extracted)
+         - page.paragraphs → PARAGRAPH  (Layout Parser page-level; only when
+                             page.blocks is absent to avoid double-counting, since
+                             Form Parser paragraphs are sub-elements of blocks)
+         - page.visual_elements → typed by element.type_  (headers, figures, etc.)
 
     Returns:
         list[_WrappedElement] — empty list if nothing extractable
     """
     elements: list[_WrappedElement] = []
 
-    # Strategy 1: entity-based processor
+    # Diagnostic logging — log field counts to aid debugging when 0 elements returned
+    if document and logger.isEnabledFor(logging.DEBUG):
+        try:
+            _dl = getattr(document, "document_layout", None)
+            _dl_count = len(list(getattr(_dl, "blocks", []))) if _dl else 0
+            _entity_count = len(list(getattr(document, "entities", [])))
+            logger.debug(
+                "_extract_elements_from_response: entities=%d document_layout_blocks=%d pages=%d",
+                _entity_count,
+                _dl_count,
+                len(pages),
+            )
+        except Exception:
+            pass
+    if pages and logger.isEnabledFor(logging.DEBUG):
+        try:
+            _p0 = pages[0]
+            logger.debug(
+                "_extract_elements_from_response: page[0] blocks=%d tables=%d "
+                "paragraphs=%d lines=%d visual_elements=%d",
+                len(list(getattr(_p0, "blocks", []))),
+                len(list(getattr(_p0, "tables", []))),
+                len(list(getattr(_p0, "paragraphs", []))),
+                len(list(getattr(_p0, "lines", []))),
+                len(list(getattr(_p0, "visual_elements", []))),
+            )
+        except Exception:
+            pass
+
+    # ── Strategy 1: entity-based processor ──────────────────────────────────────
     if document and hasattr(document, "entities") and document.entities:
         for entity in document.entities:
             try:
@@ -732,33 +1182,133 @@ def _extract_elements_from_response(
                         confidence=float(getattr(entity, "confidence", 0.5)),
                     )
                 )
-            except Exception:
+            except Exception as exc:
+                logger.debug("_extract_elements_from_response: entity skip: %s", exc)
                 continue
         if elements:
             return elements
 
-    # Strategy 2: page-element-based processor (Layout Parser)
+    # ── Strategy 2: document.document_layout.blocks (Layout Parser v1+) ─────────
+    # DocumentLayoutBlock carries content type (text_block, table_block, etc.).
+    # bounding_box is defined on the proto but NOT populated by the Layout Parser.
+    # Spatial information lives in document.pages[0].paragraphs[k].layout.bounding_poly.
+    #
+    # Bbox resolution uses positional index matching: when len(dl_blocks) == len(para_polys),
+    # block[i] corresponds to para[i] (both are in reading order). When counts differ, blocks
+    # are skipped and we fall through to Strategy 3.
+    _dl = getattr(document, "document_layout", None) if document else None
+    try:
+        _dl_blocks = list(getattr(_dl, "blocks", [])) if _dl else []
+    except (TypeError, AttributeError):
+        _dl_blocks = []
+    if _dl_blocks:
+        # Collect page paragraph bounding polys in reading order for positional matching.
+        _para_polys_ordered: list[Any] = []
+        try:
+            if pages:
+                for _para in list(getattr(pages[0], "paragraphs", []) or []):
+                    try:
+                        _para_polys_ordered.append(_para.layout.bounding_poly)
+                    except Exception:
+                        _para_polys_ordered.append(None)
+        except Exception:
+            pass
+
+        _can_use_positional = (
+            len(_para_polys_ordered) > 0 and len(_para_polys_ordered) == len(_dl_blocks)
+        )
+
+        for _idx, block in enumerate(_dl_blocks):
+            try:
+                # Determine type from the one-of block kind field
+                try:
+                    block_kind = type(block).pb(block).WhichOneof("block")
+                except Exception:
+                    block_kind = None
+                if block_kind == "table_block":
+                    block_type = "TABLE"
+                elif block_kind == "list_block":
+                    block_type = "LIST_ITEM"
+                elif block_kind == "image_block":
+                    block_type = "FIGURE"
+                elif block_kind == "text_block":
+                    text_subtype = (block.text_block.type_ or "").lower()
+                    if text_subtype in ("header", "section-header", "heading", "title"):
+                        block_type = "SECTION_HEADER"
+                    else:
+                        block_type = "PARAGRAPH"
+                else:
+                    block_type = "PARAGRAPH"
+
+                # Resolve bounding poly.
+                # 1. Try block.bounding_box (populated if processor fills it).
+                # 2. If empty, use positional match to page.paragraphs[i].
+                _raw_bbox = block.bounding_box
+                resolved_bbox: Any = _raw_bbox if _bounding_poly_has_geometry(_raw_bbox) else None
+
+                if resolved_bbox is None and _can_use_positional:
+                    resolved_bbox = _para_polys_ordered[_idx]
+
+                if resolved_bbox is None:
+                    logger.debug(
+                        "_extract_elements_from_response: document_layout block[%d] "
+                        "has no resolvable bbox, skipping",
+                        _idx,
+                    )
+                    continue
+
+                elements.append(
+                    _WrappedElement(
+                        type_=block_type,
+                        bounding_poly=resolved_bbox,
+                        confidence=0.9,  # DocumentLayoutBlock carries no confidence score
+                    )
+                )
+            except Exception as exc:
+                logger.debug(
+                    "_extract_elements_from_response: document_layout block skip: %s", exc
+                )
+                continue
+        if elements:
+            logger.debug(
+                "_extract_elements_from_response: extracted %d elements from document_layout",
+                len(elements),
+            )
+            return elements
+
+    # ── Strategy 3: page-element-based (older processors / page-level fallback) ─
     if not pages:
         return elements
 
     page = pages[0]
+    # Track whether page.blocks produced any elements with a non-empty bounding poly.
+    # The Layout Parser populates page.blocks but with EMPTY bboxes; in that case we
+    # must fall through to page.paragraphs (which carry valid spatial information).
+    blocks_had_valid_bbox = False
 
-    # Blocks → PARAGRAPH
+    # Blocks → PARAGRAPH (OCR / Form Parser primary structure)
     if hasattr(page, "blocks") and page.blocks:
         for block in page.blocks:
             try:
                 layout = block.layout
+                bpoly = layout.bounding_poly
+                # Skip blocks with empty bounding poly (Layout Parser fills blocks but
+                # leaves bboxes empty; paragraphs carry the actual spatial coordinates).
+                if not _bounding_poly_has_geometry(bpoly):
+                    continue
+                blocks_had_valid_bbox = True
                 elements.append(
                     _WrappedElement(
                         type_="PARAGRAPH",
-                        bounding_poly=layout.bounding_poly,
+                        bounding_poly=bpoly,
                         confidence=float(getattr(layout, "confidence", 0.5)),
                     )
                 )
-            except Exception:
+            except Exception as exc:
+                logger.debug("_extract_elements_from_response: page block skip: %s", exc)
                 continue
 
-    # Tables → TABLE
+    # Tables → TABLE (always extracted regardless of blocks/paragraphs)
     if hasattr(page, "tables") and page.tables:
         for table in page.tables:
             try:
@@ -770,11 +1320,16 @@ def _extract_elements_from_response(
                         confidence=float(getattr(layout, "confidence", 0.5)),
                     )
                 )
-            except Exception:
+            except Exception as exc:
+                logger.debug("_extract_elements_from_response: page table skip: %s", exc)
                 continue
 
-    # If no blocks/tables, fall back to paragraph-level elements
-    if not elements and hasattr(page, "paragraphs") and page.paragraphs:
+    # Paragraphs — Layout Parser page-level structure.
+    # Used when page.blocks is absent (Form Parser/OCR has no blocks → fall back here)
+    # OR when page.blocks had entries but all had empty bboxes (Layout Parser case).
+    # Not used when blocks produced valid elements: for Form Parser, paragraphs are
+    # sub-elements of blocks and extracting both would double-count.
+    if not blocks_had_valid_bbox and hasattr(page, "paragraphs") and page.paragraphs:
         for para in page.paragraphs:
             try:
                 layout = para.layout
@@ -785,9 +1340,37 @@ def _extract_elements_from_response(
                         confidence=float(getattr(layout, "confidence", 0.5)),
                     )
                 )
-            except Exception:
+            except Exception as exc:
+                logger.debug("_extract_elements_from_response: page paragraph skip: %s", exc)
                 continue
 
+    # Visual elements — Layout Parser places headers, figures, and other structural
+    # elements here when they are separate from paragraph flow.
+    try:
+        _ve_list = list(page.visual_elements) if getattr(page, "visual_elements", None) else []
+    except (TypeError, AttributeError):
+        _ve_list = []
+    for ve in _ve_list:
+        try:
+            layout = ve.layout
+            ve_type = getattr(ve, "type_", None) or "FIGURE"
+            elements.append(
+                _WrappedElement(
+                    type_=ve_type,
+                    bounding_poly=layout.bounding_poly,
+                    confidence=float(getattr(layout, "confidence", 0.5)),
+                )
+            )
+        except Exception as exc:
+            logger.debug("_extract_elements_from_response: visual_element skip: %s", exc)
+            continue
+
+    logger.debug(
+        "_extract_elements_from_response: page-level total=%d "
+        "(blocks_had_valid_bbox=%s)",
+        len(elements),
+        blocks_had_valid_bbox,
+    )
     return elements
 
 
@@ -827,6 +1410,11 @@ async def run_google_layout_analysis(
               - region_count: int
               - fallback_used: bool
               - source: "google_document_ai" | "none"
+              - document_layout_block_count: int
+              - pages_count: int
+              - text_length: int
+              - document_layout_blocks_have_geometry: bool
+              - empty_reason: str | None
 
     Never raises. Returns ([], {"success": False, ...}) on any error.
     """
@@ -855,6 +1443,11 @@ async def run_google_layout_analysis(
                     "region_count": 0,
                     "fallback_used": True,
                     "source": "none",
+                    "document_layout_block_count": 0,
+                    "pages_count": 0,
+                    "text_length": 0,
+                    "document_layout_blocks_have_geometry": False,
+                    "empty_reason": None,
                 },
             )
 
@@ -867,6 +1460,15 @@ async def run_google_layout_analysis(
             page_width=page_width,
             page_height=page_height,
         )
+        empty_reason = _derive_empty_reason(
+            canonical_region_count=len(regions),
+            document_layout_block_count=int(result.get("document_layout_block_count", 0)),
+            pages_count=int(result.get("pages_count", 0)),
+            text_length=int(result.get("text_length", 0)),
+            document_layout_blocks_have_geometry=bool(
+                result.get("document_layout_blocks_have_geometry", False)
+            ),
+        )
 
         return (
             regions,
@@ -877,6 +1479,13 @@ async def run_google_layout_analysis(
                 "region_count": len(regions),
                 "fallback_used": True,
                 "source": "google_document_ai",
+                "document_layout_block_count": int(result.get("document_layout_block_count", 0)),
+                "pages_count": int(result.get("pages_count", 0)),
+                "text_length": int(result.get("text_length", 0)),
+                "document_layout_blocks_have_geometry": bool(
+                    result.get("document_layout_blocks_have_geometry", False)
+                ),
+                "empty_reason": empty_reason,
             },
         )
 
@@ -891,6 +1500,11 @@ async def run_google_layout_analysis(
                 "region_count": 0,
                 "fallback_used": True,
                 "source": "none",
+                "document_layout_block_count": 0,
+                "pages_count": 0,
+                "text_length": 0,
+                "document_layout_blocks_have_geometry": False,
+                "empty_reason": None,
             },
         )
 
@@ -942,7 +1556,7 @@ async def run_google_cleanup(
                 None,
                 {
                     "success": False,
-                    "error": "cleanup not yet implemented",
+                    "error": "Google cleanup returned no result (processor not configured or no image in response)",
                     "google_response_time_ms": elapsed_ms,
                     "implemented": False,
                 },

@@ -103,6 +103,27 @@ def _mock_google_client_empty() -> MagicMock:
     return client
 
 
+def _mock_google_client_empty_semantic_blocks_without_geometry() -> MagicMock:
+    """Google client that returns a successful empty result with block-only diagnostics."""
+    client = MagicMock()
+    client.process_layout = AsyncMock(
+        return_value={
+            "elements": [],
+            "page_width": 1000,
+            "page_height": 1000,
+            "region_count": 0,
+            "raw_response": object(),
+            "document_layout_block_count": 9,
+            "pages_count": 0,
+            "text_length": 0,
+            "document_layout_blocks_have_geometry": False,
+            "empty_reason": "semantic_blocks_without_geometry",
+        }
+    )
+    client._map_google_to_canonical = MagicMock(return_value=[])
+    return client
+
+
 def _mock_google_client_none_response() -> MagicMock:
     """Google client whose process_layout returns None (total failure)."""
     client = MagicMock()
@@ -275,7 +296,7 @@ class TestGoogleFallbackSuccess:
             image_uri="s3://bucket/page1.tiff",
         )
         assert result.layout_decision_source == "google_document_ai"
-        assert result.fallback_used is True
+        assert result.fallback_used is False  # Google succeeded as intended adjudicator
         assert result.agreed is False
         assert result.status == "done"
 
@@ -371,7 +392,7 @@ class TestGoogleFallbackEmpty:
         )
         assert result.status == "done"
         assert result.layout_decision_source == "google_document_ai"
-        assert result.fallback_used is True
+        assert result.fallback_used is False  # Google responded — not a fallback
         assert result.final_layout_result == []
         assert result.google_document_ai_result is not None
         assert result.google_document_ai_result["empty_result"] is True
@@ -380,7 +401,7 @@ class TestGoogleFallbackEmpty:
     async def test_google_empty_result_preserves_audit_metadata(self) -> None:
         iep2a = _detect_response(_DISAGREE_IEP2A)
         iep2b = _detect_response(_DISAGREE_IEP2B, detector_type="doclayout_yolo")
-        client = _mock_google_client_empty()
+        client = _mock_google_client_empty_semantic_blocks_without_geometry()
         result = await evaluate_layout_adjudication(
             iep2a_result=iep2a,
             iep2b_result=iep2b,
@@ -394,6 +415,14 @@ class TestGoogleFallbackEmpty:
         assert result.google_document_ai_result is not None
         assert result.google_document_ai_result["region_count"] == 0
         assert result.google_document_ai_result["success"] is True
+        assert result.google_document_ai_result["document_layout_block_count"] == 9
+        assert result.google_document_ai_result["pages_count"] == 0
+        assert result.google_document_ai_result["text_length"] == 0
+        assert result.google_document_ai_result["document_layout_blocks_have_geometry"] is False
+        assert (
+            result.google_document_ai_result["empty_reason"]
+            == "semantic_blocks_without_geometry"
+        )
 
 
 class TestGoogleHardFailureFallback:

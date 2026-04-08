@@ -23,7 +23,7 @@ from typing import Any, cast
 from sqlalchemy.orm import Session
 
 from services.eep.app.db.lineage import confirm_layout_artifact, update_lineage_completion
-from services.eep.app.db.models import JobPage
+from services.eep.app.db.models import JobPage, PageLineage
 from services.eep.app.db.page_state import advance_page_state
 from services.eep.app.gates.layout_gate import evaluate_layout_adjudication
 from services.eep_worker.app.google_config import get_google_worker_state
@@ -32,11 +32,13 @@ from services.eep_worker.app.layout_routing import (
     build_layout_routing_decision,
 )
 from shared.schemas.layout import LayoutAdjudicationResult, LayoutDetectResponse
+from shared.schemas.ucf import BoundingBox
 
 __all__ = [
     "LayoutTransitionError",
     "LayoutStepResult",
     "complete_layout_detection",
+    "run_layout_adjudication_only",
 ]
 
 
@@ -69,6 +71,7 @@ async def complete_layout_detection(
     google_client: Any | None | object = _USE_WORKER_GOOGLE,
     total_processing_ms: float | None = None,
     output_layout_uri: str | None = None,
+    downsample_metadata: dict[str, Any] | None = None,
 ) -> LayoutStepResult:
     """
     Adjudicate IEP2 output and persist the accepted layout result.
@@ -94,6 +97,41 @@ async def complete_layout_detection(
         material_type=material_type,
         image_uri=image_uri,
     )
+
+    # Google Document AI analyses the image it received (downsampled artifact when applicable)
+    # and returns coordinates in that image's pixel space.  Rescale those regions back to
+    # canonical (original-resolution) coordinates before persistence.
+    if (
+        downsample_metadata is not None
+        and downsample_metadata.get("coordinate_rescaled")
+        and adjudication.layout_decision_source == "google_document_ai"
+        and adjudication.final_layout_result
+    ):
+        _sx: float = (
+            downsample_metadata["canonical_output_width"]
+            / downsample_metadata["layout_input_width"]
+        )
+        _sy: float = (
+            downsample_metadata["canonical_output_height"]
+            / downsample_metadata["layout_input_height"]
+        )
+        rescaled_google_regions = [
+            r.model_copy(
+                update={
+                    "bbox": BoundingBox(
+                        x_min=r.bbox.x_min * _sx,
+                        y_min=r.bbox.y_min * _sy,
+                        x_max=r.bbox.x_max * _sx,
+                        y_max=r.bbox.y_max * _sy,
+                    )
+                }
+            )
+            for r in adjudication.final_layout_result
+        ]
+        adjudication = adjudication.model_copy(
+            update={"final_layout_result": rescaled_google_regions}
+        )
+
     routing = build_layout_routing_decision(adjudication)
     processing_ms = (
         total_processing_ms if total_processing_ms is not None else adjudication.processing_time_ms
@@ -129,6 +167,10 @@ async def complete_layout_detection(
     if output_layout_uri is not None:
         confirm_layout_artifact(session, lineage_id)
 
+    gate_results = routing.gate_results
+    if downsample_metadata is not None:
+        gate_results = {**gate_results, "layout_input": downsample_metadata}
+
     update_lineage_completion(
         session,
         lineage_id,
@@ -137,7 +179,65 @@ async def complete_layout_detection(
         routing_path=routing.routing_path,
         total_processing_ms=processing_ms,
         output_image_uri=page.output_image_uri,
-        gate_results=routing.gate_results,
+        gate_results=gate_results,
     )
 
     return LayoutStepResult(adjudication=adjudication, routing=routing)
+
+
+async def run_layout_adjudication_only(
+    *,
+    session: Session,
+    page: JobPage,
+    lineage_id: str | None,
+    material_type: str,
+    image_uri: str,
+    iep2a_result: LayoutDetectResponse | None,
+    iep2b_result: LayoutDetectResponse | None,
+    image_bytes: bytes | None = None,
+    mime_type: str = "image/tiff",
+    google_client: Any | None | object = _USE_WORKER_GOOGLE,
+    total_processing_ms: float | None = None,
+) -> LayoutAdjudicationResult:
+    """
+    Run layout adjudication and persist results WITHOUT transitioning page state.
+
+    Called when layout should run inline during preprocessing failure, where the
+    page is routing to pending_human_correction (auto_continue + layout mode).
+    Stores the result in ``job_pages.layout_consensus_result`` and
+    ``page_lineage.gate_results["layout_adjudication"]`` so reviewers can see
+    layout output before IEP1 is fully resolved.
+
+    Does NOT call ``advance_page_state`` — page state is left unchanged.
+    """
+    resolved_google_client = (
+        get_google_worker_state().client if google_client is _USE_WORKER_GOOGLE else google_client
+    )
+
+    adjudication = await evaluate_layout_adjudication(
+        iep2a_result=iep2a_result,
+        iep2b_result=iep2b_result,
+        google_client=resolved_google_client,
+        image_bytes=image_bytes,
+        mime_type=mime_type,
+        material_type=material_type,
+        image_uri=image_uri,
+    )
+
+    # Persist adjudication onto the page row without state transition.
+    session.query(JobPage).filter(JobPage.page_id == page.page_id).update(
+        cast(Any, {"layout_consensus_result": adjudication.model_dump(mode="json")}),
+        synchronize_session="fetch",
+    )
+
+    # Persist into lineage gate_results without touching acceptance metadata.
+    if lineage_id is not None:
+        lineage: PageLineage | None = session.get(PageLineage, lineage_id)
+        if lineage is not None:
+            existing = lineage.gate_results or {}
+            lineage.gate_results = {
+                **existing,
+                "layout_adjudication": adjudication.model_dump(mode="json"),
+            }
+
+    return adjudication

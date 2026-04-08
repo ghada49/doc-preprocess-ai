@@ -19,10 +19,14 @@ Test coverage:
   - run_google_cleanup (public API)
 """
 
+import logging
+import re
+from io import BytesIO
 from typing import Any, NoReturn
 from unittest.mock import Mock, patch
 
 import pytest
+from PIL import Image
 
 from services.eep.app.google.document_ai import (
     CallGoogleDocumentAI,
@@ -32,6 +36,7 @@ from services.eep.app.google.document_ai import (
     _classify_error,
     _extract_elements_from_response,
     _WrappedElement,
+    convert_image_bytes_to_pdf,
     run_google_cleanup,
     run_google_layout_analysis,
 )
@@ -72,9 +77,94 @@ def _make_wrapped(
     )
 
 
+def _make_image_bytes(
+    width: int,
+    height: int,
+    *,
+    image_format: str = "PNG",
+    mode: str = "RGB",
+) -> bytes:
+    """Build image bytes with stable dimensions for PDF conversion tests."""
+    color = (255, 0, 0) if mode == "RGB" else 255
+    image = Image.new(mode, (width, height), color=color)
+    buffer = BytesIO()
+    image.save(buffer, format=image_format)
+    return buffer.getvalue()
+
+
+def _extract_pdf_media_box(pdf_bytes: bytes) -> tuple[float, float]:
+    """Extract the first page MediaBox width/height from Pillow-generated PDF bytes."""
+    match = re.search(rb"/MediaBox\s*\[\s*0\s+0\s+([0-9.]+)\s+([0-9.]+)\s*\]", pdf_bytes)
+    assert match is not None, "PDF MediaBox not found"
+    return float(match.group(1)), float(match.group(2))
+
+
+def _extract_pdf_page_count(pdf_bytes: bytes) -> int:
+    """Extract the page count from Pillow-generated PDF bytes."""
+    match = re.search(rb"/Count\s+(\d+)", pdf_bytes)
+    assert match is not None, "PDF page count not found"
+    return int(match.group(1))
+
+
+def _extract_pdf_draw_size(pdf_bytes: bytes) -> tuple[float, float]:
+    """Extract the draw matrix size used for the embedded page image."""
+    match = re.search(
+        rb"q\s+([0-9.]+)\s+0\s+0\s+([0-9.]+)\s+0\s+0\s+cm\s+/image\s+Do\s+Q",
+        pdf_bytes,
+    )
+    assert match is not None, "PDF image draw matrix not found"
+    return float(match.group(1)), float(match.group(2))
+
+
 # ───────────────────────────────────────────────────────────────────────────────
 # Test: GoogleDocumentAIConfig Validation
 # ───────────────────────────────────────────────────────────────────────────────
+
+
+class TestConvertImageBytesToPdf:
+    """Test the image-to-PDF conversion helper used by Layout Parser."""
+
+    def test_creates_valid_single_page_pdf_without_scaling(self) -> None:
+        """Converted PDF preserves source dimensions and image draw size."""
+        pdf_bytes = convert_image_bytes_to_pdf(_make_image_bytes(123, 456))
+
+        assert pdf_bytes.startswith(b"%PDF-")
+        assert _extract_pdf_page_count(pdf_bytes) == 1
+        assert _extract_pdf_media_box(pdf_bytes) == pytest.approx((123.0, 456.0))
+        assert _extract_pdf_draw_size(pdf_bytes) == pytest.approx((123.0, 456.0))
+
+    def test_pdf_page_dimensions_keep_coordinates_aligned_with_image_pixels(self) -> None:
+        """Converted PDF dimensions keep bbox mapping aligned with original pixels."""
+        client = CallGoogleDocumentAI(GoogleDocumentAIConfig(enabled=False))
+        pdf_bytes = convert_image_bytes_to_pdf(_make_image_bytes(400, 600))
+        pdf_width, pdf_height = _extract_pdf_media_box(pdf_bytes)
+
+        regions = client._map_google_to_canonical(
+            [_make_wrapped("PARAGRAPH", x0=0.1, y0=0.2, x1=0.9, y1=0.8)],
+            int(pdf_width),
+            int(pdf_height),
+        )
+
+        assert regions[0].bbox.x_min == pytest.approx(40.0)
+        assert regions[0].bbox.y_min == pytest.approx(120.0)
+        assert regions[0].bbox.x_max == pytest.approx(360.0)
+        assert regions[0].bbox.y_max == pytest.approx(480.0)
+
+    def test_tiff_input_converts_to_valid_single_page_pdf(self) -> None:
+        """TIFF bytes produce a valid single-page PDF with matching dimensions."""
+        pdf_bytes = convert_image_bytes_to_pdf(_make_image_bytes(200, 300, image_format="TIFF"))
+
+        assert pdf_bytes.startswith(b"%PDF-")
+        assert _extract_pdf_page_count(pdf_bytes) == 1
+        assert _extract_pdf_media_box(pdf_bytes) == pytest.approx((200.0, 300.0))
+
+    def test_jpeg_input_converts_to_valid_single_page_pdf(self) -> None:
+        """JPEG bytes produce a valid single-page PDF with matching dimensions."""
+        pdf_bytes = convert_image_bytes_to_pdf(_make_image_bytes(150, 250, image_format="JPEG"))
+
+        assert pdf_bytes.startswith(b"%PDF-")
+        assert _extract_pdf_page_count(pdf_bytes) == 1
+        assert _extract_pdf_media_box(pdf_bytes) == pytest.approx((150.0, 250.0))
 
 
 class TestGoogleDocumentAIConfigValidation:
@@ -456,6 +546,336 @@ class TestExtractElementsFromResponse:
         types = {e.type_ for e in result}
         assert "PARAGRAPH" in types
         assert "TABLE" in types
+
+    def test_document_layout_blocks_extracted_as_strategy2(self) -> None:
+        """document_layout blocks with non-empty bounding_box use it directly."""
+        from google.cloud import documentai_v1
+
+        bpoly = documentai_v1.BoundingPoly(
+            normalized_vertices=[
+                documentai_v1.NormalizedVertex(x=0.1, y=0.1),
+                documentai_v1.NormalizedVertex(x=0.9, y=0.1),
+                documentai_v1.NormalizedVertex(x=0.9, y=0.5),
+                documentai_v1.NormalizedVertex(x=0.1, y=0.5),
+            ]
+        )
+        text_block = documentai_v1.Document.DocumentLayout.DocumentLayoutBlock.LayoutTextBlock(
+            type_="paragraph", text="hello"
+        )
+        block = documentai_v1.Document.DocumentLayout.DocumentLayoutBlock(
+            text_block=text_block,
+            bounding_box=bpoly,
+        )
+        dl = documentai_v1.Document.DocumentLayout(blocks=[block])
+        doc = documentai_v1.Document(document_layout=dl)
+
+        result = _extract_elements_from_response(doc, [])
+        assert len(result) == 1
+        assert result[0].type_ == "PARAGRAPH"
+        # proto-plus copies message on attribute access; compare normalized_vertices by value
+        assert list(result[0].bounding_poly.normalized_vertices) == list(bpoly.normalized_vertices)
+
+    def test_document_layout_blocks_with_geometry_and_no_pages_map_to_canonical_regions(self) -> None:
+        """Block-only responses still yield canonical regions when block geometry exists."""
+        from google.cloud import documentai_v1
+
+        client = CallGoogleDocumentAI(GoogleDocumentAIConfig(enabled=False))
+        bpoly = documentai_v1.BoundingPoly(
+            normalized_vertices=[
+                documentai_v1.NormalizedVertex(x=0.1, y=0.1),
+                documentai_v1.NormalizedVertex(x=0.9, y=0.1),
+                documentai_v1.NormalizedVertex(x=0.9, y=0.5),
+                documentai_v1.NormalizedVertex(x=0.1, y=0.5),
+            ]
+        )
+        block = documentai_v1.Document.DocumentLayout.DocumentLayoutBlock(
+            text_block=documentai_v1.Document.DocumentLayout.DocumentLayoutBlock.LayoutTextBlock(
+                type_="paragraph",
+                text="hello",
+            ),
+            bounding_box=bpoly,
+        )
+        doc = documentai_v1.Document(
+            document_layout=documentai_v1.Document.DocumentLayout(blocks=[block])
+        )
+
+        elements = _extract_elements_from_response(doc, [])
+        regions = client._map_google_to_canonical(elements, page_width=1000, page_height=1000)
+
+        assert len(regions) == 1
+        assert regions[0].type == RegionType.text_block
+        assert regions[0].bbox.x_min == pytest.approx(100.0)
+        assert regions[0].bbox.y_min == pytest.approx(100.0)
+        assert regions[0].bbox.x_max == pytest.approx(900.0)
+        assert regions[0].bbox.y_max == pytest.approx(500.0)
+
+    def test_document_layout_blocks_resolve_bbox_from_page_paragraphs_positional(self) -> None:
+        """When bounding_box is empty, bbox is resolved by positional match to page.paragraphs."""
+        from google.cloud import documentai_v1
+
+        # Build a paragraph bounding poly (what page.paragraphs provides)
+        para_bpoly = documentai_v1.BoundingPoly(
+            normalized_vertices=[
+                documentai_v1.NormalizedVertex(x=0.0, y=0.2),
+                documentai_v1.NormalizedVertex(x=1.0, y=0.2),
+                documentai_v1.NormalizedVertex(x=1.0, y=0.4),
+                documentai_v1.NormalizedVertex(x=0.0, y=0.4),
+            ]
+        )
+        para_layout = documentai_v1.Document.Page.Layout(bounding_poly=para_bpoly, confidence=0.95)
+        page_para = documentai_v1.Document.Page.Paragraph(layout=para_layout)
+        page = documentai_v1.Document.Page(paragraphs=[page_para])
+
+        # document_layout block with EMPTY bounding_box (real Layout Parser behavior)
+        text_block = documentai_v1.Document.DocumentLayout.DocumentLayoutBlock.LayoutTextBlock(
+            type_="paragraph", text="hello world"
+        )
+        block = documentai_v1.Document.DocumentLayout.DocumentLayoutBlock(
+            text_block=text_block,
+            # bounding_box left empty — positional match (1 block, 1 paragraph) resolves it
+        )
+        dl = documentai_v1.Document.DocumentLayout(blocks=[block])
+        doc = documentai_v1.Document(document_layout=dl, pages=[page])
+
+        result = _extract_elements_from_response(doc, [page])
+        assert len(result) == 1
+        assert result[0].type_ == "PARAGRAPH"
+        # bbox resolved from page.paragraphs[0] via positional match
+        assert list(result[0].bounding_poly.normalized_vertices) == list(
+            para_bpoly.normalized_vertices
+        )
+
+    def test_document_layout_block_without_bbox_and_no_page_paragraphs_is_skipped(self) -> None:
+        """document_layout block with empty bbox and no page paragraphs is silently skipped."""
+        from google.cloud import documentai_v1
+
+        text_block = documentai_v1.Document.DocumentLayout.DocumentLayoutBlock.LayoutTextBlock(
+            type_="paragraph", text="orphan"
+        )
+        block = documentai_v1.Document.DocumentLayout.DocumentLayoutBlock(
+            text_block=text_block,
+            # empty bounding_box, no text_anchor → cannot resolve
+        )
+        dl = documentai_v1.Document.DocumentLayout(blocks=[block])
+        doc = documentai_v1.Document(document_layout=dl)
+
+        result = _extract_elements_from_response(doc, [])
+        assert result == []
+
+    def test_document_layout_table_block_mapped_to_table(self) -> None:
+        """document_layout table_block → TABLE type."""
+        from google.cloud import documentai_v1
+
+        bpoly = documentai_v1.BoundingPoly(
+            normalized_vertices=[
+                documentai_v1.NormalizedVertex(x=0.0, y=0.5),
+                documentai_v1.NormalizedVertex(x=1.0, y=0.5),
+                documentai_v1.NormalizedVertex(x=1.0, y=1.0),
+                documentai_v1.NormalizedVertex(x=0.0, y=1.0),
+            ]
+        )
+        table_block = documentai_v1.Document.DocumentLayout.DocumentLayoutBlock.LayoutTableBlock()
+        block = documentai_v1.Document.DocumentLayout.DocumentLayoutBlock(
+            table_block=table_block,
+            bounding_box=bpoly,
+        )
+        dl = documentai_v1.Document.DocumentLayout(blocks=[block])
+        doc = documentai_v1.Document(document_layout=dl)
+
+        result = _extract_elements_from_response(doc, [])
+        assert len(result) == 1
+        assert result[0].type_ == "TABLE"
+
+    def test_document_layout_text_block_header_mapped_to_section_header(self) -> None:
+        """document_layout text_block with type_='section-header' → SECTION_HEADER."""
+        from google.cloud import documentai_v1
+
+        bpoly = documentai_v1.BoundingPoly(
+            normalized_vertices=[
+                documentai_v1.NormalizedVertex(x=0.0, y=0.0),
+                documentai_v1.NormalizedVertex(x=1.0, y=0.0),
+                documentai_v1.NormalizedVertex(x=1.0, y=0.1),
+                documentai_v1.NormalizedVertex(x=0.0, y=0.1),
+            ]
+        )
+        text_block = documentai_v1.Document.DocumentLayout.DocumentLayoutBlock.LayoutTextBlock(
+            type_="section-header", text="Chapter 1"
+        )
+        block = documentai_v1.Document.DocumentLayout.DocumentLayoutBlock(
+            text_block=text_block,
+            bounding_box=bpoly,
+        )
+        dl = documentai_v1.Document.DocumentLayout(blocks=[block])
+        doc = documentai_v1.Document(document_layout=dl)
+
+        result = _extract_elements_from_response(doc, [])
+        assert len(result) == 1
+        assert result[0].type_ == "SECTION_HEADER"
+
+    def test_document_layout_takes_priority_over_page_blocks(self) -> None:
+        """document_layout strategy is used when blocks are present; page-level blocks ignored."""
+        from google.cloud import documentai_v1
+
+        bpoly = documentai_v1.BoundingPoly(
+            normalized_vertices=[
+                documentai_v1.NormalizedVertex(x=0.0, y=0.0),
+                documentai_v1.NormalizedVertex(x=1.0, y=1.0),
+            ]
+        )
+        text_block = documentai_v1.Document.DocumentLayout.DocumentLayoutBlock.LayoutTextBlock(
+            type_="paragraph"
+        )
+        block = documentai_v1.Document.DocumentLayout.DocumentLayoutBlock(
+            text_block=text_block,
+            bounding_box=bpoly,
+        )
+        dl = documentai_v1.Document.DocumentLayout(blocks=[block])
+        doc = documentai_v1.Document(document_layout=dl)
+
+        # page also has a block — should be ignored since document_layout wins
+        page_layout = Mock()
+        page_layout.bounding_poly = _make_bpoly(0.0, 0.0, 1.0, 1.0)
+        page_layout.confidence = 0.5
+        page_block = Mock()
+        page_block.layout = page_layout
+        page = Mock()
+        page.blocks = [page_block]
+        page.tables = []
+        page.paragraphs = []
+
+        result = _extract_elements_from_response(doc, [page])
+        # Only 1 element from document_layout, not 2
+        assert len(result) == 1
+
+
+# ───────────────────────────────────────────────────────────────────────────────
+# Test: source-dimension fallback for pages=[] responses (IEP2 / Layout Parser v2+)
+# ───────────────────────────────────────────────────────────────────────────────
+
+
+class TestSourceDimensionFallback:
+    """
+    Verify that block.bounding_box.normalizedVertices are correctly denormalized
+    when document.pages is empty (Layout Parser v2+ with returnBoundingBoxes=True).
+    """
+
+    def _make_doc_with_blocks(self, num_blocks: int = 1, add_vertices: bool = True):
+        """Build a documentai_v1.Document with document_layout blocks only (no pages)."""
+        from google.cloud import documentai_v1
+
+        blocks = []
+        for i in range(num_blocks):
+            bbox_kwargs: dict = {}
+            if add_vertices:
+                bbox_kwargs["normalized_vertices"] = [
+                    documentai_v1.NormalizedVertex(x=0.1, y=0.2),
+                    documentai_v1.NormalizedVertex(x=0.8, y=0.2),
+                    documentai_v1.NormalizedVertex(x=0.8, y=0.6),
+                    documentai_v1.NormalizedVertex(x=0.1, y=0.6),
+                ]
+            bpoly = documentai_v1.BoundingPoly(**bbox_kwargs)
+            block = documentai_v1.Document.DocumentLayout.DocumentLayoutBlock(
+                text_block=documentai_v1.Document.DocumentLayout.DocumentLayoutBlock.LayoutTextBlock(
+                    type_="paragraph", text=f"block {i}"
+                ),
+                bounding_box=bpoly,
+            )
+            blocks.append(block)
+        dl = documentai_v1.Document.DocumentLayout(blocks=blocks)
+        return documentai_v1.Document(document_layout=dl)
+
+    def test_blocks_with_normalized_vertices_yield_non_empty_regions(self) -> None:
+        """normalizedVertices in blocks → non-empty Region[] even when pages=[]."""
+        doc = self._make_doc_with_blocks(num_blocks=3, add_vertices=True)
+        elements = _extract_elements_from_response(doc, [])
+        assert len(elements) == 3
+
+        client = CallGoogleDocumentAI(GoogleDocumentAIConfig(enabled=False))
+        regions = client._map_google_to_canonical(elements, page_width=800, page_height=1200)
+        assert len(regions) == 3
+
+    def test_correct_bbox_math_from_normalized_vertices_with_source_dims(self) -> None:
+        """
+        normalizedVertices * (source_width, source_height) → correct pixel bbox.
+        Vertices: x∈[0.1, 0.8], y∈[0.2, 0.6], page 800×1200.
+        Expected: x_min=80, y_min=240, x_max=640, y_max=720.
+        """
+        doc = self._make_doc_with_blocks(num_blocks=1, add_vertices=True)
+        elements = _extract_elements_from_response(doc, [])
+        assert len(elements) == 1
+
+        client = CallGoogleDocumentAI(GoogleDocumentAIConfig(enabled=False))
+        regions = client._map_google_to_canonical(elements, page_width=800, page_height=1200)
+        assert len(regions) == 1
+        bbox = regions[0].bbox
+        assert bbox.x_min == pytest.approx(80.0)   # 0.1 * 800
+        assert bbox.y_min == pytest.approx(240.0)  # 0.2 * 1200
+        assert bbox.x_max == pytest.approx(640.0)  # 0.8 * 800
+        assert bbox.y_max == pytest.approx(720.0)  # 0.6 * 1200
+
+    def test_pages_empty_uses_source_dimensions_from_instance(self) -> None:
+        """_call_google_api_sync uses _source_width/_source_height when pages=[]."""
+        from unittest.mock import Mock, patch
+
+        from google.cloud import documentai_v1
+
+        config = GoogleDocumentAIConfig(
+            enabled=True,
+            project_id="proj",
+            location="us",
+            processor_id_layout="proc",
+            credentials_file="/fake/key.json",
+        )
+        client = CallGoogleDocumentAI(config)
+        # Inject source dimensions as if process_layout set them from PIL
+        client._source_width = 1600
+        client._source_height = 2400
+
+        bpoly = documentai_v1.BoundingPoly(
+            normalized_vertices=[
+                documentai_v1.NormalizedVertex(x=0.0, y=0.0),
+                documentai_v1.NormalizedVertex(x=1.0, y=1.0),
+            ]
+        )
+        block = documentai_v1.Document.DocumentLayout.DocumentLayoutBlock(
+            text_block=documentai_v1.Document.DocumentLayout.DocumentLayoutBlock.LayoutTextBlock(
+                type_="paragraph"
+            ),
+            bounding_box=bpoly,
+        )
+        doc = documentai_v1.Document(
+            document_layout=documentai_v1.Document.DocumentLayout(blocks=[block])
+        )
+        mock_response = Mock()
+        mock_response.document = doc
+        mock_api_client = Mock()
+        mock_api_client.process_document.return_value = mock_response
+        client._client = mock_api_client
+
+        result = client._call_google_api_sync(
+            image_uri=None,
+            image_bytes=b"%PDF-fake",
+            mime_type="application/pdf",
+        )
+
+        # Source dims used as page dimensions since pages=[]
+        assert result["page_width"] == 1600
+        assert result["page_height"] == 2400
+        assert len(result["elements"]) == 1
+
+    def test_blocks_without_geometry_yield_empty_with_diagnostics(self) -> None:
+        """document_layout blocks with empty bounding_box → empty elements, diagnostics populated."""
+        doc = self._make_doc_with_blocks(num_blocks=4, add_vertices=False)
+        elements = _extract_elements_from_response(doc, [])
+        assert elements == []
+
+        # Diagnostics should still report 4 blocks with no geometry
+        from services.eep.app.google.document_ai import _summarize_layout_response
+
+        diag = _summarize_layout_response(doc, [])
+        assert diag["document_layout_block_count"] == 4
+        assert diag["pages_count"] == 0
+        assert diag["document_layout_blocks_have_geometry"] is False
 
 
 # ───────────────────────────────────────────────────────────────────────────────
@@ -888,6 +1308,203 @@ class TestAsyncAPICallsWithMocks:
                 assert captured_kwargs.get("mime_type") == "image/jpeg"
 
     @pytest.mark.asyncio
+    async def test_image_inputs_are_converted_to_pdf_before_google_call(
+        self,
+        caplog: pytest.LogCaptureFixture,
+    ) -> None:
+        """Image inputs are wrapped in a one-page PDF before the Google request."""
+        config = GoogleDocumentAIConfig(
+            enabled=True,
+            project_id="test",
+            processor_id_layout="proc",
+            credentials_file="/fake/path.json",
+        )
+        client = CallGoogleDocumentAI(config)
+        captured_kwargs: dict[str, Any] = {}
+
+        async def capture_call(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            captured_kwargs.update(kwargs)
+            return {
+                "pages": [],
+                "elements": [],
+                "page_width": 321,
+                "page_height": 654,
+                "region_count": 0,
+            }
+
+        with patch.object(client, "_call_google_api_with_timeout", side_effect=capture_call):
+            with patch.object(client, "_lazy_init", return_value=True):
+                with caplog.at_level(logging.DEBUG):
+                    await client.process_layout(
+                        image_uri="gs://b/img.png",
+                        material_type="book",
+                        image_bytes=_make_image_bytes(321, 654),
+                        mime_type="image/png",
+                    )
+
+        assert captured_kwargs["mime_type"] == "application/pdf"
+        assert captured_kwargs["image_bytes"].startswith(b"%PDF-")
+        assert _extract_pdf_media_box(captured_kwargs["image_bytes"]) == pytest.approx(
+            (321.0, 654.0)
+        )
+        assert "Converting image to PDF for Layout Parser" in caplog.text
+
+    @pytest.mark.asyncio
+    async def test_non_image_inputs_skip_pdf_conversion(self) -> None:
+        """Existing PDF inputs pass through unchanged."""
+        config = GoogleDocumentAIConfig(
+            enabled=True,
+            project_id="test",
+            processor_id_layout="proc",
+            credentials_file="/fake/path.json",
+        )
+        client = CallGoogleDocumentAI(config)
+        captured_kwargs: dict[str, Any] = {}
+        pdf_bytes = b"%PDF-1.4\nexisting-pdf"
+
+        async def capture_call(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            captured_kwargs.update(kwargs)
+            return {
+                "pages": [],
+                "elements": [],
+                "page_width": 1000,
+                "page_height": 1000,
+                "region_count": 0,
+            }
+
+        with patch.object(client, "_call_google_api_with_timeout", side_effect=capture_call):
+            with patch.object(client, "_lazy_init", return_value=True):
+                await client.process_layout(
+                    image_uri="gs://b/doc.pdf",
+                    material_type="book",
+                    image_bytes=pdf_bytes,
+                    mime_type="application/pdf",
+                )
+
+        assert captured_kwargs["mime_type"] == "application/pdf"
+        assert captured_kwargs["image_bytes"] == pdf_bytes
+
+    @pytest.mark.asyncio
+    async def test_tiff_mime_type_triggers_pdf_conversion(self) -> None:
+        """image/tiff inputs are converted to PDF and mime_type is updated."""
+        config = GoogleDocumentAIConfig(
+            enabled=True,
+            project_id="test",
+            processor_id_layout="proc",
+            credentials_file="/fake/path.json",
+        )
+        client = CallGoogleDocumentAI(config)
+        captured_kwargs: dict[str, Any] = {}
+
+        async def capture_call(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            captured_kwargs.update(kwargs)
+            return {"pages": [], "elements": [], "page_width": 200, "page_height": 300, "region_count": 0}
+
+        with patch.object(client, "_call_google_api_with_timeout", side_effect=capture_call):
+            with patch.object(client, "_lazy_init", return_value=True):
+                await client.process_layout(
+                    image_uri="gs://b/img.tiff",
+                    material_type="book",
+                    image_bytes=_make_image_bytes(200, 300, image_format="TIFF"),
+                    mime_type="image/tiff",
+                )
+
+        assert captured_kwargs["mime_type"] == "application/pdf"
+        assert captured_kwargs["image_bytes"].startswith(b"%PDF-")
+
+    @pytest.mark.asyncio
+    async def test_jpeg_mime_type_triggers_pdf_conversion(self) -> None:
+        """image/jpeg inputs are converted to PDF and mime_type is updated."""
+        config = GoogleDocumentAIConfig(
+            enabled=True,
+            project_id="test",
+            processor_id_layout="proc",
+            credentials_file="/fake/path.json",
+        )
+        client = CallGoogleDocumentAI(config)
+        captured_kwargs: dict[str, Any] = {}
+
+        async def capture_call(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            captured_kwargs.update(kwargs)
+            return {"pages": [], "elements": [], "page_width": 150, "page_height": 250, "region_count": 0}
+
+        with patch.object(client, "_call_google_api_with_timeout", side_effect=capture_call):
+            with patch.object(client, "_lazy_init", return_value=True):
+                await client.process_layout(
+                    image_uri="gs://b/img.jpg",
+                    material_type="book",
+                    image_bytes=_make_image_bytes(150, 250, image_format="JPEG"),
+                    mime_type="image/jpeg",
+                )
+
+        assert captured_kwargs["mime_type"] == "application/pdf"
+        assert captured_kwargs["image_bytes"].startswith(b"%PDF-")
+
+    def test_layout_process_request_includes_page_field_mask(self) -> None:
+        """_call_google_api_sync sends a field_mask with pages.paragraphs and document_layout."""
+        from google.cloud import documentai_v1
+
+        config = GoogleDocumentAIConfig(
+            enabled=True,
+            project_id="proj",
+            processor_id_layout="proc",
+            credentials_file="/fake/key.json",
+        )
+        client = CallGoogleDocumentAI(config)
+
+        # Build a minimal valid response mock using a real documentai_v1.Document
+        mock_response = Mock()
+        mock_response.document = documentai_v1.Document(text="content")
+        mock_api_client = Mock()
+        mock_api_client.process_document.return_value = mock_response
+        client._client = mock_api_client
+
+        client._call_google_api_sync(
+            image_uri=None,
+            image_bytes=b"%PDF-fake",
+            mime_type="application/pdf",
+        )
+
+        assert mock_api_client.process_document.called
+        call_kwargs = mock_api_client.process_document.call_args.kwargs
+        request = call_kwargs.get("request") or mock_api_client.process_document.call_args.args[0]
+
+        # ProcessRequest must carry a field_mask with the expected paths
+        fm_paths = set(request.field_mask.paths)
+        assert "pages.paragraphs" in fm_paths, f"pages.paragraphs missing from field_mask: {fm_paths}"
+        assert "document_layout" in fm_paths, f"document_layout missing: {fm_paths}"
+        assert "text" in fm_paths, f"text missing: {fm_paths}"
+        assert "pages.dimension" in fm_paths, f"pages.dimension missing: {fm_paths}"
+
+    def test_call_google_api_sync_includes_raw_response_json_key(self) -> None:
+        """_call_google_api_sync always returns dict with 'raw_response_json' key."""
+        from google.cloud import documentai_v1
+
+        config = GoogleDocumentAIConfig(
+            enabled=True,
+            project_id="proj",
+            location="us",
+            processor_id_layout="proc",
+            credentials_file="/fake/key.json",
+        )
+        client = CallGoogleDocumentAI(config)
+
+        mock_response = Mock()
+        mock_response.document = documentai_v1.Document(text="hello")
+        mock_api_client = Mock()
+        mock_api_client.process_document.return_value = mock_response
+        client._client = mock_api_client
+
+        result = client._call_google_api_sync(
+            image_uri=None,
+            image_bytes=b"%PDF-fake",
+            mime_type="application/pdf",
+        )
+
+        # Key must always be present (value may be None if serialization fails on Mock)
+        assert "raw_response_json" in result
+
+    @pytest.mark.asyncio
     async def test_process_cleanup_returns_none_stub(self) -> None:
         """process_cleanup is a stub — always returns None."""
         config = GoogleDocumentAIConfig(enabled=False)
@@ -964,6 +1581,11 @@ class TestRunGoogleLayoutAnalysis:
             "region_count",
             "fallback_used",
             "source",
+            "document_layout_block_count",
+            "pages_count",
+            "text_length",
+            "document_layout_blocks_have_geometry",
+            "empty_reason",
         }
         assert required_keys.issubset(metadata.keys())
 
@@ -1029,6 +1651,52 @@ class TestRunGoogleLayoutAnalysis:
         assert metadata["success"] is True
         assert metadata["region_count"] == 2
         assert metadata["source"] == "google_document_ai"
+        assert metadata["document_layout_block_count"] == 0
+        assert metadata["pages_count"] == 0
+        assert metadata["text_length"] == 0
+        assert metadata["document_layout_blocks_have_geometry"] is False
+        assert metadata["empty_reason"] is None
+
+    @pytest.mark.asyncio
+    async def test_empty_semantic_blocks_without_geometry_exposes_diagnostics(self) -> None:
+        """Block-only responses without geometry remain empty-success with explicit diagnostics."""
+        config = GoogleDocumentAIConfig(
+            enabled=True,
+            project_id="test",
+            processor_id_layout="proc",
+            credentials_file="/fake/path.json",
+        )
+        mock_result = {
+            "raw_response": None,
+            "pages": [],
+            "elements": [],
+            "page_width": 1000,
+            "page_height": 1000,
+            "region_count": 0,
+            "document_layout_block_count": 9,
+            "pages_count": 0,
+            "text_length": 0,
+            "document_layout_blocks_have_geometry": False,
+            "empty_reason": "semantic_blocks_without_geometry",
+        }
+
+        with patch(
+            "services.eep.app.google.document_ai.CallGoogleDocumentAI.process_layout",
+            return_value=mock_result,
+        ):
+            regions, metadata = await run_google_layout_analysis(
+                image_bytes=b"fake",
+                config=config,
+            )
+
+        assert regions == []
+        assert metadata["success"] is True
+        assert metadata["region_count"] == 0
+        assert metadata["document_layout_block_count"] == 9
+        assert metadata["pages_count"] == 0
+        assert metadata["text_length"] == 0
+        assert metadata["document_layout_blocks_have_geometry"] is False
+        assert metadata["empty_reason"] == "semantic_blocks_without_geometry"
 
     @pytest.mark.asyncio
     async def test_none_result_returns_failure(self) -> None:

@@ -207,8 +207,8 @@ services:
       dockerfile: services/eep_worker/Dockerfile
     volumes:
       - .:/app
-      # Uncomment to mount a local Google service account key for dev/testing:
-      # - /path/to/your/sa-key.json:/var/secrets/google/key.json:ro
+      # Mount stub Google credentials for cleanup validation
+      - ./google-credentials-stub.json:/var/secrets/google/key.json:ro
     environment:
       PYTHONPATH: /app
       PYTHONDONTWRITEBYTECODE: "1"

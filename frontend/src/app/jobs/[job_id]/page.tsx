@@ -1,9 +1,10 @@
 "use client";
 
+import { Fragment, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import {
-  ChevronLeft,
+  ChevronDown,
   ChevronRight,
   RefreshCw,
   FileSearch,
@@ -18,6 +19,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ArtifactImage } from "@/components/shared/artifact-image";
 import { ArtifactLinkButton } from "@/components/shared/artifact-link-button";
+import { LayoutOverlay } from "@/components/jobs/layout-overlay";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -46,6 +48,7 @@ import type { JobPage } from "@/types/api";
 export default function JobDetailPage() {
   const { job_id } = useParams<{ job_id: string }>();
   const router = useRouter();
+  const [expandedLayoutKey, setExpandedLayoutKey] = useState<string | null>(null);
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["job", job_id],
@@ -235,25 +238,51 @@ export default function JobDetailPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {pages.map((page) => (
-                    <PageRow
-                      key={`${page.page_number}-${page.sub_page_index ?? 0}`}
-                      page={page}
-                      jobId={summary.job_id}
-                      onOpenWorkspace={() =>
-                        router.push(
-                          `/queue/${summary.job_id}/${page.page_number}/workspace${
-                            page.sub_page_index != null
-                              ? `?sub_page_index=${page.sub_page_index}`
-                              : ""
-                          }`
-                        )
-                      }
-                      onOpenPtiffQa={() =>
-                        router.push(`/jobs/${summary.job_id}/ptiff-qa`)
-                      }
-                    />
-                  ))}
+                  {pages.map((page) => {
+                    const pageKey = `${page.page_number}-${page.sub_page_index ?? 0}`;
+                    const isLayoutOpen = expandedLayoutKey === pageKey;
+
+                    return (
+                      <Fragment key={pageKey}>
+                        <PageRow
+                          page={page}
+                          isLayoutOpen={isLayoutOpen}
+                          onToggleLayout={() =>
+                            setExpandedLayoutKey((current) =>
+                              current === pageKey ? null : pageKey
+                            )
+                          }
+                          onOpenWorkspace={() =>
+                            router.push(
+                              `/queue/${summary.job_id}/${page.page_number}/workspace${
+                                page.sub_page_index != null
+                                  ? `?sub_page_index=${page.sub_page_index}`
+                                  : ""
+                              }`
+                            )
+                          }
+                          onOpenPtiffQa={() =>
+                            router.push(`/jobs/${summary.job_id}/ptiff-qa`)
+                          }
+                        />
+                        {isLayoutOpen && (
+                          <tr className="bg-slate-50/80">
+                            <td colSpan={8} className="px-4 py-4">
+                              <LayoutOverlay
+                                imageUri={page.output_image_uri}
+                                layoutUri={page.output_layout_uri}
+                                pageLabel={`Page ${page.page_number}${
+                                  page.sub_page_index != null
+                                    ? ` / ${page.sub_page_index}`
+                                    : ""
+                                }`}
+                              />
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -266,17 +295,20 @@ export default function JobDetailPage() {
 
 function PageRow({
   page,
-  jobId,
+  isLayoutOpen,
+  onToggleLayout,
   onOpenWorkspace,
   onOpenPtiffQa,
 }: {
   page: JobPage;
-  jobId: string;
+  isLayoutOpen: boolean;
+  onToggleLayout: () => void;
   onOpenWorkspace: () => void;
   onOpenPtiffQa: () => void;
 }) {
   const isAttention = page.status === "pending_human_correction";
   const isPtiffQa = page.status === "ptiff_qa_pending";
+  const canInspectLayout = Boolean(page.output_image_uri && page.output_layout_uri);
 
   return (
     <tr
@@ -342,17 +374,34 @@ function PageRow({
         </div>
       </td>
       <td>
-        {isAttention && (
-          <Button size="xs" onClick={onOpenWorkspace} className="gap-1">
-            <ChevronRight className="h-3 w-3" />
-            Review
-          </Button>
-        )}
-        {isPtiffQa && (
-          <Button size="xs" variant="secondary" onClick={onOpenPtiffQa} className="gap-1">
-            PTIFF QA
-          </Button>
-        )}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {canInspectLayout && (
+            <Button
+              size="xs"
+              variant={isLayoutOpen ? "secondary" : "ghost"}
+              onClick={onToggleLayout}
+              className="gap-1"
+            >
+              {isLayoutOpen ? (
+                <ChevronDown className="h-3 w-3" />
+              ) : (
+                <ChevronRight className="h-3 w-3" />
+              )}
+              Layout
+            </Button>
+          )}
+          {isAttention && (
+            <Button size="xs" onClick={onOpenWorkspace} className="gap-1">
+              <ChevronRight className="h-3 w-3" />
+              Review
+            </Button>
+          )}
+          {isPtiffQa && (
+            <Button size="xs" variant="secondary" onClick={onOpenPtiffQa} className="gap-1">
+              PTIFF QA
+            </Button>
+          )}
+        </div>
       </td>
     </tr>
   );

@@ -2,7 +2,11 @@
 
 import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { presignReadArtifact, fetchArtifactPreviewBlobUrl } from "@/lib/api/artifacts";
+import {
+  presignReadArtifact,
+  fetchArtifactPreviewBlobUrl,
+  fetchArtifactJson,
+} from "@/lib/api/artifacts";
 
 export function artifactReadQueryKey(
   uri: string | null,
@@ -18,6 +22,19 @@ export function useArtifactRead(
   return useQuery({
     queryKey: artifactReadQueryKey(uri, expiresIn),
     queryFn: () => presignReadArtifact(uri!, expiresIn),
+    enabled: Boolean(uri),
+    staleTime: Math.max(0, expiresIn - 30) * 1000,
+    gcTime: expiresIn * 1000,
+  });
+}
+
+export function useArtifactJson<T>(
+  uri: string | null,
+  expiresIn = 300
+) {
+  return useQuery({
+    queryKey: ["artifact-json", uri, expiresIn] as const,
+    queryFn: () => fetchArtifactJson<T>(uri!, expiresIn),
     enabled: Boolean(uri),
     staleTime: Math.max(0, expiresIn - 30) * 1000,
     gcTime: expiresIn * 1000,

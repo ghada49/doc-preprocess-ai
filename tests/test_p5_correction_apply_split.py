@@ -449,8 +449,11 @@ class TestSplitCorrectionEndpoint:
         assert "lineage" in response.json()["detail"].lower()
 
     def test_split_missing_source_uri_returns_500(self) -> None:
+        # Both output_image_uri and input_image_uri must be None to get a 500 now;
+        # if either is set the code falls back gracefully (see test below).
         job = _make_job()
         parent = _make_page(output_image_uri=None)
+        parent.input_image_uri = None  # force truly no source
         parent_lineage = _make_lineage(output_image_uri=None)
         session = _make_session(job=job, first_results=[parent, parent_lineage])
         self._inject(session)
@@ -461,6 +464,31 @@ class TestSplitCorrectionEndpoint:
         assert response.status_code == 500
         assert "data-integrity failure" in response.json()["detail"].lower()
         assert "source artifact uri" in response.json()["detail"].lower()
+
+    def test_split_falls_back_to_input_uri_when_output_uri_is_none(self) -> None:
+        """Split must succeed when output_image_uri is None but input_image_uri is set.
+
+        Reproduces the live bug: page went to pending_human_correction before
+        preprocessing completed, so output_image_uri was never populated.
+        The original uploaded OTIFF (input_image_uri) must be used as source.
+        """
+        job = _make_job()
+        parent = _make_page(
+            output_image_uri=None,
+            input_image_uri="s3://bucket/raw/3.tiff",
+        )
+        parent_lineage = _make_lineage(output_image_uri=None)
+        session = _make_fresh_split_session(job, parent, parent_lineage, _make_gate())
+        self._inject(session)
+
+        with patch("services.eep.app.correction.apply.advance_page_state", return_value=True):
+            response = self.client.post("/v1/jobs/job-001/pages/3/correction", json=_SPREAD_BODY)
+
+        assert response.status_code == 200
+        # Source must have been read from input_image_uri
+        self.mock_backend.get_bytes.assert_called_once_with("s3://bucket/raw/3.tiff")
+        # Both child artifacts must be written
+        assert self.mock_backend.put_bytes.call_count == 2
 
     def test_split_404_when_parent_page_not_found(self) -> None:
         job = _make_job()

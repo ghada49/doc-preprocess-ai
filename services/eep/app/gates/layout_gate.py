@@ -44,6 +44,8 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
+from services.eep.app.google.document_ai import _derive_empty_reason
+from shared.metrics import GOOGLE_LAYOUT_ADJUDICATION_DECISIONS
 from shared.schemas.layout import (
     LayoutAdjudicationResult,
     LayoutConsensusResult,
@@ -287,6 +289,7 @@ def _build_local_fallback_result(
     t_start: float,
 ) -> LayoutAdjudicationResult:
     """Build the no-review local fallback result for Google hard failures."""
+    GOOGLE_LAYOUT_ADJUDICATION_DECISIONS.labels(source="local_fallback_unverified").inc()
     final_layout_result, local_fallback_source = _best_available_local_result(
         iep2a_result, iep2b_result
     )
@@ -382,6 +385,7 @@ async def evaluate_layout_adjudication(
                 consensus.consensus_confidence,
                 image_uri,
             )
+            GOOGLE_LAYOUT_ADJUDICATION_DECISIONS.labels(source="local_agreement").inc()
             return LayoutAdjudicationResult(
                 agreed=True,
                 consensus_confidence=consensus.consensus_confidence,
@@ -423,6 +427,7 @@ async def evaluate_layout_adjudication(
             "layout_adjudication: Google client not available — using local fallback, image_uri=%s",
             image_uri,
         )
+        GOOGLE_LAYOUT_ADJUDICATION_DECISIONS.labels(source="google_skipped").inc()
         return _build_local_fallback_result(
             iep2a_result=iep2a_result,
             iep2b_result=iep2b_result,
@@ -523,6 +528,23 @@ async def evaluate_layout_adjudication(
         "region_count": google_response.get("region_count", len(elements)),
         "page_width": page_width,
         "page_height": page_height,
+        "document_layout_block_count": int(google_response.get("document_layout_block_count", 0)),
+        "pages_count": int(google_response.get("pages_count", 0)),
+        "text_length": int(google_response.get("text_length", 0)),
+        "document_layout_blocks_have_geometry": bool(
+            google_response.get("document_layout_blocks_have_geometry", False)
+        ),
+        "empty_reason": _derive_empty_reason(
+            canonical_region_count=len(canonical_regions),
+            document_layout_block_count=int(
+                google_response.get("document_layout_block_count", 0)
+            ),
+            pages_count=int(google_response.get("pages_count", 0)),
+            text_length=int(google_response.get("text_length", 0)),
+            document_layout_blocks_have_geometry=bool(
+                google_response.get("document_layout_blocks_have_geometry", False)
+            ),
+        ),
     }
 
     elapsed = (time.monotonic() - t_start) * 1000.0
@@ -533,11 +555,12 @@ async def evaluate_layout_adjudication(
             "using empty Google result, image_uri=%s",
             image_uri,
         )
+        GOOGLE_LAYOUT_ADJUDICATION_DECISIONS.labels(source="google_document_ai").inc()
         return LayoutAdjudicationResult(
             agreed=False,
             consensus_confidence=None,
             layout_decision_source="google_document_ai",
-            fallback_used=True,
+            fallback_used=False,  # Google was consulted and responded — not a fallback
             iep2a_region_count=iep2a_region_count,
             iep2b_region_count=iep2b_region_count,
             matched_regions=None,
@@ -559,11 +582,12 @@ async def evaluate_layout_adjudication(
         google_elapsed,
         image_uri,
     )
+    GOOGLE_LAYOUT_ADJUDICATION_DECISIONS.labels(source="google_document_ai").inc()
     return LayoutAdjudicationResult(
         agreed=False,
         consensus_confidence=None,
         layout_decision_source="google_document_ai",
-        fallback_used=True,
+        fallback_used=False,  # Google was consulted and succeeded — not a fallback
         iep2a_region_count=iep2a_region_count,
         iep2b_region_count=iep2b_region_count,
         matched_regions=None,
