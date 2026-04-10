@@ -55,7 +55,6 @@ htmlcov/
 Thumbs.db
 
 # Model weights (large binaries — never commit)
-*.pt
 *.pth
 *.ckpt
 *.safetensors
