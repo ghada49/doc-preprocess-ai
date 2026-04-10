@@ -36,9 +36,9 @@ from services.eep.app.admin.users import router as admin_users_router
 from services.eep.app.artifacts_api import router as artifacts_router
 from services.eep.app.auth import router as auth_router
 from services.eep.app.correction.apply import router as correction_apply_router
-from services.eep.app.correction.ptiff_qa import router as ptiff_qa_router
 from services.eep.app.correction.queue import router as correction_queue_router
 from services.eep.app.correction.reject import router as correction_reject_router
+from services.eep.app.correction.send_to_review import router as send_to_review_router
 from services.eep.app.jobs.create import router as jobs_router
 from services.eep.app.jobs.list import router as job_list_router
 from services.eep.app.jobs.status import router as job_status_router
@@ -111,7 +111,7 @@ app.include_router(models_api_router)
 app.include_router(artifacts_router)
 
 # ── Phase 5 routers ────────────────────────────────────────────────────────────
-app.include_router(ptiff_qa_router)
 app.include_router(correction_queue_router)
 app.include_router(correction_apply_router)
 app.include_router(correction_reject_router)
+app.include_router(send_to_review_router)

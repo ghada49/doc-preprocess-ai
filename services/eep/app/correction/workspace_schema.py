@@ -48,6 +48,7 @@ from typing import Annotated, Literal
 from pydantic import BaseModel, Field
 
 from shared.schemas.eep import MaterialType, PageState, PipelineMode
+from shared.schemas.layout import LayoutArtifactRole
 
 PageStructure = Literal["single", "spread"]
 
@@ -160,6 +161,9 @@ class CorrectionWorkspaceResponse(BaseModel):
     pipeline_mode: PipelineMode
     review_reasons: list[str]
     original_otiff_uri: str | None = None
+    current_output_uri: str | None = None
+    current_output_role: LayoutArtifactRole | None = None
+    current_layout_uri: str | None = None
     best_output_uri: str | None = None
     branch_outputs: BranchOutputs
     suggested_page_structure: PageStructure = "single"

@@ -24,7 +24,7 @@ tested for 401/403 cases.  Auth-bypassed cases use dependency_overrides.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -41,7 +41,7 @@ from services.eep.app.lineage_api import router
 # Constants
 # ---------------------------------------------------------------------------
 
-_TS = datetime(2025, 1, 15, 12, 0, 0, tzinfo=UTC)
+_TS = datetime(2025, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
 _JOB_ID = "job-001"
 _PAGE = 3
 

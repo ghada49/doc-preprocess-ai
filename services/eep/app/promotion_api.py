@@ -62,7 +62,7 @@ Exported:
 from __future__ import annotations
 
 import logging
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import redis as redis_lib
@@ -215,9 +215,7 @@ def _publish_reload_signal(r: redis_lib.Redis, service: str, version_tag: str) -
         r.publish(channel, version_tag)
         logger.info("_publish_reload_signal: channel=%s version=%s", channel, version_tag)
     except redis_lib.RedisError as exc:
-        logger.error(
-            "_publish_reload_signal: failed to publish to %s — %s", channel, exc
-        )
+        logger.error("_publish_reload_signal: failed to publish to %s — %s", channel, exc)
 
 
 def _stub_mlflow_transition(
@@ -291,7 +289,7 @@ def promote_model(
                 ),
             )
 
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
 
     # Demote current production → archived
     current_prod = _current_production(db, body.service)
@@ -305,9 +303,7 @@ def promote_model(
         )
 
     # Promote staging → production
-    force_note = (
-        f" [force-promoted by {caller.user_id}]" if body.force else ""
-    )
+    force_note = f" [force-promoted by {caller.user_id}]" if body.force else ""
     candidate.stage = "production"
     candidate.promoted_at = now
     candidate.notes = (candidate.notes or "") + force_note if body.force else candidate.notes
@@ -377,11 +373,11 @@ def rollback_model(
                     "promotion timestamp"
                 ),
             )
-        cutoff = datetime.now(UTC) - timedelta(hours=_ROLLBACK_WINDOW_HOURS)
+        cutoff = datetime.now(timezone.utc) - timedelta(hours=_ROLLBACK_WINDOW_HOURS)
         promoted_at = current_prod.promoted_at
         # Ensure timezone-aware comparison
         if promoted_at.tzinfo is None:
-            promoted_at = promoted_at.replace(tzinfo=UTC)
+            promoted_at = promoted_at.replace(tzinfo=timezone.utc)
         if promoted_at < cutoff:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
@@ -391,7 +387,7 @@ def rollback_model(
                 ),
             )
 
-    now = datetime.now(UTC)
+    now = datetime.now(timezone.utc)
 
     # Demote current production → archived
     if current_prod is not None:

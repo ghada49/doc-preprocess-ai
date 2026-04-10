@@ -57,6 +57,7 @@ from services.eep.app.correction.workspace_schema import (
     GeometrySummary,
 )
 from services.eep.app.db.models import Job, JobPage, PageLineage, QualityGateLog, ServiceInvocation
+from shared.schemas.layout import LayoutArtifactRole
 
 __all__ = [
     "PageNotInCorrectionError",
@@ -232,6 +233,25 @@ def _params_from_human_correction(
     return crop_box, deskew_angle, split_x
 
 
+def _resolve_current_output_role(
+    *,
+    page: JobPage,
+    lineage: PageLineage | None,
+    original_otiff_uri: str | None,
+    current_output_uri: str | None,
+) -> LayoutArtifactRole | None:
+    """Classify the current workspace artifact for reviewer-facing labels."""
+    if current_output_uri is None:
+        return None
+    if page.sub_page_index is not None or (lineage is not None and lineage.split_source):
+        return "split_child"
+    if lineage is not None and lineage.human_corrected:
+        return "human_corrected"
+    if original_otiff_uri is not None and current_output_uri != original_otiff_uri:
+        return "normalized_output"
+    return "original_upload"
+
+
 def _params_from_gate(
     gate: QualityGateLog,
 ) -> tuple[list[int] | None, float | None, int | None]:
@@ -349,12 +369,31 @@ def assemble_correction_workspace(
         lineage.otiff_uri if lineage is not None else page.input_image_uri
     )
 
-    # best_output_uri: best available derived artifact.
-    # job_pages.output_image_uri is the authoritative current output; fall back
-    # to page_lineage.output_image_uri if the page record has not been updated yet.
-    best_output_uri: str | None = page.output_image_uri or (
+    # current_output_uri: the authoritative current artifact for correction/UI.
+    # job_pages.output_image_uri is the source of truth; page_lineage.output_image_uri
+    # is a compatibility fallback when the page row has not been refreshed yet.
+    current_output_uri: str | None = page.output_image_uri or (
         lineage.output_image_uri if lineage is not None else None
     )
+    current_output_role = _resolve_current_output_role(
+        page=page,
+        lineage=lineage,
+        original_otiff_uri=original_otiff_uri,
+        current_output_uri=current_output_uri,
+    )
+    current_layout_uri: str | None = page.output_layout_uri
+    correction_fields = (
+        lineage.human_correction_fields
+        if lineage is not None and isinstance(lineage.human_correction_fields, dict)
+        else {}
+    )
+    prior_source_uri = correction_fields.get("source_artifact_uri")
+    normalized_output_uri: str | None = None
+    if page.sub_page_index is None and isinstance(prior_source_uri, str):
+        if current_output_uri is None or prior_source_uri != current_output_uri:
+            normalized_output_uri = prior_source_uri
+    elif current_output_role == "normalized_output":
+        normalized_output_uri = current_output_uri
 
     # ── Step 6: IEP1D rectified URI ────────────────────────────────────────────
     iep1d_rectified_uri: str | None = None
@@ -374,7 +413,7 @@ def assemble_correction_workspace(
     branch_outputs = BranchOutputs(
         iep1a_geometry=iep1a_geo,
         iep1b_geometry=iep1b_geo,
-        iep1c_normalized=best_output_uri,
+        iep1c_normalized=normalized_output_uri,
         iep1d_rectified=iep1d_rectified_uri,
     )
 
@@ -414,7 +453,10 @@ def assemble_correction_workspace(
         pipeline_mode=job.pipeline_mode,  # type: ignore[arg-type]
         review_reasons=list(page.review_reasons) if page.review_reasons else [],
         original_otiff_uri=original_otiff_uri,
-        best_output_uri=best_output_uri,
+        current_output_uri=current_output_uri,
+        current_output_role=current_output_role,
+        current_layout_uri=current_layout_uri,
+        best_output_uri=current_output_uri,
         branch_outputs=branch_outputs,
         suggested_page_structure=suggested_page_structure,  # type: ignore[arg-type]
         child_pages=child_page_summaries,

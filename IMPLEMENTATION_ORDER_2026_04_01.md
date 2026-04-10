@@ -199,25 +199,36 @@ Before any other work, IEP2B must be fixed. Without it, the layout gate cannot t
 ### PHASE 2: Google Document AI Integration (FOUNDATION FOR ADJUDICATION)
 
 #### Task 2.1: Create Google Document AI Integration Module
-**Status:** ❌ MISSING
-**File:** `services/eep/app/google/document_ai.py` (new)
+**Status:** ✅ COMPLETE
+**File:** `services/eep/app/google/document_ai.py`
 **Duration:** 8-10 hours
 **Description:**
 
-Create a new module that handles all Google Document AI interactions:
+**Implementation includes:**
+- ✅ GoogleDocumentAIConfig: credential loading, validation, timeout/retry config
+- ✅ CallGoogleDocumentAI: main client class with:
+  - Lazy credential initialization from env or K8s Secret
+  - async process_layout(): layout analysis with retry logic
+  - async process_cleanup(): image cleanup stub (reserved for IEP1)
+  - _map_google_to_canonical(): Google types → LibraryAI Region schema
+  - Error classification: transient (retry eligible) vs permanent
+  - Async timeout handling with exponential backoff
+- ✅ run_google_layout_analysis(): public API for IEP2 adjudication fallback
+- ✅ run_google_cleanup(): public API for IEP1 rescue (stub, returns None)
+- ✅ Comprehensive error logging and request/response audit trails
+- ✅ Google type → canonical mapping (20+ element types)
 
-```python
-# services/eep/app/google/document_ai.py
-
-class GoogleDocumentAIConfig:
-    """Configuration loaded from env/config"""
-    enabled: bool
-    project_id: str
-    location: str
-    processor_id_layout: str  # For IEP2 layout adjudication
-    processor_id_cleanup: str  # For IEP1 external cleanup (future)
-    timeout_layout_seconds: int = 90
-    timeout_cleanup_seconds: int = 120
+**Implementation Checklist:**
+- [x] Created `services/eep/app/google/` module
+- [x] GoogleDocumentAIConfig with validation
+- [x] CallGoogleDocumentAI client class
+- [x] Async layout processing with timeout
+- [x] Retry logic: transient errors with exponential backoff
+- [x] Error classification and logging
+- [x] Google → canonical region mapping
+- [x] Public run_google_layout_analysis() function
+- [x] Public run_google_cleanup() function (stub)
+- [x] Tests: (coverage TBD in P6.1)
     max_retries: int = 2
     fallback_on_timeout: bool = True
 
@@ -304,8 +315,8 @@ class CallGoogleDocumentAI:
 ---
 
 #### Task 2.2: Set Up Google Document AI Credentials & Config
-**Status:** ❌ MISSING
-**Files:** Kubernetes Secret, ConfigMap, env vars
+**Status:** ✅ COMPLETE
+**Files:** Kubernetes Secret, ConfigMap, env vars, eep_worker config loading
 **Duration:** 2-3 hours
 **Description:**
 
@@ -769,41 +780,84 @@ alembic revision --autogenerate -m "Add layout adjudication tracking to page_lin
 
 ---
 
-### PHASE 5: IEP0 Document Classification (Parallel with Phases 3-4)
+### PHASE 5: IEP0 Document Classification + Type-Specific Geometry Models
 
-#### Task 5.1: Train IEP0 Classification Model
-**Status:** ❌ MISSING
-**Duration:** 10-14 hours (substantial ML work)
+**Architecture Change:** IEP0 classifies material type (book, newspaper, microfilm) on upload. Based on this classification, EEP worker selects type-specific geometry models:
+- IEP1A_book, IEP1A_newspaper, IEP1A_microfilm (3× YOLOv8-seg models)
+- IEP1B_book, IEP1B_newspaper, IEP1B_microfilm (3× YOLOv8-pose models)
+
+**Flow:** Upload → IEP0 classification (book|newspaper|microfilm) → EEP selects IEP1A_{type} + IEP1B_{type} → preprocessing
+
+---
+
+#### Task 5.0: Organize Training Data for Type-Specific Models
+**Status:** ⚠️ PARTIAL (requires data curation)
+**Duration:** 2-3 hours
 **Description:**
 
-Develop and train a lightweight document classification model:
+Before training, organize datasets by material type:
 
-**Model choice:** Vision Transformer (ViT) or EfficientNet (see spec Section 8 justification)
+**Current state:** 63 book images, 575 newspaper images, 400 microfilm images (mix of labeled/unlabeled)
+
+**Action items:**
+- [ ] Curate book dataset: stratify by book source (5+ different books minimum for generalization)
+  - Augment to >100 images per type (rotation, color shift, elastic deformation)
+  - Test set: hold out 1-2 books entirely (zero-shot generalization test)
+- [ ] Curate newspaper dataset: stratify by publication, era, layout style
+  - Ensure mix: single-column, multi-column, dense, sparse
+- [ ] Curate microfilm dataset: stratify by degradation (good quality, faded, distorted, rolled)
+- [ ] For each type: 70% train, 15% val, 15% test split
+- [ ] Store organized datasets in dataset/ directory with metadata (source, label, type)
+- [ ] Document: data distribution, known limitations (single book source), augmentation strategy
+
+**Risk mitigation for single-book dataset:**
+- Apply aggressive augmentation (rotation ±20°, brightness ±30%, elastic deformation)
+- Split test set from different pages of same book
+- Plan production validation: test on customer's books (different books, bindings, paper colors)
+
+---
+
+#### Task 5.1: Train IEP0 Document Classification Model
+**Status:** ❌ MISSING
+**Duration:** 10-14 hours (includes data augmentation, training, evaluation)
+**Description:**
+
+Develop and train a lightweight 3-class document classifier (book, newspaper, microfilm):
+
+**Model choice:** Vision Transformer (ViT-base, pretrained) or EfficientNetB2
 
 **Dataset:**
-- Gather training data from LibraryAI's processing history
-- Curate corpus for 3 classes: book, newspaper, archival_document
-- Split: 70% train, 15% val, 15% test
-- Target: ≥90% F1 per class
+- Training corpus: 63 book + 575 newspaper + 400 microfilm = 1,038 images total
+- After augmentation: ~1,500 + images (with book augmentation to address single-source risk)
+- Split: 70% train, 15% val, 15% test (stratified by type)
+- Resize: 224×224, normalize to ImageNet stats
 
 **Training pipeline:**
-1. Data preparation: load images, resize to 224×224, normalize
-2. Model setup: ViT-base (pretrained) or EfficientNetB2 (pretrained)
-3. Fine-tune on LibraryAI corpus using cross-entropy loss
-4. Evaluate on test set
-5. Save model in ONNX or TensorFlow Saved Model format
-6. Create model card with performance metrics
+1. Data preparation: load images, apply augmentation, create train/val/test loaders
+2. Model setup: ViT-base or EfficientNetB2 (pretrained from timm)
+3. Fine-tune on LibraryAI corpus: cross-entropy loss, Adam optimizer, LR 1e-5
+4. Monitor: val accuracy per class, early stopping on val loss
+5. Evaluate: test set F1 per class (target ≥85% per class, ideally ≥90%)
+6. Generate confusion matrix (book vs newspaper vs microfilm)
+7. Save model in ONNX or PyTorch format
+8. Create model version tag (e.g., "iep0_v1_2026_q2")
+
+**Deliverables:**
+- model.pt or model.onnx (trained weights)
+- model_card.md (architecture, training data, performance metrics, F1 per class)
+- requirements.txt (model-specific dependencies: torch, torchvision, timm)
 
 **Implementation Checklist:**
-- [ ] Gather training data from historical jobs (needs data access)
-- [ ] Create data loader pipeline (train/val/test split)
-- [ ] Choose model architecture (ViT or EfficientNet)
-- [ ] Train model
+- [ ] Prepare augmented datasets per material type (with test set hold-out strategy)
+- [ ] Choose model architecture
+- [ ] Implement training loop with loss/metric tracking
+- [ ] Train model on training set
 - [ ] Evaluate on test set: report precision, recall, F1 per class
 - [ ] Generate confusion matrix
-- [ ] Save trained model to ONNX or TensorFlow format
-- [ ] Create model version tag (e.g., "iep0_v1_2026_q2")
-- [ ] Package model for deployment
+- [ ] Analyze failure modes (which types confused?)
+- [ ] Save trained model in ONNX or PyTorch format
+- [ ] Create model card with performance metrics
+- [ ] Document known limitations (single book source risk, mitigation via augmentation)
 
 ---
 
@@ -813,140 +867,297 @@ Develop and train a lightweight document classification model:
 **Duration:** 4-5 hours
 **Description:**
 
-Create a new FastAPI service for document classification:
+Create FastAPI service for document classification that runs immediately on upload (before preprocessing):
 
-```python
-# services/iep0/app/main.py
+**Endpoint:** `POST /v1/classify`
 
-from fastapi import FastAPI, UploadFile, File
-from pydantic import BaseModel
-
-class DocumentClassificationRequest(BaseModel):
-    job_id: str
-    page_number: int
-    image_uri: str  # URI to proxy image
-
-class DocumentClassificationResponse(BaseModel):
-    predicted_material_type: Literal["book", "newspaper", "archival_document"]
-    confidence: float  # [0, 1]
-    class_scores: dict[str, float]  # All class scores (for debugging)
-    processing_time_ms: float
-
-app = FastAPI(
-    title="IEP0 - Document Classification",
-    version="0.1.0",
-)
-
-@app.post("/v1/classify")
-async def classify_document(request: DocumentClassificationRequest) -> DocumentClassificationResponse:
-    """
-    Classify document type.
-
-    Timeout: 30s default (configurable via IEP0_TIMEOUT_SECONDS)
-    Error handling: on timeout or error, fallback to "book"
-    """
-    # 1. Download image from image_uri
-    # 2. Preprocess: resize to 224×224, normalize
-    # 3. Run inference through trained model
-    # 4. Return predicted_material_type + confidence + class_scores
+**Request:**
+```json
+{
+  "job_id": "job-123",
+  "page_number": 1,
+  "image_uri": "s3://bucket/uploads/job-123/page_1_proxy.png"
+}
 ```
 
+**Response:**
+```json
+{
+  "predicted_material_type": "book",
+  "confidence": 0.92,
+  "class_scores": {
+    "book": 0.92,
+    "newspaper": 0.07,
+    "microfilm": 0.01
+  },
+  "processing_time_ms": 45
+}
+```
+
+**Service details:**
+- Port: 8010
+- Compute: CPU or lightweight GPU
+- Timeout: 30s (configurable via IEP0_TIMEOUT_SECONDS)
+- Fallback on timeout/error: return `predicted_material_type="book", confidence=0.0`
+- No retry (fail fast on first error; continue pipeline with default)
+
 **Implementation Checklist:**
-- [ ] Create service directory: `services/iep0/`
-- [ ] Create `services/iep0/app/main.py` with FastAPI app
-- [ ] Create `services/iep0/app/model.py` with model loading/inference
+- [ ] Create `services/iep0/` directory structure
+- [ ] Create `services/iep0/app/main.py` (FastAPI app)
+- [ ] Create `services/iep0/app/model.py` (model loading, inference)
 - [ ] Implement `/v1/classify` endpoint
-- [ ] Add timeout (30s) with fallback to "book"
-- [ ] Add error handling: network error, model inference error → fallback
-- [ ] Add health/ready endpoints
-- [ ] Add metrics endpoint (Prometheus)
-- [ ] Create Dockerfile for IEP0
-- [ ] Test endpoint locally
+- [ ] Implement timeout handling (30s wrapping)
+- [ ] Implement error handling: network error, OOM → fallback to "book"
+- [ ] Add `/health` and `/ready` endpoints
+- [ ] Add `/metrics` (Prometheus)
+- [ ] Create Dockerfile (parent: pytorch or onnx runtime)
+- [ ] Test locally: verify endpoint works
 
 ---
 
 #### Task 5.3: Integrate IEP0 Into Upload Workflow
-**Status:** ⚠️ PARTIAL (upload exists, IEP0 not yet integrated)
-**Files:** `services/eep/app/uploads.py` or similar
+**Status:** ⚠️ PARTIAL (upload endpoint exists; IEP0 integration missing)
+**Files:** Upload handler in EEP or dedicated upload service
 **Duration:** 2-3 hours
 **Description:**
 
-Update the upload endpoint to invoke IEP0 before routing to EEP:
+Update upload flow to invoke IEP0 immediately after image arrives:
 
-**Current upload flow:**
-1. User uploads document with material_type="book" (manual selection)
-2. EEP processes with this material_type
-
-**New upload flow:**
-1. User uploads document (optional material_type field)
-2. Backend invokes IEP0: classify_document(image_uri) → predicted_material_type + confidence
-3. Store predicted_material_type + confidence in job metadata
-4. If user provided material_type: use it (override prediction)
-5. If user didn't provide: use predicted_material_type (or fallback to "book" if IEP0 failed)
-6. EEP processes with final material_type
+**Updated upload flow:**
+1. User uploads document (optional `material_type` hint)
+2. Backend receives upload, generates proxy image from first page
+3. **[NEW] Invoke IEP0:** call `/v1/classify` with proxy image
+4. Store IEP0 prediction: `job.iep0_predicted_material_type`, `job.iep0_confidence`
+5. Determine final `material_type`:
+   - If user provided: respect user input (override prediction)
+   - Else if IEP0 succeeded: use `iep0_predicted_material_type`
+   - Else (IEP0 failed): fallback to "book"
+6. Enqueue preprocessing with final `material_type`
 
 **Implementation Checklist:**
-- [ ] Locate upload endpoint in `services/eep/app/uploads.py`
-- [ ] Import IEP0 client/config
-- [ ] After image upload, invoke IEP0: `iep0_result = await call_iep0_classify(image_uri)`
-- [ ] Handle IEP0 timeout/error: update predicted_material_type to "book", log warning
-- [ ] Store IEP0 result in job metadata: `job.iep0_predicted_material_type`, `job.iep0_confidence`
-- [ ] Determine final material_type:
-   - If user provided: use user input
-   - Else: use predicted_material_type (or "book" if IEP0 failed)
-- [ ] Pass final material_type to EEP via job metadata
-- [ ] Test with sample documents
+- [ ] Locate upload endpoint
+- [ ] Add IEP0 client initialization
+- [ ] After image upload, call IEP0: `iep0_result = await call_iep0(image_uri)`
+- [ ] Handle IEP0 timeout (30s) gracefully: log warning, use fallback "book"
+- [ ] Store in job metadata: `job.iep0_predicted_material_type`, `job.iep0_confidence`
+- [ ] Compute final material_type (user input OR prediction OR fallback)
+- [ ] Pass to EEP worker via job metadata
+- [ ] Test: upload document, verify IEP0 called, material type stored
 
 ---
 
-#### Task 5.4: Update Configuration for Material-Type-Specific Thresholds
-**Status:** ⚠️ PARTIAL (config system exists, material-type-specific values missing)
-**Files:** `libraryai-policy ConfigMap`, EEP threshold loading
-**Duration:** 3-4 hours
+#### Task 5.4: Train Type-Specific IEP1A Models (3× YOLOv8-seg)
+**Status:** ❌ MISSING
+**Duration:** 12-16 hours (3 models × 4-5.5h each)
 **Description:**
 
-Define threshold profiles per material type:
+Train separate IEP1A geometry models for each material type using YOLOv8-seg (instance segmentation):
+
+**Rationale:**
+- Each material type has distinct page structure: books (dense, single column), newspapers (multi-column), microfilm (degraded, variable)
+- Type-specific models improve accuracy per-class vs. generic single model
+
+**Models to train:**
+1. IEP1A_book: trained on 63 curated book images (stratified by source, augmented to ~100)
+2. IEP1A_newspaper: trained on 575 newspaper images (stratified by era/layout)
+3. IEP1A_microfilm: trained on 400 microfilm images (stratified by degradation)
+
+**Training pipeline (per model):**
+1. Prepare dataset: images + bounding box labels (for page corners) + instance segmentation masks
+2. Load pretrained YOLOv8-seg (from ultralytics)
+3. Fine-tune on type-specific dataset:
+   - Epochs: 50-100
+   - LR: 0.001
+   - Augmentation: mosaic, mixup, flipping, rotation
+   - Early stopping on val mAP
+4. Evaluate: report mAP@0.5, mAP@0.95, per-class metrics
+5. Save model: `iep1a_book.pt`, `iep1a_newspaper.pt`, `iep1a_microfilm.pt`
+6. Create model cards per type
+
+**Test set strategy:**
+- Book: hold out 1-2 entire books (zero-shot generalization test)
+- Newspaper: hold out 2-3 layout patterns (e.g., tabloid, broadsheet, journal)
+- Microfilm: hold out 1-2 degradation profiles (e.g., very faded, heavily rolled)
+
+**Implementation Checklist:**
+- [ ] Prepare type-specific training datasets (with zero-shot test sets)
+- [ ] Load YOLOv8-seg pretrained weights
+- [ ] Train IEP1A_book on book data (track mAP, loss curves)
+- [ ] Train IEP1A_newspaper on newspaper data
+- [ ] Train IEP1A_microfilm on microfilm data
+- [ ] Evaluate each model on test set: report mAP, per-class metrics
+- [ ] Compare to generic IEP1A baseline (if exists)
+- [ ] Save 3 model files
+- [ ] Create model cards (performance, training data, known limitations)
+- [ ] Document known risks (single book source) and mitigation (augmentation, user validation)
+
+---
+
+#### Task 5.5: Train Type-Specific IEP1B Models (3× YOLOv8-pose)
+**Status:** ❌ MISSING
+**Duration:** 12-16 hours (3 models × 4-5.5h each)
+**Description:**
+
+Train separate IEP1B geometry models for each material type using YOLOv8-pose (keypoint regression):
+
+**Models to train:**
+1. IEP1B_book: trained on 63 curated book images (stratified by source, augmented)
+2. IEP1B_newspaper: trained on 575 newspaper images
+3. IEP1B_microfilm: trained on 400 microfilm images
+
+**Training pipeline (per model):**
+- Same structure as IEP1A but using YOLOv8-pose
+- Keypoints: 4 page corners (top-left, top-right, bottom-right, bottom-left)
+- Fine-tune on type-specific data with keypoint annotations
+- Epochs: 50-100, LR: 0.001
+- Evaluate: OKS (Object Keypoint Similarity) per class
+- Save: `iep1b_book.pt`, `iep1b_newspaper.pt`, `iep1b_microfilm.pt`
+
+**Implementation Checklist:**
+- [ ] Prepare type-specific training datasets with keypoint annotations
+- [ ] Load YOLOv8-pose pretrained weights
+- [ ] Train IEP1B_book
+- [ ] Train IEP1B_newspaper
+- [ ] Train IEP1B_microfilm
+- [ ] Evaluate each: report OKS, keypoint accuracy per class
+- [ ] Save 3 model files
+- [ ] Create model cards
+
+---
+
+#### Task 5.6: Update IEP1A + IEP1B Services for Model Selection
+**Status:** ⚠️ PARTIAL (services exist; type-specific routing missing)
+**Files:** `services/iep1a/app/main.py`, `services/iep1b/app/main.py`
+**Duration:** 2-3 hours
+**Description:**
+
+Update IEP1A and IEP1B services to load and select type-specific models based on material_type parameter:
+
+**Design:**
+- Both services load 3 models at startup (book, newspaper, microfilm)
+- Inference endpoint includes `material_type` in request
+- Select corresponding model before inference
+- Fall back to "book" model if material_type unknown
+
+**Request schema (update existing GeometryRequest):**
+
+```json
+{
+  "job_id": "...",
+  "page_number": 1,
+  "image_uri": "...",
+  "material_type": "book"  // ADD THIS FIELD
+}
+```
+
+**Service logic:**
+```python
+@app.post("/v1/geometry")
+async def detect_geometry(request: GeometryRequest) -> GeometryResponse:
+    material_type = request.material_type or "book"
+
+    # Load correct model
+    if material_type not in ["book", "newspaper", "microfilm"]:
+        material_type = "book"  # fallback
+
+    model = self.models[f"iep1a_{material_type}"]  # or iep1b
+
+    # Run inference
+    result = model.predict(image)
+    return GeometryResponse(...)
+```
+
+**Implementation Checklist:**
+- [ ] Update GeometryRequest schema: add `material_type` field (optional, default "book")
+- [ ] Update IEP1A: load 3 models at startup (book, newspaper, microfilm)
+- [ ] Update IEP1B: load 3 models at startup
+- [ ] Add model selection logic in inference
+- [ ] Update `/ready` endpoint to check all 3 models loaded
+- [ ] Test: verify correct model selected per material_type
+- [ ] Update API docs (OpenAPI) to document material_type parameter
+
+---
+
+#### Task 5.7: Update EEP Worker to Pass material_type to IEP1A/IEP1B
+**Status:** ⚠️ PARTIAL (EEP worker exists; material_type routing missing)
+**Files:** `services/eep/app/workers/` or geometry invocation code
+**Duration:** 1-2 hours
+**Description:**
+
+Update EEP worker to pass material_type from job metadata to IEP1A and IEP1B requests:
+
+**Current code (example):**
+```python
+iep1a_response = await call_iep1a(GeometryRequest(
+    job_id=job_id,
+    page_number=page_num,
+    image_uri=image_uri
+))
+```
+
+**Updated code:**
+```python
+iep1a_response = await call_iep1a(GeometryRequest(
+    job_id=job_id,
+    page_number=page_num,
+    image_uri=image_uri,
+    material_type=job.material_type  # PASS FROM JOB METADATA
+))
+```
+
+**Implementation Checklist:**
+- [ ] Locate EEP geometry invocation code
+- [ ] Pass `job.material_type` in request
+- [ ] Handle case where material_type missing in job (fallback to "book")
+- [ ] Test: verify material_type correctly passed to IEP1A/IEP1B
+
+---
+
+#### Task 5.8: Update Artifact Validation Thresholds per Material Type
+**Status:** ⚠️ PARTIAL (artifact validation exists; type-specific thresholds missing)
+**Files:** `libraryai-policy ConfigMap`, EEP threshold loading
+**Duration:** 2-3 hours
+**Description:**
+
+Define material-type-specific artifact validation thresholds:
 
 **ConfigMap additions:**
 
 ```yaml
-# In libraryai-policy ConfigMap
-
 material_type_profiles:
   book:
     split_confidence_threshold: 0.85      # Stricter for books
     geometry_region_density_min: 0.15     # Denser geometry expected
     geometry_region_density_max: 0.90
-    aspect_ratio_bounds: [0.3, 4.0]       # Books are taller
+    aspect_ratio_bounds: [0.3, 4.0]       # Taller
+    tilt_angle_max_degrees: 2.0           # Low tilt tolerance
 
   newspaper:
     split_confidence_threshold: 0.75      # Looser for newspapers
-    geometry_region_density_min: 0.10     # More sparse layout allowed
+    geometry_region_density_min: 0.10     # More sparse
     geometry_region_density_max: 1.0
-    aspect_ratio_bounds: [0.4, 3.0]       # Newspapers are wider
+    aspect_ratio_bounds: [0.4, 3.0]       # Wider
+    tilt_angle_max_degrees: 3.0
 
-  archival_document:
+  microfilm:
     split_confidence_threshold: 0.70      # Loosest
     geometry_region_density_min: 0.05     # Very permissive
     geometry_region_density_max: 1.0
-    aspect_ratio_bounds: [0.2, 5.0]       # Any ratio allowed
-
-# Default fallback (if IEP0 unavailable)
-default_material_type: "book"
+    aspect_ratio_bounds: [0.2, 5.0]       # Very flexible
+    tilt_angle_max_degrees: 5.0           # Distorted frames allowed
 ```
 
-**EEP threshold loading:**
-- Current: load thresholds from ConfigMap (generic)
-- New: load thresholds from ConfigMap + material-type-specific profile
-- Match logic: job.material_type in job metadata → select profile → load thresholds
+**EEP logic:**
+- Load profiles from ConfigMap
+- Match job.material_type → select profile
+- Use profile thresholds in artifact validation gates
 
 **Implementation Checklist:**
-- [ ] Define material-type threshold profiles in ConfigMap
-- [ ] Update EEP config loading: add material-type-specific profile selection
-- [ ] Pass material-type to gate decisions (geometry selection, artifact validation)
-- [ ] Gates use material-type-specific thresholds
-- [ ] If material-type unknown: use default "book" thresholds
-- [ ] Test: verify different thresholds applied per material type
+- [ ] Define profiles in ConfigMap
+- [ ] Update EEP config loading: add material-type profile selection
+- [ ] Pass material_type to artifact validation gates
+- [ ] Use profile thresholds in decisions
+- [ ] Test: verify different thresholds applied per type
 
 ---
 
@@ -1347,17 +1558,22 @@ Document design decisions for future reference:
 | | ✅ 1.2: Verify response schemas | 1h | ✅ COMPLETE |
 | | ✅ 1.3: Test dual-model consensus | 2-3h | ✅ COMPLETE (186/186) |
 | | ✅ 1.4: Consensus test suite | 4-6h | ✅ COMPLETE (365/365) |
-| **P2** | 2.1: Google Document AI module | 8-10h | 🔴 CRITICAL ← **NEXT** |
-| | 2.2: Google credentials & config setup | 2-3h | 🔴 CRITICAL |
+| **P2** | ✅ 2.1: Google Document AI module | 8-10h | ✅ COMPLETE |
+| | ✅ 2.2: Google credentials & config setup | 2-3h | ✅ COMPLETE |
 | **P3** | 3.1: LayoutAdjudicationResult schemas | 2-3h | 🔴 CRITICAL |
 | | 3.2: Refactor layout gate: adjudication | 4-6h | 🔴 CRITICAL |
 | | 3.3: New review reasons | 1h | 🟡 IMPORTANT |
 | **P4** | 4.1: Integrate adjudication in worker | 6-8h | 🔴 CRITICAL |
 | | 4.2: Adjudication DB schema + migration | 3-4h | 🔴 CRITICAL |
-| **P5** | 5.1: Train IEP0 classification model | 10-14h | 🟡 IMPORTANT |
-| | 5.2: Create IEP0 service | 4-5h | 🟡 IMPORTANT |
-| | 5.3: Integrate IEP0 in upload workflow | 2-3h | 🟡 IMPORTANT |
-| | 5.4: Material-type threshold profiles | 3-4h | 🟡 IMPORTANT |
+| **P5** | ✅ 5.0: Organize training data per material type | 2-3h | ✅ COMPLETE |
+| | 5.1: Train IEP0 classification model | 10-14h | 🔴 CRITICAL (unblocks type-specific models) |
+| | 5.2: Create IEP0 service & endpoint | 4-5h | 🔴 CRITICAL |
+| | 5.3: Integrate IEP0 into upload workflow | 2-3h | 🔴 CRITICAL |
+| | 5.4: Train IEP1A_book/newspaper/microfilm | 12-16h | 🟡 IMPORTANT |
+| | 5.5: Train IEP1B_book/newspaper/microfilm | 12-16h | 🟡 IMPORTANT |
+| | 5.6: Update IEP1A/IEP1B for model selection | 2-3h | 🟡 IMPORTANT |
+| | 5.7: Update EEP worker routing logic | 1-2h | 🟡 IMPORTANT |
+| | 5.8: Update artifact validation thresholds | 2-3h | 🟡 IMPORTANT |
 | **P6** | 6.1: Layout adjudication test suite | 12-16h | 🟡 IMPORTANT |
 | | 6.2: Metrics & observability | 4-6h | 🟡 IMPORTANT |
 | **P7** | 7.1: Documentation updates | 4-6h | 🟢 NICE-TO-HAVE |
@@ -1369,30 +1585,41 @@ Document design decisions for future reference:
 
 ## RECOMMENDED EXECUTION SEQUENCE
 
-### Week 1 (Critical Path)
-1. ✅ **P0.1** → Fix IEP2B router (1-2h, BLOCKER) — **COMPLETE**
-2. ✅ **P1.1** → Change IEP2A default to PaddleOCR (1-2h) — **COMPLETE**
-3. ✅ **P1.2** → Verify response schemas (1h) — **COMPLETE**
-4. ✅ **P1.3** → Test dual-model consensus (2-3h) — **COMPLETE** (186/186 tests pass)
-5. ✅ **P1.4** → Create comprehensive test suite (4-6h) — **COMPLETE** (365/365 tests pass)
-6. **P2.1** → Build Google Document AI module (8-10h) — UNBLOCKED
-7. **P3.1** → Create LayoutAdjudicationResult schema (2-3h)
+### Week 1-2 (Critical Path to Layout Adjudication)
+1. ✅ **P0.1** → Fix IEP2B router (1-2h) — **COMPLETE**
+2. ✅ **P1.1-1.4** → Layout infrastructure (5 tasks, 11-15h) — **COMPLETE**
+3. ✅ **P2.1** → Google Document AI module (8-10h) — **COMPLETE**
+4. ✅ **P2.2** → Google credentials & config (2-3h) — **COMPLETE**
+5. **P3.1-P3.3** → Adjudication schemas & gate (7-10h) — **NEXT**
+6. **P4.1-P4.2** → Worker integration & DB schema (9-12h)
 
-### Week 2 (Core Refactor)
-1. **P3.2** → Refactor layout gate for adjudication (4-6h)
-2. **P4.1** → Integrate adjudication in worker (6-8h)
-3. **P4.2** → Update DB schema + Alembic migration (3-4h)
+### Week 3 (Type-Specific Geometry Models)
+1. **P5.0** → Organize training data (2-3h)
+2. **P5.1** → Train IEP0 classifier (10-14h) — Unblocks model selection
+3. **P5.2** → IEP0 service (4-5h)
+4. **P5.3** → IEP0 integration (2-3h)
+5. **P5.4-P5.5** → Train 6 type-specific models (24-32h, parallelized)
+6. **P5.6-P5.8** → Service updates & routing (5-8h)
 
-### Week 2-3 (Testing & Documentation)
-1. **P6.1** → Comprehensive adjudication test suite (12-16h)
+### Week 4 (Testing & Metrics)
+1. **P6.1** → Adjudication test suite (12-16h)
 2. **P6.2** → Metrics & observability (4-6h)
-3. **P7.1** → Documentation updates (4-6h)
+3. **P7.1-P7.2** → Documentation & ADRs (6-9h)
 
-### In Parallel (IEP0, Lower Priority)
-1. **P5.1** → Train IEP0 model (10-14h)
-2. **P5.2** → Create IEP0 service (4-5h)
-3. **P5.3** → Integrate IEP0 in upload (2-3h)
-4. **P5.4** → Threshold profiles (3-4h)
+### In Parallel (Lower Priority)
+- IEP1D (UVDoc rectification) if not already implemented
+- IEP0 data curation (can start anytime)
+
+---
+
+## Critical Path Summary
+
+**Completed (P0-P1-P2):** ~33-28 hours (IEP2B router + layout infra + Google module + config)
+**Remaining critical path (P3-P4):** ~16-22 hours (adjudication logic + worker integration)
+**Phase 5 (type-specific models):** ~48-65 hours (IEP0 + 6 geometry models)
+**Phase 6-7 (testing & docs):** ~20-31 hours
+
+**Total: ~116-146 hours** (from original 60-80h; expanded due to type-specific models)
 
 ### Optional Follow-up
 1. **P7.2** → Architecture decision records (2-3h)

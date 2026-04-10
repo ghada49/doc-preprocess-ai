@@ -795,7 +795,8 @@ class TestStateTransitionGolden:
         """Every documented outgoing state from 'preprocessing' is allowed."""
         valid_targets = {
             "rectification",
-            "ptiff_qa_pending",
+            "layout_detection",
+            "accepted",
             "pending_human_correction",
             "split",
             "failed",
@@ -805,7 +806,7 @@ class TestStateTransitionGolden:
 
     def test_rectification_all_valid_targets(self) -> None:
         """Every documented outgoing state from 'rectification' is allowed."""
-        valid_targets = {"ptiff_qa_pending", "pending_human_correction", "split", "failed"}
+        valid_targets = {"layout_detection", "accepted", "pending_human_correction", "split", "failed"}
         for target in valid_targets:
             validate_transition("rectification", target)
 
@@ -838,7 +839,6 @@ class TestStateTransitionGolden:
             "queued",
             "preprocessing",
             "rectification",
-            "ptiff_qa_pending",
             "layout_detection",
         }
         for state in active_states:

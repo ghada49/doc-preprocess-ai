@@ -8,13 +8,13 @@ Packet 1.3a validator tests for shared.state_machine:
   - validate_transition: unknown state raises ValueError
   - Leaf-final states have no outgoing transitions
   - is_worker_terminal delegates to TERMINAL_PAGE_STATES
-  - ptiff_qa_pending is NOT worker-terminal
   - is_leaf_final covers accepted / review / failed only
   - allowed_next returns correct frozensets
 
 Definition of done:
   - all page transitions are centrally validated
-  - ptiff_qa_pending transitions are explicitly defined
+  - automation-first: preprocessing/rectification route directly to layout_detection/accepted
+  - pending_human_correction resumes via layout_detection or accepted after correction
   - terminal-state automation stop rules are enforced in one shared module
 """
 
@@ -37,7 +37,6 @@ ALL_PAGE_STATES = frozenset(
         "queued",
         "preprocessing",
         "rectification",
-        "ptiff_qa_pending",
         "layout_detection",
         "pending_human_correction",
         "accepted",
@@ -52,21 +51,22 @@ VALID_TRANSITIONS = [
     ("queued", "preprocessing"),
     ("queued", "failed"),
     ("preprocessing", "rectification"),
-    ("preprocessing", "ptiff_qa_pending"),
+    ("preprocessing", "layout_detection"),
+    ("preprocessing", "accepted"),
     ("preprocessing", "pending_human_correction"),
     ("preprocessing", "split"),
     ("preprocessing", "failed"),
-    ("rectification", "ptiff_qa_pending"),
+    ("rectification", "layout_detection"),
+    ("rectification", "accepted"),
     ("rectification", "pending_human_correction"),
     ("rectification", "split"),
     ("rectification", "failed"),
-    ("ptiff_qa_pending", "accepted"),
-    ("ptiff_qa_pending", "layout_detection"),
-    ("ptiff_qa_pending", "pending_human_correction"),
     ("layout_detection", "accepted"),
     ("layout_detection", "review"),
     ("layout_detection", "failed"),
-    ("pending_human_correction", "ptiff_qa_pending"),
+    ("layout_detection", "pending_human_correction"),
+    ("pending_human_correction", "layout_detection"),
+    ("pending_human_correction", "accepted"),
     ("pending_human_correction", "review"),
     ("pending_human_correction", "split"),
 ]
@@ -77,20 +77,13 @@ INVALID_TRANSITIONS = [
     ("preprocessing", "queued"),
     ("rectification", "queued"),
     ("rectification", "preprocessing"),
-    ("ptiff_qa_pending", "queued"),
-    ("ptiff_qa_pending", "preprocessing"),
-    ("ptiff_qa_pending", "rectification"),
-    ("ptiff_qa_pending", "failed"),
     ("layout_detection", "queued"),
     ("layout_detection", "preprocessing"),
     ("layout_detection", "rectification"),
-    ("layout_detection", "ptiff_qa_pending"),
-    ("layout_detection", "pending_human_correction"),
     ("layout_detection", "split"),
     # Transitions out of leaf-final states
     ("accepted", "queued"),
     ("accepted", "preprocessing"),
-    ("accepted", "ptiff_qa_pending"),
     ("accepted", "pending_human_correction"),
     ("accepted", "review"),
     ("accepted", "failed"),
@@ -105,24 +98,19 @@ INVALID_TRANSITIONS = [
     ("split", "queued"),
     ("split", "accepted"),
     ("split", "review"),
-    # No direct queued → ptiff_qa_pending / layout_detection / etc.
-    ("queued", "ptiff_qa_pending"),
+    # No direct queued → layout_detection / etc.
     ("queued", "layout_detection"),
     ("queued", "pending_human_correction"),
     ("queued", "review"),
     ("queued", "split"),
-    # No direct preprocessing → review / accepted / layout_detection
+    # No direct preprocessing → review
     ("preprocessing", "review"),
-    ("preprocessing", "accepted"),
-    ("preprocessing", "layout_detection"),
-    # No pending_human_correction → accepted / layout_detection / failed
-    ("pending_human_correction", "accepted"),
-    ("pending_human_correction", "layout_detection"),
+    # No pending_human_correction → failed
     ("pending_human_correction", "failed"),
     # Identical state self-transition
     ("queued", "queued"),
     ("preprocessing", "preprocessing"),
-    ("ptiff_qa_pending", "ptiff_qa_pending"),
+    ("layout_detection", "layout_detection"),
 ]
 
 
@@ -154,18 +142,25 @@ class TestAllowedTransitionsStructure:
     def test_queued_has_exactly_two_transitions(self) -> None:
         assert ALLOWED_TRANSITIONS["queued"] == frozenset({"preprocessing", "failed"})
 
-    def test_ptiff_qa_pending_transitions_are_defined(self) -> None:
-        # Spec DoD: ptiff_qa_pending transitions explicitly defined
-        expected = frozenset({"accepted", "layout_detection", "pending_human_correction"})
-        assert ALLOWED_TRANSITIONS["ptiff_qa_pending"] == expected
-
     def test_pending_human_correction_transitions(self) -> None:
-        expected = frozenset({"ptiff_qa_pending", "review", "split"})
+        expected = frozenset({"layout_detection", "accepted", "review", "split"})
         assert ALLOWED_TRANSITIONS["pending_human_correction"] == expected
 
     def test_layout_detection_transitions(self) -> None:
-        expected = frozenset({"accepted", "review", "failed"})
+        expected = frozenset({"accepted", "review", "failed", "pending_human_correction"})
         assert ALLOWED_TRANSITIONS["layout_detection"] == expected
+
+    def test_preprocessing_direct_to_layout_detection(self) -> None:
+        assert "layout_detection" in ALLOWED_TRANSITIONS["preprocessing"]
+
+    def test_preprocessing_direct_to_accepted(self) -> None:
+        assert "accepted" in ALLOWED_TRANSITIONS["preprocessing"]
+
+    def test_rectification_direct_to_layout_detection(self) -> None:
+        assert "layout_detection" in ALLOWED_TRANSITIONS["rectification"]
+
+    def test_rectification_direct_to_accepted(self) -> None:
+        assert "accepted" in ALLOWED_TRANSITIONS["rectification"]
 
 
 # ── validate_transition — valid pairs ─────────────────────────────────────────
@@ -176,25 +171,29 @@ class TestValidTransitions:
     def test_valid_pair_does_not_raise(self, from_state: str, to_state: str) -> None:
         validate_transition(from_state, to_state)  # must not raise
 
-    def test_preprocessing_to_ptiff_qa_pending(self) -> None:
-        validate_transition("preprocessing", "ptiff_qa_pending")
+    def test_preprocessing_to_layout_detection(self) -> None:
+        validate_transition("preprocessing", "layout_detection")
 
-    def test_rectification_to_ptiff_qa_pending(self) -> None:
-        validate_transition("rectification", "ptiff_qa_pending")
+    def test_preprocessing_to_accepted(self) -> None:
+        validate_transition("preprocessing", "accepted")
 
-    def test_ptiff_qa_pending_to_accepted(self) -> None:
-        validate_transition("ptiff_qa_pending", "accepted")
+    def test_rectification_to_layout_detection(self) -> None:
+        validate_transition("rectification", "layout_detection")
 
-    def test_ptiff_qa_pending_to_layout_detection(self) -> None:
-        validate_transition("ptiff_qa_pending", "layout_detection")
+    def test_rectification_to_accepted(self) -> None:
+        validate_transition("rectification", "accepted")
 
-    def test_ptiff_qa_pending_to_pending_human_correction(self) -> None:
-        # Reviewer sends page back from PTIFF QA to correction
-        validate_transition("ptiff_qa_pending", "pending_human_correction")
+    def test_layout_detection_to_pending_human_correction(self) -> None:
+        # User explicitly sends page to review
+        validate_transition("layout_detection", "pending_human_correction")
 
-    def test_pending_human_correction_to_ptiff_qa_pending(self) -> None:
-        # Correction submitted
-        validate_transition("pending_human_correction", "ptiff_qa_pending")
+    def test_pending_human_correction_to_layout_detection(self) -> None:
+        # Correction submitted, pipeline_mode=layout → resume IEP2
+        validate_transition("pending_human_correction", "layout_detection")
+
+    def test_pending_human_correction_to_accepted(self) -> None:
+        # Correction submitted, pipeline_mode=preprocess → direct accept
+        validate_transition("pending_human_correction", "accepted")
 
     def test_pending_human_correction_to_review(self) -> None:
         # Correction rejected
@@ -286,10 +285,6 @@ class TestIsWorkerTerminal:
     def test_split_is_terminal(self) -> None:
         assert is_worker_terminal("split") is True
 
-    def test_ptiff_qa_pending_is_not_terminal(self) -> None:
-        # Critical spec invariant (spec Section 9.1 + Section 3.1)
-        assert is_worker_terminal("ptiff_qa_pending") is False
-
     def test_queued_is_not_terminal(self) -> None:
         assert is_worker_terminal("queued") is False
 
@@ -317,7 +312,6 @@ class TestIsWorkerTerminal:
             "queued",
             "preprocessing",
             "rectification",
-            "ptiff_qa_pending",
             "layout_detection",
         }
 
@@ -343,9 +337,6 @@ class TestIsLeafFinal:
         # Routing-terminal for parent, not a page outcome
         assert is_leaf_final("split") is False
 
-    def test_ptiff_qa_pending_is_not_leaf_final(self) -> None:
-        assert is_leaf_final("ptiff_qa_pending") is False
-
     def test_queued_is_not_leaf_final(self) -> None:
         assert is_leaf_final("queued") is False
 
@@ -370,9 +361,13 @@ class TestAllowedNext:
     def test_queued_allowed_next(self) -> None:
         assert allowed_next("queued") == frozenset({"preprocessing", "failed"})
 
-    def test_ptiff_qa_pending_allowed_next(self) -> None:
-        result = allowed_next("ptiff_qa_pending")
-        assert result == frozenset({"accepted", "layout_detection", "pending_human_correction"})
+    def test_pending_human_correction_allowed_next(self) -> None:
+        result = allowed_next("pending_human_correction")
+        assert result == frozenset({"layout_detection", "accepted", "review", "split"})
+
+    def test_layout_detection_allowed_next(self) -> None:
+        result = allowed_next("layout_detection")
+        assert result == frozenset({"accepted", "review", "failed", "pending_human_correction"})
 
     def test_accepted_allowed_next_is_empty(self) -> None:
         assert allowed_next("accepted") == frozenset()

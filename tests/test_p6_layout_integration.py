@@ -3,78 +3,81 @@ tests/test_p6_layout_integration.py
 -------------------------------------
 Packet 6.6 — Phase 6 layout integration tests.
 
-Tests the IEP2A service, IEP2B service, and the EEP layout consensus gate
-working together, plus PTIFF QA state machine enforcement.
+Tests the IEP2A service, IEP2B service, the EEP layout consensus/adjudication
+gate, and the worker-facing no-review routing helper, plus PTIFF QA state
+machine enforcement.
 
 Coverage:
   1. Dual-model agreement: real IEP2A + IEP2B mock HTTP responses fed to
      evaluate_layout_consensus produce agreed=True with confidence >= threshold.
   2. IEP2A regions selected as canonical output when consensus agrees
      (spec Section 7.4: "When agreed: use IEP2A regions as canonical layout").
-  3. Disagreement by low match ratio → agreed=False → review routing.
-  4. Disagreement by histogram mismatch → agreed=False → review routing.
+  3. Disagreement by low match ratio → agreed=False → Google fallback required.
+  4. Disagreement by histogram mismatch → agreed=False → Google fallback required.
   5. Single-model fallback: IEP2B unavailable (None or HTTP 500) →
-     single_model_mode=True, agreed=False unconditionally → review routing.
-  6. PTIFF QA enforcement: state machine only permits ptiff_qa_pending →
-     layout_detection; all other source states are rejected.
+     single_model_mode=True, agreed=False unconditionally → adjudication required.
+  6. Layout routing enforcement: state machine permits preprocessing/rectification/
+     pending_human_correction → layout_detection (automation-first model).
   7. End-to-end layout routing decisions:
-     - agreed + conf ≥ min → "accepted"
-     - agreed=False → "review" / "layout_consensus_failed"
-     - agreed=True, conf < min → "review" / "layout_consensus_low_confidence"
-     - IEP2A returns HTTP 500 → layout pipeline cannot proceed (review path)
-     - single_model_mode=True → "review" / "layout_consensus_failed"
+     - local agreement → accepted
+     - local disagreement + Google success → accepted using Google result
+     - Google hard failure / unavailable → accepted using best local fallback
+     - Google empty result → accepted with an empty displayed layout
 
 Implementation note:
-  The layout_detection worker (which orchestrates IEP2A/IEP2B HTTP calls and
-  state transitions) is not yet implemented in Phase 6.  Tests 1–5 and 7 call
-  the IEP2A/IEP2B TestClients directly and pass the resulting Region objects to
-  evaluate_layout_consensus, simulating what the worker will do.  The inline
-  _layout_route() helper implements spec Section 8.2 Steps 12–13 routing logic
-  at test scope only.
+  The layout_detection task runner is still not fully implemented in Phase 6.
+  These tests call the IEP2A/IEP2B TestClients directly, feed their outputs into
+  evaluate_layout_consensus / evaluate_layout_adjudication, and then run the
+  worker-facing build_layout_routing_decision() helper to verify the no-review
+  accepted path.
 """
 
 from __future__ import annotations
 
+import asyncio
 import sys
 import types
 from typing import Any, cast
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from services.eep.app.gates.layout_gate import LayoutGateConfig, evaluate_layout_consensus
+from services.eep.app.gates.layout_gate import (
+    LayoutGateConfig,
+    evaluate_layout_adjudication,
+    evaluate_layout_consensus,
+)
+from services.eep_worker.app.layout_routing import build_layout_routing_decision
 from services.iep2a.app.detect import router as iep2a_router
 from services.iep2b.app.detect import router as iep2b_router
-from shared.schemas.layout import LayoutConsensusResult, Region, RegionType
+from shared.schemas.layout import (
+    LayoutAdjudicationResult,
+    LayoutConfSummary,
+    LayoutDetectResponse,
+    Region,
+    RegionType,
+)
 from shared.schemas.ucf import BoundingBox
 from shared.state_machine import ALLOWED_TRANSITIONS, InvalidTransitionError, validate_transition
 
 # ---------------------------------------------------------------------------
-# Inline routing helper — test scope only
+# Inline routing helpers — test scope only
 # ---------------------------------------------------------------------------
-# Implements spec Section 8.2 Steps 12–13:
-#   agreed=False                        → review / layout_consensus_failed
-#   confidence < min_consensus_confidence → review / layout_consensus_low_confidence
-#   otherwise                           → accepted
+# IEP2 policy:
+#   adjudication always produces a displayable layout result
+#   worker routing is always layout_detection → accepted
 
 
 def _layout_route(
-    consensus: LayoutConsensusResult,
-    config: LayoutGateConfig | None = None,
+    adjudication: LayoutAdjudicationResult,
 ) -> tuple[str, str | None]:
     """
-    Return (new_state, review_reason | None) from a LayoutConsensusResult.
-
-    Used only in tests to assert routing behaviour until the real
-    layout_detection worker is implemented.
+    Return the worker routing state for an adjudicated IEP2 result.
     """
-    cfg = config or LayoutGateConfig()
-    if not consensus.agreed:
-        return "review", "layout_consensus_failed"
-    if consensus.consensus_confidence < cfg.min_consensus_confidence:
-        return "review", "layout_consensus_low_confidence"
-    return "accepted", None
+    decision = build_layout_routing_decision(adjudication)
+    return decision.next_state, decision.review_reason
 
 
 # ---------------------------------------------------------------------------
@@ -129,6 +132,71 @@ def _make_region(
         type=rtype,
         bbox=BoundingBox(x_min=x_min, y_min=y_min, x_max=x_max, y_max=y_max),
         confidence=confidence,
+    )
+
+
+def _conf_summary() -> LayoutConfSummary:
+    return LayoutConfSummary(mean_conf=0.85, low_conf_frac=0.1)
+
+
+def _detect_response(
+    regions: list[Region],
+    detector_type: str = "paddleocr_pp_doclayout_v2",
+) -> LayoutDetectResponse:
+    histogram: dict[str, int] = {}
+    for region in regions:
+        histogram[region.type.value] = histogram.get(region.type.value, 0) + 1
+    return LayoutDetectResponse(
+        region_schema_version="v1",
+        regions=regions,
+        layout_conf_summary=_conf_summary(),
+        region_type_histogram=histogram,
+        column_structure=None,
+        model_version="test-v1",
+        detector_type=detector_type,  # type: ignore[arg-type]
+        processing_time_ms=100.0,
+        warnings=[],
+    )
+
+
+def _mock_google_client(regions: list[Region] | None = None) -> MagicMock:
+    if regions is None:
+        regions = [_make_region("r1", RegionType.text_block, 0, 0, 100, 100)]
+
+    client = MagicMock()
+    client.process_layout = AsyncMock(
+        return_value={
+            "elements": [object() for _ in regions],
+            "page_width": 1000,
+            "page_height": 1200,
+            "region_count": len(regions),
+        }
+    )
+    client._map_google_to_canonical = MagicMock(return_value=regions)
+    return client
+
+
+def _mock_google_timeout() -> MagicMock:
+    client = MagicMock()
+    client.process_layout = AsyncMock(side_effect=TimeoutError("google layout timeout"))
+    return client
+
+
+def _run_adjudication(
+    iep2a_result: LayoutDetectResponse | None,
+    iep2b_result: LayoutDetectResponse | None,
+    google_client: Any | None,
+) -> LayoutAdjudicationResult:
+    return asyncio.run(
+        evaluate_layout_adjudication(
+            iep2a_result=iep2a_result,
+            iep2b_result=iep2b_result,
+            google_client=google_client,
+            image_bytes=None,
+            mime_type="image/tiff",
+            material_type="archival_document",
+            image_uri=cast(str, _VALID_PAYLOAD["image_uri"]),
+        )
     )
 
 
@@ -329,11 +397,18 @@ class TestDisagreementByLowMatchRatio:
         result = evaluate_layout_consensus(self._IEP2A, self._IEP2B)
         assert result.single_model_mode is False
 
-    def test_routes_to_review(self) -> None:
-        result = evaluate_layout_consensus(self._IEP2A, self._IEP2B)
-        state, reason = _layout_route(result)
-        assert state == "review"
-        assert reason == "layout_consensus_failed"
+    def test_disagreement_routes_through_google_and_stays_accepted(self) -> None:
+        google_regions = [_make_region("r1", RegionType.text_block, 10, 10, 80, 80)]
+        adjudication = _run_adjudication(
+            _detect_response(self._IEP2A),
+            _detect_response(self._IEP2B, detector_type="doclayout_yolo"),
+            _mock_google_client(google_regions),
+        )
+        state, reason = _layout_route(adjudication)
+        assert state == "accepted"
+        assert reason is None
+        assert adjudication.layout_decision_source == "google_document_ai"
+        assert adjudication.final_layout_result == google_regions
 
     def test_iep2a_region_count_correct(self) -> None:
         result = evaluate_layout_consensus(self._IEP2A, self._IEP2B)
@@ -381,11 +456,17 @@ class TestDisagreementByHistogramMismatch:
         result = evaluate_layout_consensus(self._IEP2A, self._IEP2B)
         assert result.agreed is False
 
-    def test_routes_to_review(self) -> None:
-        result = evaluate_layout_consensus(self._IEP2A, self._IEP2B)
-        state, reason = _layout_route(result)
-        assert state == "review"
-        assert reason == "layout_consensus_failed"
+    def test_histogram_mismatch_routes_through_google_and_stays_accepted(self) -> None:
+        google_regions = [_make_region("r1", RegionType.table, 20, 20, 120, 120)]
+        adjudication = _run_adjudication(
+            _detect_response(self._IEP2A),
+            _detect_response(self._IEP2B, detector_type="doclayout_yolo"),
+            _mock_google_client(google_regions),
+        )
+        state, reason = _layout_route(adjudication)
+        assert state == "accepted"
+        assert reason is None
+        assert adjudication.layout_decision_source == "google_document_ai"
 
     def test_single_model_mode_false(self) -> None:
         result = evaluate_layout_consensus(self._IEP2A, self._IEP2B)
@@ -417,14 +498,22 @@ class TestSingleModelFallbackIntegration:
         result = evaluate_layout_consensus(iep2a_regions, None)
         assert result.agreed is False
 
-    def test_single_model_routes_to_review(self, iep2a_client: TestClient) -> None:
+    def test_single_model_unavailable_google_routes_to_local_fallback_acceptance(
+        self, iep2a_client: TestClient
+    ) -> None:
         iep2a_regions = _get_regions(
             iep2a_client.post("/v1/layout-detect", json=_VALID_PAYLOAD).json()
         )
-        result = evaluate_layout_consensus(iep2a_regions, None)
-        state, reason = _layout_route(result)
-        assert state == "review"
-        assert reason == "layout_consensus_failed"
+        adjudication = _run_adjudication(
+            _detect_response(iep2a_regions),
+            None,
+            None,
+        )
+        state, reason = _layout_route(adjudication)
+        assert state == "accepted"
+        assert reason is None
+        assert adjudication.layout_decision_source == "local_fallback_unverified"
+        assert adjudication.final_layout_result == iep2a_regions
 
     def test_iep2b_region_count_zero_in_single_model(self, iep2a_client: TestClient) -> None:
         iep2a_regions = _get_regions(
@@ -451,12 +540,13 @@ class TestSingleModelFallbackIntegration:
         iep2a_regions = _get_regions(
             iep2a_client.post("/v1/layout-detect", json=_VALID_PAYLOAD).json()
         )
-        # Worker passes None for iep2b on HTTP failure.
-        result = evaluate_layout_consensus(iep2a_regions, None)
-        assert result.single_model_mode is True
-        assert result.agreed is False
-        state, _ = _layout_route(result)
-        assert state == "review"
+        # Worker passes None for iep2b on HTTP failure and still produces a
+        # displayable accepted result via local fallback if Google is absent.
+        adjudication = _run_adjudication(_detect_response(iep2a_regions), None, None)
+        assert adjudication.layout_decision_source == "local_fallback_unverified"
+        state, reason = _layout_route(adjudication)
+        assert state == "accepted"
+        assert reason is None
 
 
 # ---------------------------------------------------------------------------
@@ -464,52 +554,43 @@ class TestSingleModelFallbackIntegration:
 # ---------------------------------------------------------------------------
 
 
-class TestPtiffQaEnforcement:
+class TestLayoutRoutingEnforcement:
     """
-    Spec Section 3.1: layout must not execute for pages in ptiff_qa_pending.
-    The state machine is the enforcement mechanism:
-      - ptiff_qa_pending → layout_detection is the ONLY valid path into layout.
-      - No other source state can reach layout_detection directly.
+    Automation-first routing: preprocessing/rectification route directly to
+    layout_detection without any intermediate gate.  pending_human_correction
+    resumes via layout_detection after correction.
     """
 
-    # --- Allowed transitions into layout_detection ---
+    # --- Allowed transitions INTO layout_detection (automation-first) ---
 
-    def test_ptiff_qa_pending_to_layout_detection_allowed(self) -> None:
-        assert "layout_detection" in ALLOWED_TRANSITIONS["ptiff_qa_pending"]
+    def test_preprocessing_can_reach_layout_detection(self) -> None:
+        assert "layout_detection" in ALLOWED_TRANSITIONS["preprocessing"]
 
-    def test_validate_transition_ptiff_qa_to_layout_does_not_raise(self) -> None:
-        try:
-            validate_transition("ptiff_qa_pending", "layout_detection")
-        except Exception as exc:
-            pytest.fail(f"Valid transition raised unexpectedly: {exc!r}")
+    def test_rectification_can_reach_layout_detection(self) -> None:
+        assert "layout_detection" in ALLOWED_TRANSITIONS["rectification"]
+
+    def test_pending_human_correction_can_reach_layout_detection(self) -> None:
+        assert "layout_detection" in ALLOWED_TRANSITIONS["pending_human_correction"]
+
+    def test_validate_transition_preprocessing_to_layout_does_not_raise(self) -> None:
+        validate_transition("preprocessing", "layout_detection")  # must not raise
+
+    def test_validate_transition_rectification_to_layout_does_not_raise(self) -> None:
+        validate_transition("rectification", "layout_detection")  # must not raise
+
+    def test_validate_transition_pending_correction_to_layout_does_not_raise(self) -> None:
+        validate_transition("pending_human_correction", "layout_detection")  # must not raise
 
     # --- Disallowed direct transitions to layout_detection ---
 
     def test_queued_cannot_reach_layout_detection(self) -> None:
         assert "layout_detection" not in ALLOWED_TRANSITIONS["queued"]
 
-    def test_preprocessing_cannot_reach_layout_detection(self) -> None:
-        assert "layout_detection" not in ALLOWED_TRANSITIONS["preprocessing"]
-
-    def test_rectification_cannot_reach_layout_detection(self) -> None:
-        assert "layout_detection" not in ALLOWED_TRANSITIONS["rectification"]
-
-    def test_pending_human_correction_cannot_reach_layout_detection(self) -> None:
-        assert "layout_detection" not in ALLOWED_TRANSITIONS["pending_human_correction"]
-
-    def test_validate_transition_rejects_preprocessing_to_layout(self) -> None:
-        with pytest.raises(InvalidTransitionError):
-            validate_transition("preprocessing", "layout_detection")
-
     def test_validate_transition_rejects_queued_to_layout(self) -> None:
         with pytest.raises(InvalidTransitionError):
             validate_transition("queued", "layout_detection")
 
-    def test_validate_transition_rejects_rectification_to_layout(self) -> None:
-        with pytest.raises(InvalidTransitionError):
-            validate_transition("rectification", "layout_detection")
-
-    # --- Allowed transitions out of layout_detection ---
+    # --- Allowed transitions OUT of layout_detection ---
 
     def test_layout_detection_to_accepted_allowed(self) -> None:
         assert "accepted" in ALLOWED_TRANSITIONS["layout_detection"]
@@ -520,16 +601,12 @@ class TestPtiffQaEnforcement:
     def test_layout_detection_to_failed_allowed(self) -> None:
         assert "failed" in ALLOWED_TRANSITIONS["layout_detection"]
 
+    def test_layout_detection_to_pending_human_correction_allowed(self) -> None:
+        # user can send page to review after layout detection
+        assert "pending_human_correction" in ALLOWED_TRANSITIONS["layout_detection"]
+
     def test_layout_detection_cannot_return_to_queued(self) -> None:
         assert "queued" not in ALLOWED_TRANSITIONS["layout_detection"]
-
-    def test_layout_detection_cannot_return_to_ptiff_qa_pending(self) -> None:
-        assert "ptiff_qa_pending" not in ALLOWED_TRANSITIONS["layout_detection"]
-
-    def test_ptiff_qa_pending_is_not_terminal(self) -> None:
-        from shared.state_machine import is_worker_terminal
-
-        assert is_worker_terminal("ptiff_qa_pending") is False
 
     def test_layout_detection_is_not_terminal(self) -> None:
         from shared.state_machine import is_worker_terminal
@@ -546,18 +623,20 @@ class TestLayoutRoutingDecisions:
     def test_accepted_path_on_dual_model_agreement(
         self, iep2a_client: TestClient, iep2b_client: TestClient
     ) -> None:
-        iep2a_regions = _get_regions(
+        iep2a_result = LayoutDetectResponse.model_validate(
             iep2a_client.post("/v1/layout-detect", json=_VALID_PAYLOAD).json()
         )
-        iep2b_regions = _get_regions(
+        iep2b_result = LayoutDetectResponse.model_validate(
             iep2b_client.post("/v1/layout-detect", json=_VALID_PAYLOAD).json()
         )
-        result = evaluate_layout_consensus(iep2a_regions, iep2b_regions)
-        state, reason = _layout_route(result)
+        adjudication = _run_adjudication(iep2a_result, iep2b_result, None)
+        state, reason = _layout_route(adjudication)
         assert state == "accepted"
         assert reason is None
+        assert adjudication.layout_decision_source == "local_agreement"
+        assert adjudication.final_layout_result == iep2a_result.regions
 
-    def test_review_path_layout_consensus_failed(self) -> None:
+    def test_local_disagreement_uses_google_result_and_stays_accepted(self) -> None:
         # Non-overlapping regions → match_ratio=0 → agreed=False.
         iep2a = [
             _make_region("r1", RegionType.title, 0, 0, 100, 50),
@@ -569,56 +648,81 @@ class TestLayoutRoutingDecisions:
             _make_region("r2", RegionType.text_block, 500, 60, 600, 200),
             _make_region("r3", RegionType.table, 500, 210, 600, 400),
         ]
-        result = evaluate_layout_consensus(iep2a, iep2b)
-        state, reason = _layout_route(result)
-        assert state == "review"
-        assert reason == "layout_consensus_failed"
+        google_regions = [_make_region("r1", RegionType.image, 10, 10, 80, 80)]
+        adjudication = _run_adjudication(
+            _detect_response(iep2a),
+            _detect_response(iep2b, detector_type="doclayout_yolo"),
+            _mock_google_client(google_regions),
+        )
+        state, reason = _layout_route(adjudication)
+        assert state == "accepted"
+        assert reason is None
+        assert adjudication.layout_decision_source == "google_document_ai"
+        assert adjudication.final_layout_result == google_regions
 
-    def test_review_path_layout_consensus_low_confidence(self) -> None:
-        """
-        agreed=True but consensus_confidence < min_consensus_confidence.
-        Achieved by raising the min threshold just above the computed value.
-        """
+    def test_google_timeout_uses_local_fallback_and_stays_accepted(self) -> None:
         iep2a = [_make_region("r1", RegionType.title, 0, 0, 100, 50)]
-        iep2b = [_make_region("r1", RegionType.title, 0, 0, 100, 50)]
-        result = evaluate_layout_consensus(iep2a, iep2b)
-        assert result.agreed is True
+        iep2b = [_make_region("r1", RegionType.title, 500, 0, 600, 50)]
+        adjudication = _run_adjudication(
+            _detect_response(iep2a),
+            _detect_response(iep2b, detector_type="doclayout_yolo"),
+            _mock_google_timeout(),
+        )
+        state, reason = _layout_route(adjudication)
+        assert state == "accepted"
+        assert reason is None
+        assert adjudication.layout_decision_source == "local_fallback_unverified"
+        assert adjudication.final_layout_result == iep2a
 
-        # Raise threshold just above the actual confidence value.
-        strict_cfg = LayoutGateConfig(min_consensus_confidence=result.consensus_confidence + 0.001)
-        state, reason = _layout_route(result, strict_cfg)
-        assert state == "review"
-        assert reason == "layout_consensus_low_confidence"
-
-    def test_review_path_when_iep2a_fails(
+    def test_iep2a_http_500_still_allows_empty_fallback_acceptance(
         self,
         iep2a_client: TestClient,
         monkeypatch: pytest.MonkeyPatch,
     ) -> None:
         """
-        IEP2A HTTP 500 → the worker cannot obtain IEP2A regions → cannot run
-        consensus → must route to review.  This test verifies that IEP2A
-        correctly signals failure via HTTP 500 and that the error_code is set.
+        IEP2A HTTP 500 means the worker cannot obtain IEP2A regions and must
+        skip local consensus. Under the current IEP2 policy, adjudication still
+        returns an accepted empty display fallback if no other result exists.
         """
         monkeypatch.setenv("IEP2A_MOCK_FAIL", "true")
         resp = iep2a_client.post("/v1/layout-detect", json=_VALID_PAYLOAD)
         assert resp.status_code == 500
         detail = resp.json().get("detail", {})
         assert "error_code" in detail
-        # Worker cannot proceed without IEP2A output; routes to review.
-        # (Actual state transition is enforced by the worker, not yet implemented.)
+        adjudication = _run_adjudication(None, None, None)
+        state, reason = _layout_route(adjudication)
+        assert state == "accepted"
+        assert reason is None
+        assert adjudication.final_layout_result == []
 
-    def test_review_path_for_single_model(self, iep2a_client: TestClient) -> None:
+    def test_single_model_routes_to_local_fallback_acceptance(
+        self, iep2a_client: TestClient
+    ) -> None:
         iep2a_regions = _get_regions(
             iep2a_client.post("/v1/layout-detect", json=_VALID_PAYLOAD).json()
         )
-        result = evaluate_layout_consensus(iep2a_regions, None)
-        assert result.single_model_mode is True
-        state, reason = _layout_route(result)
-        assert state == "review"
-        assert reason == "layout_consensus_failed"
+        adjudication = _run_adjudication(_detect_response(iep2a_regions), None, None)
+        state, reason = _layout_route(adjudication)
+        assert state == "accepted"
+        assert reason is None
+        assert adjudication.layout_decision_source == "local_fallback_unverified"
+        assert adjudication.final_layout_result == iep2a_regions
 
-    def test_review_reason_is_string_or_none(
+    def test_google_empty_result_still_routes_to_accepted(self) -> None:
+        iep2a_regions = [_make_region("r1", RegionType.title, 0, 0, 100, 50)]
+        iep2b_regions = [_make_region("r1", RegionType.title, 500, 0, 600, 50)]
+        adjudication = _run_adjudication(
+            _detect_response(iep2a_regions),
+            _detect_response(iep2b_regions, detector_type="doclayout_yolo"),
+            _mock_google_client([]),
+        )
+        state, reason = _layout_route(adjudication)
+        assert state == "accepted"
+        assert reason is None
+        assert adjudication.layout_decision_source == "google_document_ai"
+        assert adjudication.final_layout_result == []
+
+    def test_review_reason_is_always_none_for_iep2(
         self, iep2a_client: TestClient, iep2b_client: TestClient
     ) -> None:
         iep2a_regions = _get_regions(
@@ -627,10 +731,14 @@ class TestLayoutRoutingDecisions:
         iep2b_regions = _get_regions(
             iep2b_client.post("/v1/layout-detect", json=_VALID_PAYLOAD).json()
         )
-        result = evaluate_layout_consensus(iep2a_regions, iep2b_regions)
-        state, reason = _layout_route(result)
+        adjudication = _run_adjudication(
+            _detect_response(iep2a_regions),
+            _detect_response(iep2b_regions, detector_type="doclayout_yolo"),
+            None,
+        )
+        state, reason = _layout_route(adjudication)
         assert isinstance(state, str)
-        assert reason is None or isinstance(reason, str)
+        assert reason is None
 
 
 # ---------------------------------------------------------------------------

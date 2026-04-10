@@ -6,14 +6,12 @@ Packet 5.2 — Single-page correction apply path tests.
 Covers:
   POST /v1/jobs/{job_id}/pages/{page_number}/correction
 
-  - Apply correction → state becomes ptiff_qa_pending
-  - Auto-continue → _check_and_release_ptiff_qa triggered; gate can release
-  - Manual mode → stays in ptiff_qa_pending (_check_and_release not called)
+  - Apply correction (layout mode) → state becomes layout_detection, enqueued
+  - Apply correction (preprocess mode) → state becomes accepted
   - Reject invalid state (not pending_human_correction) → 409
   - Reject missing page → 404
   - Reject missing job → 404
   - Correction fields persisted to lineage row
-  - Approval flag reset to False
   - Idempotency: repeat call after first succeeds returns 409 (state guard)
   - crop_box validation: wrong length → 422
   - crop_box validation: x_min >= x_max → 422
@@ -27,7 +25,7 @@ Covers:
 
 Session is mocked; no live database required.
 HTTP endpoints are tested via FastAPI TestClient with dependency override.
-advance_page_state and _check_and_release_ptiff_qa are patched for isolation.
+advance_page_state is patched for isolation.
 get_backend is patched at class level to prevent real storage I/O.
 """
 
@@ -51,12 +49,10 @@ pytestmark = pytest.mark.usefixtures("_bypass_require_user")
 def _make_job(
     job_id: str = "job-001",
     pipeline_mode: str = "layout",
-    ptiff_qa_mode: str = "manual",
 ) -> MagicMock:
     job = MagicMock()
     job.job_id = job_id
     job.pipeline_mode = pipeline_mode
-    job.ptiff_qa_mode = ptiff_qa_mode
     return job
 
 
@@ -66,7 +62,6 @@ def _make_page(
     page_number: int = 1,
     sub_page_index: int | None = None,
     status: str = "pending_human_correction",
-    ptiff_qa_approved: bool = False,
     output_image_uri: str | None = "s3://bucket/norm.tiff",
 ) -> MagicMock:
     page = MagicMock()
@@ -75,7 +70,6 @@ def _make_page(
     page.page_number = page_number
     page.sub_page_index = sub_page_index
     page.status = status
-    page.ptiff_qa_approved = ptiff_qa_approved
     page.output_image_uri = output_image_uri
     return page
 
@@ -241,7 +235,7 @@ class TestApplyCorrectionEndpoint:
 
     def test_apply_correction_returns_ok(self) -> None:
         """Successful correction returns 200 with status='ok'."""
-        job = _make_job(ptiff_qa_mode="manual")
+        job = _make_job()
         page = _make_page(status="pending_human_correction")
         lineage = _make_lineage()
 
@@ -254,9 +248,9 @@ class TestApplyCorrectionEndpoint:
         assert r.status_code == 200
         assert r.json() == {"status": "ok"}
 
-    def test_apply_correction_transitions_to_ptiff_qa_pending(self) -> None:
-        """advance_page_state called with correct from/to states."""
-        job = _make_job(ptiff_qa_mode="manual")
+    def test_apply_correction_transitions_to_layout_detection_in_layout_mode(self) -> None:
+        """advance_page_state called with to_state=layout_detection for layout pipeline."""
+        job = _make_job(pipeline_mode="layout")
         page = _make_page(status="pending_human_correction")
         lineage = _make_lineage()
 
@@ -274,11 +268,34 @@ class TestApplyCorrectionEndpoint:
             session,
             page.page_id,
             from_state="pending_human_correction",
-            to_state="ptiff_qa_pending",
+            to_state="layout_detection",
+        )
+
+    def test_apply_correction_transitions_to_accepted_in_preprocess_mode(self) -> None:
+        """advance_page_state called with to_state=accepted for preprocess pipeline."""
+        job = _make_job(pipeline_mode="preprocess")
+        page = _make_page(status="pending_human_correction")
+        lineage = _make_lineage()
+
+        session = _make_session(job=job, first_results=[page, lineage])
+        self._inject(session)
+
+        with patch(
+            "services.eep.app.correction.apply.advance_page_state",
+            return_value=True,
+        ) as mock_advance:
+            r = self.client.post("/v1/jobs/job-001/pages/1/correction", json=_DEFAULT_BODY)
+
+        assert r.status_code == 200
+        mock_advance.assert_called_once_with(
+            session,
+            page.page_id,
+            from_state="pending_human_correction",
+            to_state="accepted",
         )
 
     def test_child_correction_targets_requested_sub_page_only(self) -> None:
-        job = _make_job(ptiff_qa_mode="manual")
+        job = _make_job(pipeline_mode="layout")
         child = _make_page(
             page_id="child-p1",
             sub_page_index=1,
@@ -288,17 +305,6 @@ class TestApplyCorrectionEndpoint:
         child_lineage = _make_lineage(
             lineage_id="lin-child-1",
             output_image_uri="s3://bucket/child-1.tiff",
-        )
-        parent = _make_page(
-            page_id="parent-p1",
-            sub_page_index=None,
-            status="split",
-            ptiff_qa_approved=True,
-            output_image_uri="s3://bucket/parent.tiff",
-        )
-        parent_lineage = _make_lineage(
-            lineage_id="lin-parent",
-            output_image_uri="s3://bucket/parent.tiff",
         )
 
         session = _make_session(job=job, first_results=[child, child_lineage])
@@ -318,115 +324,10 @@ class TestApplyCorrectionEndpoint:
             session,
             child.page_id,
             from_state="pending_human_correction",
-            to_state="ptiff_qa_pending",
+            to_state="layout_detection",
         )
         assert child.output_image_uri == "s3://bucket/child-1_corrected.tiff"
         assert child_lineage.output_image_uri == "s3://bucket/child-1_corrected.tiff"
-        assert parent.output_image_uri == "s3://bucket/parent.tiff"
-        assert parent.ptiff_qa_approved is True
-        assert parent_lineage.output_image_uri == "s3://bucket/parent.tiff"
-
-    # ── ptiff_qa_mode behaviour ───────────────────────────────────────────────
-
-    def test_manual_mode_does_not_call_gate_release(self) -> None:
-        """In manual mode, _check_and_release_ptiff_qa must NOT be called."""
-        job = _make_job(ptiff_qa_mode="manual")
-        page = _make_page(status="pending_human_correction")
-        lineage = _make_lineage()
-
-        session = _make_session(job=job, first_results=[page, lineage])
-        self._inject(session)
-
-        with patch("services.eep.app.correction.apply.advance_page_state", return_value=True):
-            with patch(
-                "services.eep.app.correction.apply._check_and_release_ptiff_qa"
-            ) as mock_release:
-                r = self.client.post("/v1/jobs/job-001/pages/1/correction", json=_DEFAULT_BODY)
-
-        assert r.status_code == 200
-        mock_release.assert_not_called()
-
-    def test_auto_continue_calls_gate_release(self) -> None:
-        """In auto_continue mode, _check_and_release_ptiff_qa is called once."""
-        job = _make_job(ptiff_qa_mode="auto_continue", pipeline_mode="layout")
-        page = _make_page(status="pending_human_correction")
-        lineage = _make_lineage()
-        leaf_pages = [_make_page(page_id="p2", status="ptiff_qa_pending", ptiff_qa_approved=True)]
-
-        session = _make_session(
-            job=job,
-            first_results=[page, lineage],
-            all_results=[leaf_pages],
-        )
-        self._inject(session)
-
-        with patch("services.eep.app.correction.apply.advance_page_state", return_value=True):
-            with patch(
-                "services.eep.app.correction.apply._check_and_release_ptiff_qa",
-                return_value=True,
-            ) as mock_release:
-                r = self.client.post("/v1/jobs/job-001/pages/1/correction", json=_DEFAULT_BODY)
-
-        assert r.status_code == 200
-        mock_release.assert_called_once()
-        # Verify call args: (db, job, pages)
-        args = mock_release.call_args[0]
-        assert args[1] is job
-        assert isinstance(args[2], list)
-
-    def test_auto_continue_layout_mode_can_release_to_layout_detection(self) -> None:
-        """
-        Full auto_continue chain: corrected page transitions to ptiff_qa_pending,
-        gate release moves it to layout_detection (layout mode).
-        """
-        job = _make_job(ptiff_qa_mode="auto_continue", pipeline_mode="layout")
-        page = _make_page(status="pending_human_correction")
-        lineage = _make_lineage()
-        # After state transition the page is ptiff_qa_pending + approved → gate can release
-        qa_page = _make_page(page_id="p1", status="ptiff_qa_pending", ptiff_qa_approved=True)
-        leaf_pages = [qa_page]
-
-        session = _make_session(
-            job=job,
-            first_results=[page, lineage],
-            all_results=[leaf_pages],
-        )
-        self._inject(session)
-
-        with patch("services.eep.app.correction.apply.advance_page_state", return_value=True):
-            with patch(
-                "services.eep.app.correction.apply._check_and_release_ptiff_qa",
-                return_value=True,
-            ) as mock_release:
-                r = self.client.post("/v1/jobs/job-001/pages/1/correction", json=_DEFAULT_BODY)
-
-        assert r.status_code == 200
-        mock_release.assert_called_once()
-
-    def test_auto_continue_preprocess_mode_can_release_to_accepted(self) -> None:
-        """auto_continue + preprocess mode: gate release targets 'accepted'."""
-        job = _make_job(ptiff_qa_mode="auto_continue", pipeline_mode="preprocess")
-        page = _make_page(status="pending_human_correction")
-        lineage = _make_lineage()
-        qa_page = _make_page(page_id="p1", status="ptiff_qa_pending", ptiff_qa_approved=True)
-        leaf_pages = [qa_page]
-
-        session = _make_session(
-            job=job,
-            first_results=[page, lineage],
-            all_results=[leaf_pages],
-        )
-        self._inject(session)
-
-        with patch("services.eep.app.correction.apply.advance_page_state", return_value=True):
-            with patch(
-                "services.eep.app.correction.apply._check_and_release_ptiff_qa",
-                return_value=True,
-            ) as mock_release:
-                r = self.client.post("/v1/jobs/job-001/pages/1/correction", json=_DEFAULT_BODY)
-
-        assert r.status_code == 200
-        mock_release.assert_called_once()
 
     # ── Error cases ───────────────────────────────────────────────────────────
 
@@ -451,7 +352,7 @@ class TestApplyCorrectionEndpoint:
     def test_409_when_page_not_in_pending_human_correction(self) -> None:
         """Page in wrong state → 409 with state name in detail."""
         job = _make_job()
-        page = _make_page(status="ptiff_qa_pending")
+        page = _make_page(status="layout_detection")
 
         session = _make_session(job=job, first_results=[page])
         self._inject(session)
@@ -498,7 +399,7 @@ class TestApplyCorrectionEndpoint:
 
     def test_missing_lineage_returns_error(self) -> None:
         """When no lineage row exists, the endpoint returns HTTP 500."""
-        job = _make_job(ptiff_qa_mode="manual")
+        job = _make_job()
         page = _make_page(status="pending_human_correction")
 
         # second .first() returns None (no lineage row)
@@ -514,7 +415,7 @@ class TestApplyCorrectionEndpoint:
 
     def test_missing_source_uri_returns_error(self) -> None:
         """Page with no output_image_uri cannot have artifact copied; returns 500."""
-        job = _make_job(ptiff_qa_mode="manual")
+        job = _make_job()
         page = _make_page(status="pending_human_correction", output_image_uri=None)
         lineage = _make_lineage(output_image_uri=None)
 
@@ -532,7 +433,7 @@ class TestApplyCorrectionEndpoint:
 
     def test_corrected_artifact_written_to_storage(self) -> None:
         """Source artifact is read and corrected artifact is written via storage backend."""
-        job = _make_job(ptiff_qa_mode="manual")
+        job = _make_job()
         page = _make_page(status="pending_human_correction", output_image_uri="s3://b/p.tiff")
         lineage = _make_lineage(output_image_uri="s3://b/p.tiff")
 
@@ -550,7 +451,7 @@ class TestApplyCorrectionEndpoint:
 
     def test_correction_fields_persisted_to_lineage(self) -> None:
         """crop_box and deskew_angle written to lineage.human_correction_fields."""
-        job = _make_job(ptiff_qa_mode="manual")
+        job = _make_job()
         page = _make_page(status="pending_human_correction")
         lineage = _make_lineage()
 
@@ -570,7 +471,7 @@ class TestApplyCorrectionEndpoint:
         assert lineage.human_correction_timestamp is not None
 
     def test_null_deskew_angle_persisted_without_error(self) -> None:
-        job = _make_job(ptiff_qa_mode="manual")
+        job = _make_job()
         page = _make_page(status="pending_human_correction")
         lineage = _make_lineage()
 
@@ -588,7 +489,7 @@ class TestApplyCorrectionEndpoint:
 
     def test_notes_stored_in_reviewer_notes(self) -> None:
         """notes field written to lineage.reviewer_notes."""
-        job = _make_job(ptiff_qa_mode="manual")
+        job = _make_job()
         page = _make_page(status="pending_human_correction")
         lineage = _make_lineage()
 
@@ -606,7 +507,7 @@ class TestApplyCorrectionEndpoint:
 
     def test_corrected_uri_written_to_lineage(self) -> None:
         """Derived corrected URI is stored in lineage.output_image_uri (authoritative)."""
-        job = _make_job(ptiff_qa_mode="manual")
+        job = _make_job()
         page = _make_page(status="pending_human_correction", output_image_uri="s3://b/p.tiff")
         lineage = _make_lineage(output_image_uri="s3://b/p.tiff")
 
@@ -621,7 +522,7 @@ class TestApplyCorrectionEndpoint:
 
     def test_corrected_uri_also_written_to_page_record(self) -> None:
         """Corrected URI is mirrored to job_pages.output_image_uri for fast lookups."""
-        job = _make_job(ptiff_qa_mode="manual")
+        job = _make_job()
         page = _make_page(status="pending_human_correction", output_image_uri="s3://b/p.tiff")
         lineage = _make_lineage(output_image_uri="s3://b/p.tiff")
 
@@ -634,49 +535,17 @@ class TestApplyCorrectionEndpoint:
         assert r.status_code == 200
         assert page.output_image_uri == "s3://b/p_corrected.tiff"
 
-    # ── Approval flag ─────────────────────────────────────────────────────────
-
-    def test_approval_flag_reset_to_false(self) -> None:
-        """ptiff_qa_approved is always cleared regardless of prior value."""
-        job = _make_job(ptiff_qa_mode="manual")
-        page = _make_page(status="pending_human_correction", ptiff_qa_approved=True)
-        lineage = _make_lineage()
-
-        session = _make_session(job=job, first_results=[page, lineage])
-        self._inject(session)
-
-        with patch("services.eep.app.correction.apply.advance_page_state", return_value=True):
-            r = self.client.post("/v1/jobs/job-001/pages/1/correction", json=_DEFAULT_BODY)
-
-        assert r.status_code == 200
-        assert page.ptiff_qa_approved is False
-
-    def test_approval_flag_stays_false_when_already_false(self) -> None:
-        """ptiff_qa_approved remains False if it was already False."""
-        job = _make_job(ptiff_qa_mode="manual")
-        page = _make_page(status="pending_human_correction", ptiff_qa_approved=False)
-        lineage = _make_lineage()
-
-        session = _make_session(job=job, first_results=[page, lineage])
-        self._inject(session)
-
-        with patch("services.eep.app.correction.apply.advance_page_state", return_value=True):
-            r = self.client.post("/v1/jobs/job-001/pages/1/correction", json=_DEFAULT_BODY)
-
-        assert r.status_code == 200
-        assert page.ptiff_qa_approved is False
-
     # ── Idempotency ───────────────────────────────────────────────────────────
 
     def test_idempotency_second_call_returns_409(self) -> None:
         """
-        After a correction is applied the page moves to ptiff_qa_pending.
+        After a correction is applied the page moves to layout_detection (layout mode).
         A repeat call finds the page in the wrong state and returns 409,
         preserving the state machine invariant.
         """
         job = _make_job()
         # Simulate the page already having been transitioned by the first call.
-        page = _make_page(status="ptiff_qa_pending")
+        page = _make_page(status="layout_detection")
 
         session = _make_session(job=job, first_results=[page])
         self._inject(session)
@@ -684,4 +553,4 @@ class TestApplyCorrectionEndpoint:
         r = self.client.post("/v1/jobs/job-001/pages/1/correction", json=_DEFAULT_BODY)
         assert r.status_code == 409
         # State must be unchanged — not further transitioned or corrupted.
-        assert page.status == "ptiff_qa_pending"
+        assert page.status == "layout_detection"

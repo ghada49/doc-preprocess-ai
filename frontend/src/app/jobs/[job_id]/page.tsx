@@ -1,9 +1,10 @@
 "use client";
 
+import { Fragment, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import {
-  ChevronLeft,
+  ChevronDown,
   ChevronRight,
   RefreshCw,
   FileSearch,
@@ -18,6 +19,7 @@ import { PageHeader } from "@/components/shared/page-header";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ArtifactImage } from "@/components/shared/artifact-image";
 import { ArtifactLinkButton } from "@/components/shared/artifact-link-button";
+import { LayoutOverlay } from "@/components/jobs/layout-overlay";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -46,6 +48,7 @@ import type { JobPage } from "@/types/api";
 export default function JobDetailPage() {
   const { job_id } = useParams<{ job_id: string }>();
   const router = useRouter();
+  const [expandedLayoutKey, setExpandedLayoutKey] = useState<string | null>(null);
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["job", job_id],
@@ -54,9 +57,10 @@ export default function JobDetailPage() {
     refetchInterval: (query) => {
       const data = query.state.data;
       if (!data) return 8_000;
+      const operationalPages = filterOperationalPages(data.pages ?? []);
       const active =
         isJobActive(data.summary.status) ||
-        (data.pages && hasActivePages(data.pages));
+        (operationalPages.length > 0 && hasActivePages(operationalPages));
       return active ? 6_000 : false;
     },
   });
@@ -82,7 +86,8 @@ export default function JobDetailPage() {
   }
 
   const { summary, pages } = data;
-  const isActive = isJobActive(summary.status) || (pages && hasActivePages(pages));
+  const operationalPages = filterOperationalPages(pages);
+  const isActive = isJobActive(summary.status) || hasActivePages(operationalPages);
 
   return (
     <UserShell
@@ -156,7 +161,6 @@ export default function JobDetailPage() {
               <MetaField label="Collection" value={summary.collection_id} />
               <MetaField label="Material" value={summary.material_type} />
               <MetaField label="Pipeline" value={summary.pipeline_mode} />
-              <MetaField label="PTIFF QA" value={summary.ptiff_qa_mode} />
               <MetaField label="Policy" value={summary.policy_version} />
               <MetaField
                 label="Shadow"
@@ -218,7 +222,7 @@ export default function JobDetailPage() {
           <div>
             <h2 className="text-sm font-semibold text-slate-800 mb-3">
               Pages
-              <span className="ml-2 text-xs text-slate-400 font-normal">({pages.length})</span>
+              <span className="ml-2 text-xs text-slate-400 font-normal">({operationalPages.length})</span>
             </h2>
             <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
               <table className="w-full data-table">
@@ -235,25 +239,49 @@ export default function JobDetailPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {pages.map((page) => (
-                    <PageRow
-                      key={`${page.page_number}-${page.sub_page_index ?? 0}`}
-                      page={page}
-                      jobId={summary.job_id}
-                      onOpenWorkspace={() =>
-                        router.push(
-                          `/queue/${summary.job_id}/${page.page_number}/workspace${
-                            page.sub_page_index != null
-                              ? `?sub_page_index=${page.sub_page_index}`
-                              : ""
-                          }`
-                        )
-                      }
-                      onOpenPtiffQa={() =>
-                        router.push(`/jobs/${summary.job_id}/ptiff-qa`)
-                      }
-                    />
-                  ))}
+                  {operationalPages.map((page) => {
+                    const pageKey = `${page.page_number}-${page.sub_page_index ?? 0}`;
+                    const isLayoutOpen = expandedLayoutKey === pageKey;
+                    const displayImageUri = page.output_image_uri ?? page.input_image_uri;
+
+                    return (
+                      <Fragment key={pageKey}>
+                        <PageRow
+                          page={page}
+                          isLayoutOpen={isLayoutOpen}
+                          onToggleLayout={() =>
+                            setExpandedLayoutKey((current) =>
+                              current === pageKey ? null : pageKey
+                            )
+                          }
+                          onOpenWorkspace={() =>
+                            router.push(
+                              `/queue/${summary.job_id}/${page.page_number}/workspace${
+                                page.sub_page_index != null
+                                  ? `?sub_page_index=${page.sub_page_index}`
+                                  : ""
+                              }`
+                            )
+                          }
+                        />
+                        {isLayoutOpen && (
+                          <tr className="bg-slate-50/80">
+                            <td colSpan={8} className="px-4 py-4">
+                              <LayoutOverlay
+                                imageUri={displayImageUri}
+                                layoutUri={page.output_layout_uri}
+                                pageLabel={`Page ${page.page_number}${
+                                  page.sub_page_index != null
+                                    ? ` / ${page.sub_page_index}`
+                                    : ""
+                                }`}
+                              />
+                            </td>
+                          </tr>
+                        )}
+                      </Fragment>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -264,19 +292,33 @@ export default function JobDetailPage() {
   );
 }
 
+function filterOperationalPages(pages: JobPage[]): JobPage[] {
+  const pageNumbersWithChildren = new Set(
+    pages.filter((page) => page.sub_page_index != null).map((page) => page.page_number)
+  );
+  return pages.filter((page) => {
+    if (page.status === "split") return false;
+    if (page.sub_page_index == null && pageNumbersWithChildren.has(page.page_number)) {
+      return false;
+    }
+    return true;
+  });
+}
+
 function PageRow({
   page,
-  jobId,
+  isLayoutOpen,
+  onToggleLayout,
   onOpenWorkspace,
-  onOpenPtiffQa,
 }: {
   page: JobPage;
-  jobId: string;
+  isLayoutOpen: boolean;
+  onToggleLayout: () => void;
   onOpenWorkspace: () => void;
-  onOpenPtiffQa: () => void;
 }) {
   const isAttention = page.status === "pending_human_correction";
-  const isPtiffQa = page.status === "ptiff_qa_pending";
+  const displayImageUri = page.output_image_uri ?? page.input_image_uri;
+  const canInspectLayout = Boolean(displayImageUri && page.output_layout_uri);
 
   return (
     <tr
@@ -333,26 +375,38 @@ function PageRow({
       <td>
         <div className="flex items-center gap-2">
           <ArtifactImage
-            uri={page.output_image_uri}
+            uri={displayImageUri}
             containerClassName="h-9 w-8 rounded border border-slate-200"
             className="rounded object-cover"
             fallbackText=""
           />
-          <ArtifactLinkButton uri={page.output_image_uri} label="Open" size="xs" />
+          <ArtifactLinkButton uri={displayImageUri} label="Open" size="xs" />
         </div>
       </td>
       <td>
-        {isAttention && (
-          <Button size="xs" onClick={onOpenWorkspace} className="gap-1">
-            <ChevronRight className="h-3 w-3" />
-            Review
-          </Button>
-        )}
-        {isPtiffQa && (
-          <Button size="xs" variant="secondary" onClick={onOpenPtiffQa} className="gap-1">
-            PTIFF QA
-          </Button>
-        )}
+        <div className="flex flex-wrap items-center gap-1.5">
+          {canInspectLayout && (
+            <Button
+              size="xs"
+              variant={isLayoutOpen ? "secondary" : "ghost"}
+              onClick={onToggleLayout}
+              className="gap-1"
+            >
+              {isLayoutOpen ? (
+                <ChevronDown className="h-3 w-3" />
+              ) : (
+                <ChevronRight className="h-3 w-3" />
+              )}
+              Layout
+            </Button>
+          )}
+          {isAttention && (
+            <Button size="xs" onClick={onOpenWorkspace} className="gap-1">
+              <ChevronRight className="h-3 w-3" />
+              Review
+            </Button>
+          )}
+        </div>
       </td>
     </tr>
   );

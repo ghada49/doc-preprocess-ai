@@ -13,12 +13,52 @@ interface CropBox {
   y2: number;
 }
 
+// Convert screen coordinates to natural image coordinates, accounting for zoom and deskew rotation.
+// getBoundingClientRect() on a rotated element returns its axis-aligned bounding box,
+// so we must un-rotate from the image center to get accurate image-space coords.
+function screenToImage(
+  clientX: number,
+  clientY: number,
+  imgRef: React.RefObject<HTMLImageElement | null>,
+  zoom: number,
+  deskewAngle: number,
+  naturalSize: { w: number; h: number }
+): { imgX: number; imgY: number } {
+  if (!imgRef.current) return { imgX: 0, imgY: 0 };
+  const r = imgRef.current.getBoundingClientRect();
+  const cx = (r.left + r.right) / 2;
+  const cy = (r.top + r.bottom) / 2;
+  const relX = clientX - cx;
+  const relY = clientY - cy;
+  const rad = -(deskewAngle * Math.PI) / 180;
+  return {
+    imgX: Math.max(0, Math.min((relX * Math.cos(rad) - relY * Math.sin(rad)) / zoom + naturalSize.w / 2, naturalSize.w)),
+    imgY: Math.max(0, Math.min((relX * Math.sin(rad) + relY * Math.cos(rad)) / zoom + naturalSize.h / 2, naturalSize.h)),
+  };
+}
+
+// Convert screen-space drag delta to image-space delta (un-rotate + un-scale).
+function screenDeltaToImage(
+  dxScreen: number,
+  dyScreen: number,
+  zoom: number,
+  deskewAngle: number
+): { dx: number; dy: number } {
+  const rad = -(deskewAngle * Math.PI) / 180;
+  return {
+    dx: (dxScreen * Math.cos(rad) - dyScreen * Math.sin(rad)) / zoom,
+    dy: (dxScreen * Math.sin(rad) + dyScreen * Math.cos(rad)) / zoom,
+  };
+}
+
 interface ImageViewerProps {
   imageUrl: string | null;
   cropBox?: CropBox | null;
   splitX?: number | null;
   deskewAngle?: number;
   onCropBoxChange?: (box: CropBox) => void;
+  /** Called when the user drags the rotation handle on the crop overlay. */
+  onCropAngleChange?: (angle: number) => void;
   onSplitXChange?: (x: number) => void;
   showCropOverlay?: boolean;
   showSplitOverlay?: boolean;
@@ -31,6 +71,7 @@ export function ImageViewer({
   splitX,
   deskewAngle = 0,
   onCropBoxChange,
+  onCropAngleChange,
   onSplitXChange,
   showCropOverlay = true,
   showSplitOverlay = false,
@@ -58,11 +99,25 @@ export function ImageViewer({
   // Active drag for split line
   const [isDraggingSplit, setIsDraggingSplit] = useState(false);
 
+  // Rotation drag state (for the rotation handle on the crop box)
+  const [isRotating, setIsRotating] = useState(false);
+  const [rotateCenterScreen, setRotateCenterScreen] = useState({ x: 0, y: 0 });
+  const [rotateStartAngle, setRotateStartAngle] = useState(0);
+  const [cropAngleAtStart, setCropAngleAtStart] = useState(0);
+
   useEffect(() => {
     setImgLoaded(false);
     setZoom(1);
     setPan({ x: 0, y: 0 });
   }, [imageUrl]);
+
+  // When the split overlay activates and no splitX is set, default to image center
+  useEffect(() => {
+    if (imgLoaded && showSplitOverlay && splitX == null && naturalSize.w > 0) {
+      onSplitXChange?.(naturalSize.w / 2);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [imgLoaded, showSplitOverlay]);
 
   const handleWheel = useCallback((e: React.WheelEvent) => {
     e.preventDefault();
@@ -72,14 +127,12 @@ export function ImageViewer({
 
   const handleMouseDown = useCallback(
     (e: React.MouseEvent) => {
-      if (activeHandle || isDraggingSplit) return;
+      if (activeHandle || isDraggingSplit || isRotating) return;
       if (e.button !== 0) return;
 
       // Draw a new crop box by dragging on the canvas
       if (showCropOverlay && onCropBoxChange && imgLoaded && imgRef.current) {
-        const imgRect = imgRef.current.getBoundingClientRect();
-        const imgX = Math.max(0, Math.min((e.clientX - imgRect.left) / zoom, naturalSize.w));
-        const imgY = Math.max(0, Math.min((e.clientY - imgRect.top) / zoom, naturalSize.h));
+        const { imgX, imgY } = screenToImage(e.clientX, e.clientY, imgRef, zoom, deskewAngle, naturalSize);
         setIsDrawing(true);
         setDrawStart({ x: imgX, y: imgY });
         return;
@@ -88,15 +141,13 @@ export function ImageViewer({
       setIsPanning(true);
       setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
     },
-    [pan, activeHandle, isDraggingSplit, showCropOverlay, onCropBoxChange, imgLoaded, zoom, naturalSize]
+    [pan, activeHandle, isDraggingSplit, isRotating, showCropOverlay, onCropBoxChange, imgLoaded, zoom, naturalSize, deskewAngle]
   );
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
       if (isDrawing && onCropBoxChange && imgRef.current) {
-        const imgRect = imgRef.current.getBoundingClientRect();
-        const imgX = Math.max(0, Math.min((e.clientX - imgRect.left) / zoom, naturalSize.w));
-        const imgY = Math.max(0, Math.min((e.clientY - imgRect.top) / zoom, naturalSize.h));
+        const { imgX, imgY } = screenToImage(e.clientX, e.clientY, imgRef, zoom, deskewAngle, naturalSize);
         const x1 = Math.min(drawStart.x, imgX);
         const y1 = Math.min(drawStart.y, imgY);
         const x2 = Math.max(drawStart.x, imgX);
@@ -113,11 +164,12 @@ export function ImageViewer({
       }
 
       if (activeHandle && dragStartCrop && onCropBoxChange) {
-        if (!containerRef.current) return;
-
-        // Convert screen delta to image coords
-        const dx = (e.clientX - dragStartPos.x) / zoom;
-        const dy = (e.clientY - dragStartPos.y) / zoom;
+        const { dx, dy } = screenDeltaToImage(
+          e.clientX - dragStartPos.x,
+          e.clientY - dragStartPos.y,
+          zoom,
+          deskewAngle
+        );
         let { x1, y1, x2, y2 } = dragStartCrop;
 
         if (activeHandle.includes("left")) x1 += dx;
@@ -126,7 +178,6 @@ export function ImageViewer({
         if (activeHandle.includes("bottom")) y2 += dy;
         if (activeHandle === "move") { x1 += dx; x2 += dx; y1 += dy; y2 += dy; }
 
-        // Clamp to natural image bounds
         x1 = Math.max(0, Math.min(x1, naturalSize.w));
         x2 = Math.max(0, Math.min(x2, naturalSize.w));
         y1 = Math.max(0, Math.min(y1, naturalSize.h));
@@ -138,27 +189,31 @@ export function ImageViewer({
         return;
       }
 
-      if (isDraggingSplit && onSplitXChange) {
-        if (!containerRef.current || !imgRef.current) return;
-        const imgRect = imgRef.current.getBoundingClientRect();
-        const relX = (e.clientX - imgRect.left) / zoom;
-        const newSplitX = Math.max(0, Math.min(relX, naturalSize.w));
-        onSplitXChange(newSplitX);
+      if (isDraggingSplit && onSplitXChange && imgRef.current) {
+        const { imgX } = screenToImage(e.clientX, e.clientY, imgRef, zoom, deskewAngle, naturalSize);
+        onSplitXChange(imgX);
+        return;
+      }
+
+      if (isRotating && onCropAngleChange) {
+        const currentAngle =
+          Math.atan2(e.clientY - rotateCenterScreen.y, e.clientX - rotateCenterScreen.x) *
+          180 / Math.PI;
+        const delta = currentAngle - rotateStartAngle;
+        // Normalize to -180..180 to avoid wrap-around jumps
+        const normalizedDelta = ((delta + 540) % 360) - 180;
+        const newAngle = Math.max(-45, Math.min(45, cropAngleAtStart + normalizedDelta));
+        onCropAngleChange(newAngle);
       }
     },
     [
-      isDrawing,
-      drawStart,
-      isPanning,
-      panStart,
-      activeHandle,
-      dragStartCrop,
-      dragStartPos,
-      zoom,
-      naturalSize,
+      isDrawing, drawStart,
+      isPanning, panStart,
+      activeHandle, dragStartCrop, dragStartPos,
+      zoom, naturalSize, deskewAngle,
       isDraggingSplit,
-      onCropBoxChange,
-      onSplitXChange,
+      isRotating, rotateCenterScreen, rotateStartAngle, cropAngleAtStart,
+      onCropBoxChange, onSplitXChange, onCropAngleChange,
     ]
   );
 
@@ -167,6 +222,7 @@ export function ImageViewer({
     setIsPanning(false);
     setActiveHandle(null);
     setIsDraggingSplit(false);
+    setIsRotating(false);
   }, []);
 
   const resetView = () => {
@@ -260,7 +316,10 @@ export function ImageViewer({
             className="absolute inset-0 flex items-center justify-center"
             style={{ transform: `translate(${pan.x}px, ${pan.y}px)` }}
           >
-            <div className="relative" style={{ transform: `scale(${zoom}) rotate(${deskewAngle}deg)`, transformOrigin: "center center" }}>
+            <div
+              className="relative"
+              style={{ transform: `scale(${zoom}) rotate(${deskewAngle}deg)`, transformOrigin: "center center" }}
+            >
               {/* eslint-disable-next-line @next/next/no-img-element */}
               <img
                 ref={imgRef}
@@ -276,17 +335,38 @@ export function ImageViewer({
                 onError={() => setImgLoaded(false)}
               />
 
-              {/* Crop box overlay — renders whenever showCropOverlay is on (cropBox may be null during initial draw) */}
+              {/* Crop box overlay — renders whenever showCropOverlay is on */}
               {imgLoaded && showCropOverlay && cropBox && (
                 <CropOverlay
                   cropBox={cropBox}
                   imgW={naturalSize.w}
                   imgH={naturalSize.h}
+                  showRotateHandle={!!onCropAngleChange}
                   onHandleMouseDown={(handle, e) => {
                     e.stopPropagation();
-                    setActiveHandle(handle);
-                    setDragStartPos({ x: e.clientX, y: e.clientY });
-                    setDragStartCrop({ ...cropBox });
+                    if (handle === "rotate" && imgRef.current) {
+                      // Compute screen-space center of crop box for rotation math
+                      const cx = (cropBox.x1 + cropBox.x2) / 2;
+                      const cy = (cropBox.y1 + cropBox.y2) / 2;
+                      const r = imgRef.current.getBoundingClientRect();
+                      const imgCX = (r.left + r.right) / 2;
+                      const imgCY = (r.top + r.bottom) / 2;
+                      const rad = (deskewAngle * Math.PI) / 180;
+                      const dxImg = (cx - naturalSize.w / 2) * zoom;
+                      const dyImg = (cy - naturalSize.h / 2) * zoom;
+                      const screenCX = imgCX + dxImg * Math.cos(rad) - dyImg * Math.sin(rad);
+                      const screenCY = imgCY + dxImg * Math.sin(rad) + dyImg * Math.cos(rad);
+                      setRotateCenterScreen({ x: screenCX, y: screenCY });
+                      setRotateStartAngle(
+                        Math.atan2(e.clientY - screenCY, e.clientX - screenCX) * 180 / Math.PI
+                      );
+                      setCropAngleAtStart(deskewAngle);
+                      setIsRotating(true);
+                    } else {
+                      setActiveHandle(handle);
+                      setDragStartPos({ x: e.clientX, y: e.clientY });
+                      setDragStartCrop({ ...cropBox });
+                    }
                   }}
                 />
               )}
@@ -324,24 +404,29 @@ function CropOverlay({
   cropBox,
   imgW,
   imgH,
+  showRotateHandle,
   onHandleMouseDown,
 }: {
   cropBox: { x1: number; y1: number; x2: number; y2: number };
   imgW: number;
   imgH: number;
+  showRotateHandle: boolean;
   onHandleMouseDown: (handle: string, e: React.MouseEvent) => void;
 }) {
   const { x1, y1, x2, y2 } = cropBox;
   const w = x2 - x1;
   const h = y2 - y1;
+  const cx = x1 + w / 2;
+  const rotHandleOffset = 32;
+  const rotHandleY = y1 - rotHandleOffset;
 
   const handles = [
     { id: "top-left", style: { left: x1 - 5, top: y1 - 5 } },
     { id: "top-right", style: { left: x2 - 5, top: y1 - 5 } },
     { id: "bottom-left", style: { left: x1 - 5, top: y2 - 5 } },
     { id: "bottom-right", style: { left: x2 - 5, top: y2 - 5 } },
-    { id: "top", style: { left: x1 + w / 2 - 5, top: y1 - 5 } },
-    { id: "bottom", style: { left: x1 + w / 2 - 5, top: y2 - 5 } },
+    { id: "top", style: { left: cx - 5, top: y1 - 5 } },
+    { id: "bottom", style: { left: cx - 5, top: y2 - 5 } },
     { id: "left", style: { left: x1 - 5, top: y1 + h / 2 - 5 } },
     { id: "right", style: { left: x2 - 5, top: y1 + h / 2 - 5 } },
   ];
@@ -391,6 +476,30 @@ function CropOverlay({
           onMouseDown={(e) => onHandleMouseDown(handle.id, e)}
         />
       ))}
+
+      {/* Rotation handle: stem + circle above top-center */}
+      {showRotateHandle && (
+        <>
+          <div
+            className="absolute pointer-events-none"
+            style={{
+              left: cx - 0.5,
+              top: rotHandleY + 14,
+              width: 1,
+              height: rotHandleOffset - 14,
+              backgroundColor: "rgba(99,102,241,0.5)",
+            }}
+          />
+          <div
+            className="absolute z-20 flex h-6 w-6 cursor-grab items-center justify-center rounded-full border-2 border-indigo-400 bg-white shadow-sm select-none hover:bg-indigo-50 active:cursor-grabbing"
+            style={{ left: cx - 12, top: rotHandleY - 12 }}
+            onMouseDown={(e) => onHandleMouseDown("rotate", e)}
+            title="Drag to rotate (set deskew angle)"
+          >
+            <span className="text-indigo-500 text-xs leading-none">↻</span>
+          </div>
+        </>
+      )}
     </>
   );
 }
