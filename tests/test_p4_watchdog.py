@@ -17,7 +17,7 @@ Covers:
 
   TestReconcileOnce (12 tests):
     1.  Terminal page (accepted) → acked, removed from processing list
-    2.  ptiff_qa_pending page → acked (complete from queue perspective)
+    2.  split page → acked (routing-terminal)
     3.  pending_human_correction page → acked
     4.  queued page → requeued with retry_count+1
     5.  queued page at max_retries → dead-lettered
@@ -211,9 +211,9 @@ class TestReconcileOnce:
         assert result.requeued_stale == 0
         assert result.processing_list_size == 1
 
-    def test_ptiff_qa_pending_page_is_acked(self) -> None:
-        """ptiff_qa_pending → treated as complete, acked."""
-        page = _make_page(status="ptiff_qa_pending")
+    def test_split_page_is_acked(self) -> None:
+        """split → treated as complete (routing-terminal), acked."""
+        page = _make_page(status="split")
         result = _run_reconcile(
             processing_items=[_TASK_JSON],
             page=page,

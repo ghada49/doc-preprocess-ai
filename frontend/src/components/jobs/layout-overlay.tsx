@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   AlertTriangle,
   ChevronDown,
@@ -33,11 +33,17 @@ interface LayoutOverlayProps {
   imageUri: string | null;
   layoutUri: string | null;
   pageLabel?: string;
+  originalImageSize?: ImageSize | null;
 }
 
-interface NaturalSize {
+interface ImageSize {
   width: number;
   height: number;
+}
+
+interface DisplayedImageFrame extends ImageSize {
+  left: number;
+  top: number;
 }
 
 const REGION_STYLES: Record<
@@ -55,8 +61,14 @@ export function LayoutOverlay({
   imageUri,
   layoutUri,
   pageLabel,
+  originalImageSize,
 }: LayoutOverlayProps) {
-  const [naturalSize, setNaturalSize] = useState<NaturalSize | null>(null);
+  const containerRef = useRef<HTMLDivElement>(null);
+  const imageRef = useRef<HTMLImageElement>(null);
+  const [naturalSize, setNaturalSize] = useState<ImageSize | null>(null);
+  const [displayedImage, setDisplayedImage] = useState<DisplayedImageFrame | null>(
+    null
+  );
   const [imageError, setImageError] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
@@ -66,6 +78,12 @@ export function LayoutOverlay({
   const layout = layoutQuery.data;
   const regions = layout?.final_layout_result ?? [];
   const source = layout?.layout_decision_source ?? "none";
+  const layoutInput = layout?.layout_input ?? null;
+  const resolvedOriginalSize = resolveOriginalImageSize(
+    layout,
+    naturalSize,
+    originalImageSize
+  );
 
   const isLoading = imageQuery.isLoading || layoutQuery.isLoading;
   const hasError =
@@ -74,6 +92,62 @@ export function LayoutOverlay({
     layoutQuery.isError ||
     !imageUri ||
     !layoutUri;
+
+  const syncDisplayedImage = useCallback(() => {
+    const container = containerRef.current;
+    const image = imageRef.current;
+
+    if (!container || !image) {
+      setDisplayedImage(null);
+      return;
+    }
+
+    const containerRect = container.getBoundingClientRect();
+    const imageRect = image.getBoundingClientRect();
+
+    if (imageRect.width <= 0 || imageRect.height <= 0) {
+      setDisplayedImage(null);
+      return;
+    }
+
+    const nextFrame: DisplayedImageFrame = {
+      left: Math.max(0, imageRect.left - containerRect.left),
+      top: Math.max(0, imageRect.top - containerRect.top),
+      width: imageRect.width,
+      height: imageRect.height,
+    };
+
+    setDisplayedImage((current) =>
+      areFramesEqual(current, nextFrame) ? current : nextFrame
+    );
+  }, []);
+
+  useEffect(() => {
+    syncDisplayedImage();
+
+    const container = containerRef.current;
+    const image = imageRef.current;
+
+    if (typeof window === "undefined") return undefined;
+
+    window.addEventListener("resize", syncDisplayedImage);
+
+    if (typeof ResizeObserver === "undefined" || !container || !image) {
+      return () => window.removeEventListener("resize", syncDisplayedImage);
+    }
+
+    const resizeObserver = new ResizeObserver(() => {
+      syncDisplayedImage();
+    });
+
+    resizeObserver.observe(container);
+    resizeObserver.observe(image);
+
+    return () => {
+      resizeObserver.disconnect();
+      window.removeEventListener("resize", syncDisplayedImage);
+    };
+  }, [imageQuery.data?.blobUrl, layoutUri, syncDisplayedImage]);
 
   return (
     <Card className="overflow-hidden border-slate-200 shadow-sm">
@@ -97,8 +171,13 @@ export function LayoutOverlay({
 
           <div className="flex flex-wrap items-center gap-2">
             <Badge variant={sourceBadgeVariant(source)} dot>
-              {sourceLabel(source)}
+              Decision: {sourceLabel(source)}
             </Badge>
+            {layoutInput && (
+              <Badge variant="muted">
+                Analyzed: {artifactRoleLabel(layoutInput.artifact_role)}
+              </Badge>
+            )}
             <Badge variant="muted">{regions.length} regions</Badge>
             <ArtifactLinkButton
               uri={imageUri}
@@ -136,33 +215,54 @@ export function LayoutOverlay({
                   </p>
                 </div>
                 <Badge variant="muted">
-                  {naturalSize
-                    ? `${naturalSize.width} x ${naturalSize.height}px`
+                  {resolvedOriginalSize
+                    ? `${resolvedOriginalSize.width} x ${resolvedOriginalSize.height}px`
                     : "Loading dimensions"}
                 </Badge>
               </div>
 
               <div className="overflow-auto rounded-xl border border-slate-200 bg-white p-2">
-                <div className="relative mx-auto w-full max-w-full">
+                <div
+                  ref={containerRef}
+                  className="relative mx-auto w-full max-w-full"
+                >
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
+                    ref={imageRef}
                     src={imageQuery.data?.blobUrl}
                     alt={pageLabel ? `Layout for ${pageLabel}` : "Layout overlay"}
                     className="block h-auto w-full rounded-lg"
-                    onError={() => setImageError(true)}
+                    onError={() => {
+                      setImageError(true);
+                      setDisplayedImage(null);
+                    }}
                     onLoad={(event) => {
+                      const image = event.currentTarget;
                       setImageError(false);
                       setNaturalSize({
-                        width: event.currentTarget.naturalWidth,
-                        height: event.currentTarget.naturalHeight,
+                        width: image.naturalWidth,
+                        height: image.naturalHeight,
                       });
+                      syncDisplayedImage();
                     }}
                   />
 
-                  {naturalSize && (
-                    <div className="pointer-events-none absolute inset-0">
+                  {displayedImage && resolvedOriginalSize && (
+                    <div
+                      className="pointer-events-none absolute overflow-hidden rounded-lg"
+                      style={{
+                        left: displayedImage.left,
+                        top: displayedImage.top,
+                        width: displayedImage.width,
+                        height: displayedImage.height,
+                      }}
+                    >
                       {regions.map((region) => {
-                        const box = getBoxStyle(region, naturalSize);
+                        const box = getBoxStyle(
+                          region,
+                          resolvedOriginalSize,
+                          displayedImage
+                        );
                         if (!box) return null;
 
                         const config = REGION_STYLES[region.type];
@@ -171,10 +271,10 @@ export function LayoutOverlay({
                             key={region.id}
                             className="absolute overflow-hidden rounded-sm border-2"
                             style={{
-                              left: `${box.leftPct}%`,
-                              top: `${box.topPct}%`,
-                              width: `${box.widthPct}%`,
-                              height: `${box.heightPct}%`,
+                              left: box.left,
+                              top: box.top,
+                              width: box.width,
+                              height: box.height,
                               borderColor: config.color,
                               backgroundColor: hexToRgba(config.color, 0.12),
                               boxShadow: `0 0 0 1px ${hexToRgba(config.color, 0.25)}`,
@@ -183,10 +283,19 @@ export function LayoutOverlay({
                             <div
                               className="absolute left-0 top-0 max-w-full truncate rounded-br-md px-1.5 py-0.5 text-[10px] font-semibold leading-4 text-white shadow-sm"
                               style={{ backgroundColor: config.color }}
-                              title={`${config.label} (${region.id}) - ${formatScore(region.confidence, 2)}`}
+                              title={region.text ? `${config.label} (${region.id}) — ${region.text}` : `${config.label} (${region.id}) - ${formatScore(region.confidence, 2)}`}
                             >
                               {config.label} {formatScore(region.confidence, 2)}
                             </div>
+                            {region.text && (
+                              <div
+                                className="absolute bottom-0 left-0 right-0 truncate px-1 py-0.5 text-[9px] leading-3 text-white"
+                                style={{ backgroundColor: hexToRgba(config.color, 0.75) }}
+                                title={region.text}
+                              >
+                                {region.text}
+                              </div>
+                            )}
                           </div>
                         );
                       })}
@@ -199,14 +308,44 @@ export function LayoutOverlay({
                 <FileSearch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400" />
                 <span>
                   Boxes are rendered from <code>final_layout_result</code> using
-                  the persisted canonical coordinates.
+                  the persisted canonical coordinates scaled into the displayed
+                  image frame.
                 </span>
               </div>
             </div>
 
             <div className="space-y-4">
               <Panel title="Decision Panel">
-                <Metric label="Layout source" value={sourceLabel(source)} />
+                <Metric label="Decision source" value={sourceLabel(source)} />
+                {layoutInput && (
+                  <Metric
+                    label="Analyzed artifact"
+                    value={artifactRoleLabel(layoutInput.artifact_role)}
+                  />
+                )}
+                {layoutInput && (
+                  <Metric
+                    label="Input source"
+                    value={inputSourceLabel(layoutInput.input_source)}
+                  />
+                )}
+                {layoutInput && (
+                  <Metric
+                    label="Artifact freshness"
+                    value={
+                      layoutInput.analyzed_artifact_uri ===
+                      layoutInput.source_page_artifact_uri
+                        ? "Direct current artifact"
+                        : "Derivative of current artifact"
+                    }
+                  />
+                )}
+                {layout.ocr_source != null && (
+                  <Metric
+                    label="OCR source"
+                    value={layout.ocr_source === "google" ? "Google Document AI" : "PaddleOCR"}
+                  />
+                )}
                 <Metric label="Number of regions" value={String(regions.length)} />
                 <Metric
                   label="Processing time"
@@ -385,7 +524,7 @@ function sourceLabel(source: LayoutDecisionSource): string {
     case "google_document_ai":
       return "Google adjudicated";
     case "local_fallback_unverified":
-      return "Fallback (unverified)";
+      return "Best local result";
     default:
       return "Unavailable";
   }
@@ -404,27 +543,145 @@ function sourceBadgeVariant(source: LayoutDecisionSource) {
   }
 }
 
-function getBoxStyle(region: LayoutRegion, naturalSize: NaturalSize) {
-  const leftPct = clampPct((region.bbox.x_min / naturalSize.width) * 100);
-  const rightPct = clampPct((region.bbox.x_max / naturalSize.width) * 100);
-  const topPct = clampPct((region.bbox.y_min / naturalSize.height) * 100);
-  const bottomPct = clampPct((region.bbox.y_max / naturalSize.height) * 100);
-  const widthPct = Math.max(0, rightPct - leftPct);
-  const heightPct = Math.max(0, bottomPct - topPct);
-
-  if (widthPct <= 0 || heightPct <= 0) return null;
-
-  return {
-    leftPct,
-    topPct,
-    widthPct,
-    heightPct,
-  };
+function artifactRoleLabel(role: NonNullable<LayoutAdjudicationResult["layout_input"]>["artifact_role"]): string {
+  switch (role) {
+    case "human_corrected":
+      return "Human corrected";
+    case "split_child":
+      return "Split child";
+    case "normalized_output":
+      return "Normalized output";
+    case "original_upload":
+      return "Original upload";
+    default:
+      return snakeToTitle(role);
+  }
 }
 
-function clampPct(value: number): number {
+function inputSourceLabel(source: NonNullable<LayoutAdjudicationResult["layout_input"]>["input_source"]): string {
+  switch (source) {
+    case "downsampled":
+      return "Downsampled derivative";
+    case "page_output":
+      return "Current page artifact";
+    default:
+      return snakeToTitle(source);
+  }
+}
+
+function getBoxStyle(
+  region: LayoutRegion,
+  originalSize: ImageSize,
+  displayedImage: ImageSize
+) {
+  if (
+    originalSize.width <= 0 ||
+    originalSize.height <= 0 ||
+    displayedImage.width <= 0 ||
+    displayedImage.height <= 0
+  ) {
+    return null;
+  }
+
+  const scaleX = displayedImage.width / originalSize.width;
+  const scaleY = displayedImage.height / originalSize.height;
+
+  const left = clampPx(region.bbox.x_min * scaleX, displayedImage.width);
+  const right = clampPx(region.bbox.x_max * scaleX, displayedImage.width);
+  const top = clampPx(region.bbox.y_min * scaleY, displayedImage.height);
+  const bottom = clampPx(region.bbox.y_max * scaleY, displayedImage.height);
+  const width = Math.max(0, right - left);
+  const height = Math.max(0, bottom - top);
+
+  if (width <= 0 || height <= 0) return null;
+
+  return { left, top, width, height };
+}
+
+function resolveOriginalImageSize(
+  layout: LayoutAdjudicationResult | undefined,
+  fallbackSize: ImageSize | null,
+  propSize?: ImageSize | null
+): ImageSize | null {
+  const metadataCandidates: Array<Record<string, unknown> | null> = [
+    asRecord(layout?.layout_input),
+    asRecord(layout),
+    asRecord(layout?.google_document_ai_result),
+    asRecord(layout?.iep2a_result as unknown),
+    asRecord(layout?.iep2b_result as unknown),
+  ];
+
+  if (isValidImageSize(propSize)) return propSize;
+
+  for (const candidate of metadataCandidates) {
+    const metadataSize = readImageSize(candidate, [
+      ["canonical_output_width", "canonical_output_height"],
+      ["original_width", "original_height"],
+      ["image_width", "image_height"],
+      ["page_width", "page_height"],
+    ]);
+    if (metadataSize) return metadataSize;
+  }
+
+  return isValidImageSize(fallbackSize) ? fallbackSize : null;
+}
+
+function readImageSize(
+  source: Record<string, unknown> | null,
+  keys: Array<[widthKey: string, heightKey: string]>
+): ImageSize | null {
+  if (!source) return null;
+
+  for (const [widthKey, heightKey] of keys) {
+    const width = asPositiveNumber(source[widthKey]);
+    const height = asPositiveNumber(source[heightKey]);
+    if (width != null && height != null) {
+      return { width, height };
+    }
+  }
+
+  return null;
+}
+
+function asRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== "object") return null;
+  return value as Record<string, unknown>;
+}
+
+function asPositiveNumber(value: unknown): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : null;
+}
+
+function isValidImageSize(value: ImageSize | null | undefined): value is ImageSize {
+  return Boolean(
+    value &&
+      Number.isFinite(value.width) &&
+      value.width > 0 &&
+      Number.isFinite(value.height) &&
+      value.height > 0
+  );
+}
+
+function areFramesEqual(
+  current: DisplayedImageFrame | null,
+  next: DisplayedImageFrame
+): boolean {
+  if (!current) return false;
+  const threshold = 0.5;
+
+  return (
+    Math.abs(current.left - next.left) < threshold &&
+    Math.abs(current.top - next.top) < threshold &&
+    Math.abs(current.width - next.width) < threshold &&
+    Math.abs(current.height - next.height) < threshold
+  );
+}
+
+function clampPx(value: number, max: number): number {
   if (Number.isNaN(value) || !Number.isFinite(value)) return 0;
-  return Math.min(100, Math.max(0, value));
+  return Math.min(max, Math.max(0, value));
 }
 
 function hexToRgba(hex: string, alpha: number): string {

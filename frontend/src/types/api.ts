@@ -59,14 +59,12 @@ export type MaterialType =
   | "document";
 
 export type PipelineMode = "preprocess" | "layout";
-export type PtiffQaMode = "manual" | "auto_continue";
 export type JobStatus = "queued" | "running" | "done" | "failed";
 
 export type PageState =
   | "queued"
   | "preprocessing"
   | "rectification"
-  | "ptiff_qa_pending"
   | "layout_detection"
   | "pending_human_correction"
   | "accepted"
@@ -84,7 +82,6 @@ export interface CreateJobRequest {
   material_type: MaterialType;
   pages: PageInput[];
   pipeline_mode: PipelineMode;
-  ptiff_qa_mode: PtiffQaMode;
   policy_version: string;
   shadow_mode?: boolean;
 }
@@ -101,7 +98,6 @@ export interface JobSummary {
   collection_id: string;
   material_type: MaterialType;
   pipeline_mode: PipelineMode;
-  ptiff_qa_mode: PtiffQaMode;
   policy_version: string;
   shadow_mode: boolean;
   created_by: string | null;
@@ -129,6 +125,7 @@ export interface JobPage {
   sub_page_index: number | null;
   status: PageState;
   routing_path: string | null;
+  input_image_uri: string | null;
   output_image_uri: string | null;
   output_layout_uri: string | null;
   quality_summary: QualitySummary | null;
@@ -161,6 +158,7 @@ export interface LayoutRegion {
   type: LayoutRegionType;
   bbox: LayoutBoundingBox;
   confidence: number;
+  text?: string | null;
 }
 
 export interface LayoutConfSummary {
@@ -191,6 +189,26 @@ export type LayoutDecisionSource =
   | "local_fallback_unverified"
   | "none";
 
+export type LayoutArtifactRole =
+  | "original_upload"
+  | "normalized_output"
+  | "human_corrected"
+  | "split_child";
+
+export type LayoutInputSource = "page_output" | "downsampled";
+
+export interface LayoutInputMetadata {
+  source_page_artifact_uri: string;
+  analyzed_artifact_uri: string;
+  artifact_role: LayoutArtifactRole;
+  input_source: LayoutInputSource;
+  layout_input_width: number;
+  layout_input_height: number;
+  canonical_output_width: number;
+  canonical_output_height: number;
+  coordinate_rescaled: boolean;
+}
+
 export interface LayoutAdjudicationResult {
   agreed: boolean;
   consensus_confidence: number | null;
@@ -204,7 +222,9 @@ export interface LayoutAdjudicationResult {
   iep2a_result: LayoutDetectResponse | null;
   iep2b_result: LayoutDetectResponse | null;
   google_document_ai_result: Record<string, unknown> | null;
+  layout_input: LayoutInputMetadata | null;
   final_layout_result: LayoutRegion[];
+  ocr_source: "google" | "paddle" | null;
   status: "done" | "failed";
   error: string | null;
   processing_time_ms: number;
@@ -227,45 +247,6 @@ export interface JobsListParams {
   to_date?: string;
   page?: number;
   page_size?: number;
-}
-
-// ---- PTIFF QA -------------------------------------------------------
-
-export type PtiffApprovalStatus = "pending" | "approved" | "in_correction";
-
-export interface PtiffQaPage {
-  page_number: number;
-  sub_page_index: number | null;
-  current_state: PageState;
-  approval_status: PtiffApprovalStatus;
-  needs_correction: boolean;
-}
-
-export interface PtiffQaResponse {
-  job_id: string;
-  ptiff_qa_mode: PtiffQaMode;
-  total_pages: number;
-  pages_pending: number;
-  pages_approved: number;
-  pages_in_correction: number;
-  is_gate_ready: boolean;
-  pages: PtiffQaPage[];
-}
-
-export interface PtiffApproveAllResponse {
-  approved_count: number;
-  gate_released: boolean;
-}
-
-export interface PtiffApprovePageResponse {
-  page_number: number;
-  approved: boolean;
-  gate_released: boolean;
-}
-
-export interface PtiffEditPageResponse {
-  page_number: number;
-  new_state: PageState;
 }
 
 // ---- Correction Queue -------------------------------------------------------
@@ -327,6 +308,9 @@ export interface CorrectionWorkspaceDetail {
   pipeline_mode: PipelineMode;
   review_reasons: string[];
   original_otiff_uri: string | null;
+  current_output_uri: string | null;
+  current_output_role: LayoutArtifactRole | null;
+  current_layout_uri: string | null;
   best_output_uri: string | null;
   branch_outputs: BranchOutputs;
   suggested_page_structure: PageStructure;

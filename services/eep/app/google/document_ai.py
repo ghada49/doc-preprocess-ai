@@ -158,11 +158,14 @@ class _WrappedElement:
         type_        — Google element type string (e.g. "PARAGRAPH", "TABLE")
         bounding_poly — Google BoundingPoly object with normalized_vertices or vertices
         confidence   — detection confidence in [0, 1]
+        text         — OCR text content extracted from textBlock.text (Strategy 2 only);
+                       None for entity-based and page-level strategies
     """
 
     type_: str
     bounding_poly: Any  # google.cloud.documentai_v1.types.BoundingPoly
     confidence: float
+    text: str | None = None
 
 
 def _bounding_poly_has_geometry(bounding_poly: Any) -> bool:
@@ -943,12 +946,16 @@ class CallGoogleDocumentAI:
             else:
                 confidence = max(0.0, min(1.0, float(raw_conf)))
 
+            raw_text = getattr(element, "text", None)
+            region_text = raw_text.strip() if isinstance(raw_text, str) and raw_text.strip() else None
+
             regions.append(
                 Region(
                     id=f"r{len(regions)}",
                     type=canonical_type,
                     bbox=bbox,
                     confidence=confidence,
+                    text=region_text,
                 )
             )
 
@@ -1257,11 +1264,18 @@ def _extract_elements_from_response(
                     )
                     continue
 
+                # Extract OCR text from textBlock when available.
+                block_text: str | None = None
+                if block_kind == "text_block":
+                    raw_text = getattr(block.text_block, "text", None)
+                    block_text = raw_text.strip() if raw_text else None
+
                 elements.append(
                     _WrappedElement(
                         type_=block_type,
                         bounding_poly=resolved_bbox,
                         confidence=0.9,  # DocumentLayoutBlock carries no confidence score
+                        text=block_text,
                     )
                 )
             except Exception as exc:

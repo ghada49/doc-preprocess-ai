@@ -68,9 +68,9 @@ Test IDs map to the roadmap simulation / contract registry:
     42. _decide_route: geometry_route_decision="accepted" + validation passed → "accept_now"
     43. _decide_route: geometry_route_decision="rectification" → "rescue_required"
     44. _decide_route: validation failed → "rescue_required" regardless of geometry trust
-    45. decide_ptiff_qa_route: manual → ptiff_qa_pending
-    46. decide_ptiff_qa_route: auto_continue + preprocess → accepted
-    47. decide_ptiff_qa_route: auto_continue + layout → layout_detection
+    45. decide_next_route: preprocess → accepted
+    46. decide_next_route: layout → layout_detection
+    47. decide_next_route: unknown pipeline_mode → ValueError
 
   Integration — Rescue path:
     48. run_rescue_flow: IEP1D success + second pass accepted → route="accept_now"
@@ -114,7 +114,7 @@ from services.eep_worker.app.geometry_invocation import (
 from services.eep_worker.app.intake import OtiffHashMismatchError, check_hash_consistency
 from services.eep_worker.app.normalization_step import _decide_route
 from services.eep_worker.app.rescue_step import RescueOutcome, _call_iep1d, run_rescue_flow
-from services.eep_worker.app.split_step import decide_ptiff_qa_route, run_split_normalization
+from services.eep_worker.app.split_step import decide_next_route, run_split_normalization
 from services.eep_worker.app.worker_loop import build_worker_config
 from shared.gpu.backend import BackendError, BackendErrorKind
 from shared.schemas.geometry import GeometryResponse, PageRegion
@@ -1280,23 +1280,22 @@ class TestIntegrationHappyPath:
         )
         assert _decide_route("accepted", val) == "rescue_required"
 
-    def test_ptiff_qa_manual_mode(self) -> None:
-        """Test 45: manual ptiff_qa_mode → ptiff_qa_pending."""
-        route = decide_ptiff_qa_route("preprocess", "manual")
-        assert route.next_status == "ptiff_qa_pending"
-        assert route.routing_path is None
-
-    def test_ptiff_qa_auto_continue_preprocess(self) -> None:
-        """Test 46: auto_continue + preprocess → accepted, routing_path='preprocessing_only'."""
-        route = decide_ptiff_qa_route("preprocess", "auto_continue")
+    def test_decide_next_route_preprocess(self) -> None:
+        """Test 45: preprocess → accepted, routing_path='preprocessing_only'."""
+        route = decide_next_route("preprocess")
         assert route.next_status == "accepted"
         assert route.routing_path == "preprocessing_only"
 
-    def test_ptiff_qa_auto_continue_layout(self) -> None:
-        """Test 47: auto_continue + layout → layout_detection."""
-        route = decide_ptiff_qa_route("layout", "auto_continue")
+    def test_decide_next_route_layout(self) -> None:
+        """Test 46: layout → layout_detection."""
+        route = decide_next_route("layout")
         assert route.next_status == "layout_detection"
         assert route.routing_path is None
+
+    def test_decide_next_route_unknown_raises(self) -> None:
+        """Test 47: unknown pipeline_mode → ValueError."""
+        with pytest.raises(ValueError, match="pipeline_mode"):
+            decide_next_route("bad_mode")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

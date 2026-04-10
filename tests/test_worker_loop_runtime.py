@@ -3,13 +3,11 @@ tests/test_worker_loop_runtime.py
 --------------------------------------
 Comprehensive runtime tests for the EEP worker loop.
 
-Tests all 4 combinations of pipeline_mode × ptiff_qa_mode:
-  1. preprocess + auto_continue → accepted
-  2. preprocess + manual → ptiff_qa_pending (awaits approval)
-  3. layout + auto_continue → layout_detection → accepted (enqueued)
-  4. layout + manual → ptiff_qa_pending (awaits approval)
+Automation-first model — 2 routing scenarios (no PTIFF QA gate):
+  1. preprocess → accepted (direct, no intermediate state)
+  2. layout → layout_detection → accepted (async via Redis)
 
-Each test verifies state transitions, gate behavior, and enqueue logic.
+Each test verifies state transitions and routing logic.
 """
 
 from __future__ import annotations
@@ -36,7 +34,6 @@ class MockJobPage:
     output_layout_uri: str | None = None
     quality_summary: dict[str, float | None] | None = None
     processing_time_ms: float | None = None
-    ptiff_qa_approved: bool = False
     review_reasons: list[str] | None = None
     acceptance_decision: str | None = None
     routing_path: str | None = None
@@ -50,192 +47,80 @@ class MockJob:
     material_type: str = "document"
     policy_version: str = "v1.0"
     pipeline_mode: str = "preprocess"  # or "layout"
-    ptiff_qa_mode: str = "auto_continue"  # or "manual"
     status: str = "running"
 
 
-# ── SCENARIO 1: Preprocess + Auto-Continue QA ────────────────────────────────
+# ── SCENARIO 1: Preprocess → Accepted (direct) ───────────────────────────────
 
 
-class TestPreprocessAutoQA:
+class TestPreprocessRouting:
     """
-    Scenario 1: pipeline_mode=preprocess, ptiff_qa_mode=auto_continue
-    Expected: queued → preprocessing → ptiff_qa_pending → accepted
+    Scenario 1: pipeline_mode=preprocess
+    Expected: queued → preprocessing → accepted (direct, no intermediate state)
     """
 
-    def test_preprocess_auto_qa_gate_releases_to_accepted(self) -> None:
-        """
-        Verify that auto_continue mode with preprocess pipeline releases pages to 'accepted'.
-        """
-        # Arrange: simulate _check_and_release_ptiff_qa logic for preprocess+auto
-        job = MockJob(pipeline_mode="preprocess", ptiff_qa_mode="auto_continue")
-        page = MockJobPage(status="ptiff_qa_pending", ptiff_qa_approved=True)
+    def test_preprocess_routes_directly_to_accepted(self) -> None:
+        """Preprocess pipeline routes pages straight to 'accepted'."""
+        job = MockJob(pipeline_mode="preprocess")
+        page = MockJobPage(status="preprocessing")
 
-        # Simulate gate release (from ptiff_qa.py:_check_and_release_ptiff_qa)
-        pages_to_release = []
-        if job.ptiff_qa_mode == "auto_continue" and page.ptiff_qa_approved:
-            target_state = "accepted" if job.pipeline_mode == "preprocess" else "layout_detection"
-            page.status = target_state
-            pages_to_release.append(page)
+        # Automation-first: no PTIFF QA gate; route directly based on pipeline_mode
+        target_state = "accepted" if job.pipeline_mode == "preprocess" else "layout_detection"
+        page.status = target_state
 
-        # Assert
-        assert len(pages_to_release) == 1
-        assert pages_to_release[0].status == "accepted"
+        assert page.status == "accepted"
 
-    def test_preprocess_auto_qa_no_enqueue(self) -> None:
-        """
-        Verify that preprocess mode does NOT enqueue pages after gate release.
-        """
-        # Arrange
-        job = MockJob(pipeline_mode="preprocess", ptiff_qa_mode="auto_continue")
+    def test_preprocess_does_not_enqueue_layout(self) -> None:
+        """Preprocess mode does NOT enqueue pages for layout detection."""
+        job = MockJob(pipeline_mode="preprocess")
         pages = [MockJobPage(status="accepted")]
 
-        # Simulate worker_loop.py enqueue logic
         enqueue_count = 0
         if job.pipeline_mode == "layout":
             enqueue_count = len(pages)
 
-        # Assert: preprocess mode should not enqueue
         assert enqueue_count == 0
 
 
-# ── SCENARIO 2: Preprocess + Manual QA ─────────────────────────────────────
+# ── SCENARIO 2: Layout → layout_detection → accepted ─────────────────────────
 
 
-class TestPreprocessManualQA:
+class TestLayoutAutoRouting:
     """
-    Scenario 2: pipeline_mode=preprocess, ptiff_qa_mode=manual
-    Expected: queued → preprocessing → ptiff_qa_pending (awaits approval)
-    """
-
-    def test_preprocess_manual_qa_no_gate_release(self) -> None:
-        """
-        Verify that manual QA mode does NOT automatically release pages.
-        """
-        # Arrange
-        job = MockJob(pipeline_mode="preprocess", ptiff_qa_mode="manual")
-        page = MockJobPage(status="ptiff_qa_pending", ptiff_qa_approved=False)
-
-        # Simulate worker_loop.py gate logic
-        gate_released = False
-        if job.ptiff_qa_mode == "auto_continue":
-            gate_released = True
-
-        # Assert: manual mode should NOT release
-        assert gate_released is False
-        assert page.status == "ptiff_qa_pending"
-
-    def test_preprocess_manual_qa_awaits_approval(self) -> None:
-        """
-        Verify that manual QA pages remain ptiff_qa_pending until approved.
-        """
-        page = MockJobPage(status="ptiff_qa_pending", ptiff_qa_approved=False)
-
-        # Page should remain in ptiff_qa_pending until manual approval via API
-        assert page.status == "ptiff_qa_pending"
-        assert page.ptiff_qa_approved is False
-
-
-# ── SCENARIO 3: Layout + Auto-Continue QA ──────────────────────────────────
-
-
-class TestLayoutAutoQA:
-    """
-    Scenario 3: pipeline_mode=layout, ptiff_qa_mode=auto_continue
-    Expected: preprocessing → ptiff_qa_pending → layout_detection → accepted
+    Scenario 2: pipeline_mode=layout
+    Expected: preprocessing → layout_detection → accepted (async via Redis)
     """
 
-    def test_layout_auto_qa_gate_releases_to_layout_detection(self) -> None:
-        """
-        Verify that auto_continue mode with layout pipeline releases to 'layout_detection'.
-        """
-        # Arrange
-        job = MockJob(pipeline_mode="layout", ptiff_qa_mode="auto_continue")
-        page = MockJobPage(status="ptiff_qa_pending", ptiff_qa_approved=True)
+    def test_layout_routes_directly_to_layout_detection(self) -> None:
+        """Layout pipeline routes pages directly to 'layout_detection'."""
+        job = MockJob(pipeline_mode="layout")
+        page = MockJobPage(status="preprocessing")
 
-        # Simulate _check_and_release_ptiff_qa for layout mode
-        pages_to_release = []
-        if job.ptiff_qa_mode == "auto_continue" and page.ptiff_qa_approved:
-            target_state = "accepted" if job.pipeline_mode == "preprocess" else "layout_detection"
-            page.status = target_state
-            pages_to_release.append(page)
+        target_state = "accepted" if job.pipeline_mode == "preprocess" else "layout_detection"
+        page.status = target_state
 
-        # Assert
-        assert len(pages_to_release) == 1
-        assert pages_to_release[0].status == "layout_detection"
+        assert page.status == "layout_detection"
 
-    def test_layout_auto_qa_pages_enqueued(self) -> None:
-        """
-        Verify that layout mode enqueues released pages for processing.
-        """
-        # Arrange
-        job = MockJob(pipeline_mode="layout", ptiff_qa_mode="auto_continue")
+    def test_layout_pages_enqueued_for_async_processing(self) -> None:
+        """Layout mode enqueues pages to Redis for async IEP2 processing."""
+        job = MockJob(pipeline_mode="layout")
         pages = [MockJobPage(status="layout_detection")]
 
-        # Simulate worker_loop.py enqueue logic
         enqueue_count = 0
         if job.pipeline_mode == "layout":
             enqueue_count = len(pages)
 
-        # Assert: layout mode should enqueue
         assert enqueue_count == 1
 
     def test_layout_detection_transitions_to_accepted(self) -> None:
-        """
-        Verify that layout_detection pages transition to accepted.
-        """
-        # After _run_layout completes, page transitions to "accepted".
-        # layout_routing.py returns next_state="accepted".
+        """layout_detection pages transition to accepted after IEP2 completes."""
         page = MockJobPage(status="layout_detection")
 
-        # Simulate layout completion
         page.status = "accepted"
         page.acceptance_decision = "accepted"
 
-        # Assert
         assert page.status == "accepted"
         assert page.acceptance_decision == "accepted"
-
-
-# ── SCENARIO 4: Layout + Manual QA ─────────────────────────────────────────
-
-
-class TestLayoutManualQA:
-    """
-    Scenario 4: pipeline_mode=layout, ptiff_qa_mode=manual
-    Expected: preprocessing → ptiff_qa_pending (awaits approval)
-    """
-
-    def test_layout_manual_qa_no_gate_release(self) -> None:
-        """
-        Verify that manual QA mode does NOT automatically release pages.
-        """
-        # Arrange
-        job = MockJob(pipeline_mode="layout", ptiff_qa_mode="manual")
-        page = MockJobPage(status="ptiff_qa_pending", ptiff_qa_approved=False)
-
-        # Simulate gate logic
-        gate_released = False
-        if job.ptiff_qa_mode == "auto_continue":
-            gate_released = True
-
-        # Assert
-        assert gate_released is False
-        assert page.status == "ptiff_qa_pending"
-
-    def test_layout_manual_qa_no_enqueue(self) -> None:
-        """
-        Verify that manual QA mode does not enqueue until approved.
-        """
-        # Arrange
-        job = MockJob(pipeline_mode="layout", ptiff_qa_mode="manual")
-        # Simulate enqueue logic
-        enqueue_count = 0
-        if job.ptiff_qa_mode == "auto_continue" and job.pipeline_mode == "layout":
-            enqueue_count += 1
-
-        # Assert
-        assert enqueue_count == 0
 
 
 # ── State Machine Validation ────────────────────────────────────────────────
@@ -249,7 +134,6 @@ class TestStateTransitions:
         Verify that ACK_ONLY_STATES are not reprocessed by the worker.
         """
         ack_only_states = {
-            "ptiff_qa_pending",
             "accepted",
             "review",
             "failed",
@@ -322,7 +206,6 @@ class TestRetryLogic:
         # Terminal states are all in ACK_ONLY_STATES
         terminal_states = {"accepted", "failed", "review"}
         ack_only_states = {
-            "ptiff_qa_pending",
             "accepted",
             "review",
             "failed",

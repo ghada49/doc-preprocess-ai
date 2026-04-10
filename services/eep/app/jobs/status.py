@@ -15,16 +15,16 @@ Status is derived live from leaf page states on every request.
 
     queued:  all leaf pages are in 'queued' state (no processing started)
     running: at least one leaf page is in a non-worker-terminal state:
-             {'queued', 'preprocessing', 'rectification',
-              'ptiff_qa_pending', 'layout_detection'}
+             {'queued', 'preprocessing', 'rectification', 'layout_detection',
+              'pending_human_correction'}
     done:    all leaf pages are worker-terminal AND at least one is not 'failed'
     failed:  all leaf pages are worker-terminal AND all are 'failed'
 
-ptiff_qa_pending rule
-----------------------
-'ptiff_qa_pending' is in the non-terminal set, so a job with any leaf page
-in 'ptiff_qa_pending' must remain 'running', never 'done'.
-(spec Section 3.1 PTIFF-stage QA checkpoint, Section 9.1)
+pending_human_correction rule
+-----------------------------
+'pending_human_correction' is in the non-terminal set, so a job with any leaf
+page requiring human review remains 'running', never 'done'.
+(spec Section 9.11)
 
 Counter fields
 --------------
@@ -65,14 +65,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Non-terminal page states: a job remains 'running' if any leaf page is in
-# one of these states.  Crucially includes 'ptiff_qa_pending'.
+# one of these states.  pending_human_correction keeps job 'running' so the
+# job never reports 'done' while pages require human review.
 _NON_TERMINAL: frozenset[str] = frozenset(
     {
         "queued",
         "preprocessing",
         "rectification",
-        "ptiff_qa_pending",
         "layout_detection",
+        "pending_human_correction",
     }
 )
 
@@ -162,7 +163,6 @@ def get_job_status(
         collection_id=job.collection_id,
         material_type=job.material_type,  # type: ignore[arg-type]
         pipeline_mode=job.pipeline_mode,  # type: ignore[arg-type]
-        ptiff_qa_mode=job.ptiff_qa_mode,  # type: ignore[arg-type]
         policy_version=job.policy_version,
         shadow_mode=job.shadow_mode,
         created_by=job.created_by,
@@ -190,6 +190,7 @@ def get_job_status(
                 sub_page_index=p.sub_page_index,
                 status=p.status,  # type: ignore[arg-type]
                 routing_path=p.routing_path,
+                input_image_uri=p.input_image_uri,
                 output_image_uri=p.output_image_uri,
                 output_layout_uri=p.output_layout_uri,
                 quality_summary=quality_summary,

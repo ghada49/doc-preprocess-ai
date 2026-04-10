@@ -147,7 +147,7 @@ class TestJobModel:
         assert _col(Job, "job_id").primary_key
 
     def test_ptiff_qa_mode_column_present(self) -> None:
-        # DoD: jobs table stores ptiff_qa_mode
+        # Backward compat: ptiff_qa_mode column retained in ORM model (code no longer writes it)
         assert "ptiff_qa_mode" in _col_names(Job)
 
     def test_created_by_nullable(self) -> None:

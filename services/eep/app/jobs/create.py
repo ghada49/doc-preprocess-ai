@@ -93,7 +93,6 @@ def create_job(
         collection_id=body.collection_id,
         material_type=body.material_type,
         pipeline_mode=body.pipeline_mode,
-        ptiff_qa_mode=body.ptiff_qa_mode,
         policy_version=body.policy_version,
         shadow_mode=body.shadow_mode,
         status="queued",

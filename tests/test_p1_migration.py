@@ -8,8 +8,8 @@ without requiring a live PostgreSQL connection.
 
 Definition of done:
   - schema matches spec for these six core tables only
-  - job_pages supports ptiff_qa_pending as a valid page state
-  - jobs table stores ptiff_qa_mode
+  - job_pages migration retains ptiff_qa_pending in status CHECK (backward compat)
+  - jobs migration retains ptiff_qa_mode column (backward compat; no longer written by code)
 """
 
 from __future__ import annotations
@@ -145,11 +145,12 @@ class TestSixCoreTables:
 
 class TestJobsTable:
     def test_ptiff_qa_mode_column(self) -> None:
-        # DoD: jobs table stores ptiff_qa_mode
+        # Backward compat: ptiff_qa_mode column retained in migration (code no longer writes it)
         src = _migration_source()
         assert "ptiff_qa_mode" in src
 
     def test_ptiff_qa_mode_check_constraint(self) -> None:
+        # Backward compat: check constraint values retained
         src = _migration_source()
         assert "'manual'" in src
         assert "'auto_continue'" in src
@@ -199,17 +200,17 @@ class TestJobsTable:
 
 class TestJobPagesTable:
     def test_ptiff_qa_pending_in_status_check(self) -> None:
-        # DoD: job_pages supports ptiff_qa_pending as a valid page state
+        # Backward compat: ptiff_qa_pending retained in CHECK constraint for existing DB rows
         src = _migration_source()
         assert "'ptiff_qa_pending'" in src
 
-    def test_all_ten_page_states_present(self) -> None:
+    def test_all_nine_active_page_states_present(self) -> None:
+        """Nine active states (ptiff_qa_pending kept in migration for backward compat only)."""
         src = _migration_source()
         for state in [
             "'queued'",
             "'preprocessing'",
             "'rectification'",
-            "'ptiff_qa_pending'",
             "'layout_detection'",
             "'pending_human_correction'",
             "'accepted'",

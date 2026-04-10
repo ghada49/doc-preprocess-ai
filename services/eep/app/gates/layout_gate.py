@@ -319,6 +319,7 @@ def _build_local_fallback_result(
         iep2b_result=iep2b_result,
         google_document_ai_result=audit,
         final_layout_result=final_layout_result,
+        ocr_source="paddle" if final_layout_result else None,
         status="done",
         error=None,
         processing_time_ms=round(elapsed, 2),
@@ -386,6 +387,7 @@ async def evaluate_layout_adjudication(
                 image_uri,
             )
             GOOGLE_LAYOUT_ADJUDICATION_DECISIONS.labels(source="local_agreement").inc()
+            local_regions = list(iep2a_result.regions)
             return LayoutAdjudicationResult(
                 agreed=True,
                 consensus_confidence=consensus.consensus_confidence,
@@ -399,7 +401,8 @@ async def evaluate_layout_adjudication(
                 iep2a_result=iep2a_result,
                 iep2b_result=iep2b_result,
                 google_document_ai_result=None,
-                final_layout_result=list(iep2a_result.regions),
+                final_layout_result=local_regions,
+                ocr_source="paddle" if local_regions else None,
                 status="done",
                 error=None,
                 processing_time_ms=round(elapsed, 2),
@@ -570,6 +573,7 @@ async def evaluate_layout_adjudication(
             iep2b_result=iep2b_result,
             google_document_ai_result=google_audit,
             final_layout_result=[],
+            ocr_source="google",  # Google was authoritative (empty is a valid result)
             status="done",
             error=None,
             processing_time_ms=round(elapsed, 2),
@@ -597,6 +601,7 @@ async def evaluate_layout_adjudication(
         iep2b_result=iep2b_result,
         google_document_ai_result=google_audit,
         final_layout_result=canonical_regions,
+        ocr_source="google",
         status="done",
         error=None,
         processing_time_ms=round(elapsed, 2),

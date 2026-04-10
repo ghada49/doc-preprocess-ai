@@ -12,8 +12,7 @@ Implements the reconciliation loop described in spec Sections 8.1, 8.4, and 9.13
 Reconciliation logic (reconcile_once):
   For each task in QUEUE_PAGE_TASKS_PROCESSING:
 
-  Complete states (accepted, review, failed, pending_human_correction, split,
-  ptiff_qa_pending):
+  Complete states (accepted, review, failed, pending_human_correction, split):
     → Remove from processing list (worker finished but crashed before ack).
       Counted as acked_terminal.
 
@@ -92,7 +91,6 @@ _COMPLETE_STATES: frozenset[str] = frozenset(
         "failed",
         "pending_human_correction",
         "split",
-        "ptiff_qa_pending",
     }
 )
 

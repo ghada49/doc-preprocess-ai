@@ -5,6 +5,11 @@ Real integration test for worker loop runtime execution.
 
 This test demonstrates actual state transitions without mocking,
 using in-memory implementations where necessary.
+
+Automation-first model:
+  - preprocess → accepted (direct, no intermediate state)
+  - layout → layout_detection → accepted (async via Redis)
+  - pending_human_correction → layout_detection (layout) or accepted (preprocess) via correction
 """
 
 from __future__ import annotations
@@ -23,7 +28,8 @@ class RealStateTransitionTest:
 
     Test shows:
     - Job creation
-    - Page queued → preprocessing → ptiff_qa_pending → accepted/layout_detection
+    - Page queued → preprocessing → accepted (preprocess mode)
+    - Page queued → preprocessing → layout_detection → accepted (layout mode)
     - Final DB state verification
     """
 
@@ -31,11 +37,11 @@ class RealStateTransitionTest:
         """
         REAL TEST: Demonstrate complete preprocessing flow through state transitions.
 
-        This shows ACTUAL behavior, not mocked:
-        queued → preprocessing → normalization → ptiff_qa_pending → accepted
+        Automation-first behavior:
+        queued → preprocessing → accepted (direct, no PTIFF QA gate)
         """
         print("\n" + "=" * 80)
-        print("REAL RUNTIME TEST: Preprocessing → Accepted")
+        print("REAL RUNTIME TEST: Preprocessing → Accepted (automation-first)")
         print("=" * 80)
 
         # ── STEP 1: Create real job and page records ────────────────────────
@@ -47,7 +53,6 @@ class RealStateTransitionTest:
         job.material_type = "document"
         job.policy_version = "v1.0"
         job.pipeline_mode = "preprocess"
-        job.ptiff_qa_mode = "auto_continue"
         job.status = "running"
         job.accepted_count = 0
         job.review_count = 0
@@ -65,7 +70,6 @@ class RealStateTransitionTest:
         page.output_image_uri = None
         page.quality_summary = None
         page.processing_time_ms = None
-        page.ptiff_qa_approved = False
         page.review_reasons = None
         page.acceptance_decision = None
         page.routing_path = None
@@ -73,7 +77,6 @@ class RealStateTransitionTest:
         print("\n[CREATED JOB]")
         print(f"  job_id: {job_id}")
         print(f"  pipeline_mode: {job.pipeline_mode}")
-        print(f"  ptiff_qa_mode: {job.ptiff_qa_mode}")
 
         print("\n[CREATED PAGE]")
         print(f"  page_id: {page_id}")
@@ -87,12 +90,7 @@ class RealStateTransitionTest:
         print(f"\n✓ STATE TRANSITION 1: {page.status} → preprocessing")
         page.status = "preprocessing"
 
-        # State 2: preprocessing (processing) → ptiff_qa_pending
-        # In real execution, normalization produces quality metrics
-        state_transitions.append(("preprocessing", "ptiff_qa_pending"))
-        print(f"✓ STATE TRANSITION 2: {page.status} → ptiff_qa_pending")
-
-        # Simulate real quality metrics from preprocessing
+        # State 2: preprocessing → accepted (direct, automation-first)
         quality_metrics = {
             "blur_score": 0.08,
             "border_score": 0.05,
@@ -102,37 +100,16 @@ class RealStateTransitionTest:
         page.quality_summary = quality_metrics
         page.processing_time_ms = 1234.5
         page.output_image_uri = "s3://bucket/output/page-1.tiff"
-        page.ptiff_qa_approved = True  # ← Auto QA approval (auto_continue mode)
-        page.status = "ptiff_qa_pending"
 
-        # ── STEP 3: Simulate gate release for auto_continue mode ────────────
-        print("\n[PTIFF QA GATE EVALUATION]")
-        print(f"  ptiff_qa_mode: {job.ptiff_qa_mode}")
-        print(f"  page.ptiff_qa_approved: {page.ptiff_qa_approved}")
+        # Automation-first: route directly based on pipeline_mode (no PTIFF QA gate)
+        target_state = "accepted" if job.pipeline_mode == "preprocess" else "layout_detection"
+        state_transitions.append(("preprocessing", target_state))
+        print(f"✓ STATE TRANSITION 2: {page.status} → {target_state}")
+        page.status = target_state
+        page.acceptance_decision = "accepted"
+        page.routing_path = "preprocessing_only"
 
-        gate_satisfied = job.ptiff_qa_mode == "auto_continue" and page.ptiff_qa_approved
-        print(f"  Gate satisfied: {gate_satisfied}")
-
-        if gate_satisfied:
-            # For preprocess mode, release to "accepted"
-            target_state = "accepted" if job.pipeline_mode == "preprocess" else "layout_detection"
-            state_transitions.append(("ptiff_qa_pending", target_state))
-            print(f"\n✓ STATE TRANSITION 3: {page.status} → {target_state}")
-            print(f"  Pipeline mode '{job.pipeline_mode}' routes to '{target_state}'")
-
-            page.status = target_state
-            page.acceptance_decision = "accepted"
-            page.routing_path = "preprocessing_only"
-
-        # ── STEP 4: Verify final state ─────────────────────────────────────
-        print("\n[FINAL PAGE STATE]")
-        print(f"  Status: {page.status}")
-        print(f"  Acceptance Decision: {page.acceptance_decision}")
-        print(f"  Routing Path: {page.routing_path}")
-        print(f"  Quality Summary: {page.quality_summary}")
-        print(f"  Processing Time: {page.processing_time_ms} ms")
-
-        # ── STEP 5: Update job summary ─────────────────────────────────────
+        # ── STEP 3: Update job summary ─────────────────────────────────────
         print("\n[JOB SUMMARY UPDATE]")
         if page.status == "accepted":
             job.accepted_count += 1
@@ -154,11 +131,11 @@ class RealStateTransitionTest:
         assert job.accepted_count == 1
         print("  ✓ Job accepted_count incremented to 1")
 
-        assert len(state_transitions) == 3
+        assert len(state_transitions) == 2
         print(f"  ✓ Correct number of state transitions: {len(state_transitions)}")
 
         print(f"\n{'=' * 80}")
-        print("SCENARIO 1 COMPLETE: Preprocessing + Auto QA")
+        print("SCENARIO 1 COMPLETE: Preprocess → Accepted (automation-first)")
         print(f"Final State: {page.status}")
         print(f"{'=' * 80}\n")
 
@@ -166,11 +143,11 @@ class RealStateTransitionTest:
         """
         REAL TEST: Demonstrate layout mode with enqueue behavior.
 
-        This shows ACTUAL behavior:
-        queued → preprocessing → ptiff_qa_pending → layout_detection → accepted
+        Automation-first behavior:
+        queued → preprocessing → layout_detection → accepted (async via Redis)
         """
         print("\n" + "=" * 80)
-        print("REAL RUNTIME TEST: Layout Mode with Enqueue")
+        print("REAL RUNTIME TEST: Layout Mode with Enqueue (automation-first)")
         print("=" * 80)
 
         # ── STEP 1: Create real job (layout mode) ─────────────────────────
@@ -182,7 +159,6 @@ class RealStateTransitionTest:
         job.material_type = "document"
         job.policy_version = "v1.0"
         job.pipeline_mode = "layout"  # ← Layout mode
-        job.ptiff_qa_mode = "auto_continue"
         job.status = "running"
 
         page = Mock(spec=JobPage)
@@ -194,22 +170,19 @@ class RealStateTransitionTest:
         page.input_image_uri = "s3://bucket/page-1.tiff"
         page.output_image_uri = None
         page.output_layout_uri = None
-        page.ptiff_qa_approved = False
 
         print("\n[CREATED JOB]")
         print(f"  job_id: {job_id}")
         print(f"  pipeline_mode: '{job.pipeline_mode}'")
-        print(f"  ptiff_qa_mode: '{job.ptiff_qa_mode}'")
 
         # ── STEP 2: Run through preprocessing ─────────────────────────────
         print("\n[PREPROCESSING PHASE]")
         page.status = "preprocessing"
         print(f"  → {page.status}")
 
-        # Simulate normalization
-        page.status = "ptiff_qa_pending"
+        # Automation-first: route directly to layout_detection (no PTIFF QA gate)
+        page.status = "layout_detection"
         page.output_image_uri = "s3://bucket/output/page-1.tiff"
-        page.ptiff_qa_approved = True
         page.quality_summary = {
             "blur_score": 0.1,
             "border_score": 0.05,
@@ -217,16 +190,9 @@ class RealStateTransitionTest:
             "foreground_coverage": 0.95,
         }
         page.processing_time_ms = 1500.0
-        print(f"  → {page.status}")
+        print(f"  → {page.status} (direct routing, no PTIFF QA gate)")
 
-        # ── STEP 3: Gate release for layout mode ──────────────────────────
-        print("\n[PTIFF QA GATE RELEASE]")
-        if job.ptiff_qa_mode == "auto_continue" and page.ptiff_qa_approved:
-            target_state = "layout_detection"  # ← Layout mode routes here
-            page.status = target_state
-            print(f"  Gate satisfied, releasing to '{target_state}'")
-
-        # ── STEP 4: Enqueue for layout detection ──────────────────────────
+        # ── STEP 3: Enqueue for layout detection ──────────────────────────
         print("\n[TASK ENQUEUE]")
         enqueue_called = False
         if job.pipeline_mode == "layout":
@@ -235,7 +201,7 @@ class RealStateTransitionTest:
             print("  ✓ Page enqueued for layout detection")
             print(f"    Task: job_id={page.job_id}, page_id={page.page_id}")
 
-        # ── STEP 5: Simulate layout detection processing ────────────────
+        # ── STEP 4: Simulate layout detection processing ────────────────
         print("\n[LAYOUT DETECTION PHASE]")
         print(f"  Current Status: {page.status}")
         print("  Next: complete_layout_detection()")
@@ -263,69 +229,49 @@ class RealStateTransitionTest:
         print("  ✓ Routing path set to 'layout_adjudication'")
 
         print(f"\n{'=' * 80}")
-        print("SCENARIO 3 COMPLETE: Layout + Auto QA + Enqueue")
+        print("SCENARIO 2 COMPLETE: Layout Mode with Enqueue (automation-first)")
         print(f"Final State: {page.status}")
         print(f"{'=' * 80}\n")
 
-    def test_real_manual_qa_no_gate_release(self) -> None:
+    def test_real_pending_human_correction_re_enqueue(self) -> None:
         """
-        REAL TEST: Manual QA mode (no automatic gate release).
+        REAL TEST: After human correction, page is re-enqueued for async IEP2.
 
-        This shows ACTUAL behavior:
-        queued → preprocessing → ptiff_qa_pending → (awaits manual approval)
+        Automation-first behavior (layout mode):
+        pending_human_correction → layout_detection (enqueued to Redis)
         """
         print("\n" + "=" * 80)
-        print("REAL RUNTIME TEST: Manual QA (No Auto Release)")
+        print("REAL RUNTIME TEST: Human Correction → Layout Detection Re-enqueue")
         print("=" * 80)
 
-        # ── STEP 1: Create job with manual QA ─────────────────────────────
         job = Mock(spec=Job)
-        job.ptiff_qa_mode = "manual"  # ← Manual mode
-        job.pipeline_mode = "preprocess"
+        job.pipeline_mode = "layout"
 
         page = Mock(spec=JobPage)
-        page.status = "queued"
-        page.ptiff_qa_approved = False
+        page.status = "pending_human_correction"
 
-        print("\n[CREATED JOB]")
-        print(f"  ptiff_qa_mode: '{job.ptiff_qa_mode}'")
+        print("\n[PRE-CORRECTION STATE]")
+        print(f"  page.status: '{page.status}'")
 
-        # ── STEP 2: Run through preprocessing ─────────────────────────────
-        print("\n[PREPROCESSING PHASE]")
-        page.status = "preprocessing"
-        print(f"  → {page.status}")
+        # Human applies correction via POST /v1/jobs/{job_id}/pages/{page_id}/correction
+        # apply.py transitions page → layout_detection and enqueues to Redis
+        target_state = "layout_detection" if job.pipeline_mode != "preprocess" else "accepted"
+        page.status = target_state
+        enqueue_called = job.pipeline_mode == "layout"
 
-        page.status = "ptiff_qa_pending"
-        page.ptiff_qa_approved = False  # ← NOT auto-approved in manual mode
-        print(f"  → {page.status}")
-        print(f"    ptiff_qa_approved: {page.ptiff_qa_approved}")
+        print("\n[POST-CORRECTION STATE]")
+        print(f"  page.status: '{page.status}'")
+        print(f"  enqueue_called: {enqueue_called}")
 
-        # ── STEP 3: Check gate release ────────────────────────────────────
-        print("\n[PTIFF QA GATE EVALUATION]")
-        gate_released = False
-        if job.ptiff_qa_mode == "auto_continue":
-            gate_released = True
+        assert page.status == "layout_detection"
+        print("  ✓ Page transitioned to 'layout_detection'")
 
-        print(f"  ptiff_qa_mode: '{job.ptiff_qa_mode}'")
-        print(f"  Gate released: {gate_released}")
-
-        if not gate_released:
-            print(f"  → Page remains in '{page.status}' awaiting manual approval")
-
-        # ── STEP 4: Verify page stays in ptiff_qa_pending ────────────────
-        print("\n[VERIFICATION]")
-        assert page.status == "ptiff_qa_pending"
-        print("  ✓ Page remains in 'ptiff_qa_pending' state")
-
-        assert page.ptiff_qa_approved is False
-        print("  ✓ Not auto-approved (manual mode)")
-
-        assert gate_released is False
-        print("  ✓ Gate NOT released (waiting for manual approval)")
+        assert enqueue_called is True
+        print("  ✓ Page enqueued for async IEP2 processing")
 
         print(f"\n{'=' * 80}")
-        print("SCENARIO 2 COMPLETE: Manual QA (No Release)")
-        print(f"Final State: {page.status} (awaiting manual approval)")
+        print("SCENARIO 3 COMPLETE: Human Correction → Layout Detection")
+        print(f"Final State: {page.status}")
         print(f"{'=' * 80}\n")
 
 
@@ -343,7 +289,6 @@ class RealStateValidationTest:
         print("=" * 80)
 
         ack_only_states = {
-            "ptiff_qa_pending",
             "accepted",
             "review",
             "failed",
@@ -434,7 +379,7 @@ if __name__ == "__main__":
     test = RealStateTransitionTest()
     test.test_real_preprocessing_to_accepted_state_flow()
     test.test_real_layout_mode_with_enqueue()
-    test.test_real_manual_qa_no_gate_release()
+    test.test_real_pending_human_correction_re_enqueue()
 
     validation = RealStateValidationTest()
     validation.test_ack_only_states_prevent_reprocessing()

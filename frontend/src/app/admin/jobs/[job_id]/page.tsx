@@ -31,6 +31,7 @@ import {
   reviewReasonLabel,
   truncateId,
 } from "@/lib/utils";
+import type { JobPage } from "@/types/api";
 
 export default function AdminJobDetailPage() {
   const { job_id } = useParams<{ job_id: string }>();
@@ -44,10 +45,11 @@ export default function AdminJobDetailPage() {
     refetchInterval: (query) => {
       const job = query.state.data;
       if (!job) return 8_000;
+      const operationalPages = filterOperationalPages(job.pages);
 
       const active =
         isJobActive(job.summary.status) ||
-        (job.pages && hasActivePages(job.pages));
+        (operationalPages.length > 0 && hasActivePages(operationalPages));
 
       return active ? 6_000 : false;
     },
@@ -82,7 +84,8 @@ export default function AdminJobDetailPage() {
   }
 
   const { summary, pages } = data;
-  const isActive = isJobActive(summary.status) || hasActivePages(pages);
+  const operationalPages = filterOperationalPages(pages);
+  const isActive = isJobActive(summary.status) || hasActivePages(operationalPages);
 
   return (
     <AdminShell
@@ -156,7 +159,6 @@ export default function AdminJobDetailPage() {
                 ["Owner", summary.created_by_username ?? "unknown"],
                 ["Material", summary.material_type],
                 ["Pipeline", summary.pipeline_mode],
-                ["PTIFF QA", summary.ptiff_qa_mode],
                 ["Policy", summary.policy_version],
                 ["Shadow", summary.shadow_mode ? "On" : "Off"],
                 ["Created", formatDate(summary.created_at)],
@@ -170,9 +172,9 @@ export default function AdminJobDetailPage() {
           </div>
 
           <div>
-            <h2 className="mb-3 text-sm font-semibold text-slate-800">
-              Pages ({pages.length})
-            </h2>
+              <h2 className="mb-3 text-sm font-semibold text-slate-800">
+               Pages ({operationalPages.length})
+             </h2>
             <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
               <table className="w-full data-table">
                 <thead>
@@ -187,11 +189,12 @@ export default function AdminJobDetailPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {pages.map((page) => {
+                  {operationalPages.map((page) => {
                     const pageKey = `${page.page_number}-${page.sub_page_index ?? 0}`;
                     const isLayoutOpen = expandedLayoutKey === pageKey;
+                    const displayImageUri = page.output_image_uri ?? page.input_image_uri;
                     const canInspectLayout = Boolean(
-                      page.output_image_uri && page.output_layout_uri
+                      displayImageUri && page.output_layout_uri
                     );
 
                     return (
@@ -310,7 +313,7 @@ export default function AdminJobDetailPage() {
                           <tr className="bg-slate-50/80">
                             <td colSpan={7} className="px-4 py-4">
                               <LayoutOverlay
-                                imageUri={page.output_image_uri}
+                                imageUri={displayImageUri}
                                 layoutUri={page.output_layout_uri}
                                 pageLabel={`Page ${page.page_number}${
                                   page.sub_page_index != null
@@ -332,4 +335,17 @@ export default function AdminJobDetailPage() {
       </TooltipProvider>
     </AdminShell>
   );
+}
+
+function filterOperationalPages(pages: JobPage[]): JobPage[] {
+  const pageNumbersWithChildren = new Set(
+    pages.filter((page) => page.sub_page_index != null).map((page) => page.page_number)
+  );
+  return pages.filter((page) => {
+    if (page.status === "split") return false;
+    if (page.sub_page_index == null && pageNumbersWithChildren.has(page.page_number)) {
+      return false;
+    }
+    return true;
+  });
 }

@@ -438,7 +438,7 @@ class TestGetCorrectionWorkspace:
                 ),
                 ChildPageSummary(
                     sub_page_index=1,
-                    status="ptiff_qa_pending",
+                    status="layout_detection",
                     output_image_uri="s3://bucket/jobs/job-123/corrected/2_1.tiff",
                 ),
             ],

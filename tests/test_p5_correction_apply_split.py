@@ -42,12 +42,10 @@ pytestmark = pytest.mark.usefixtures("_bypass_require_user")
 def _make_job(
     job_id: str = "job-001",
     pipeline_mode: str = "layout",
-    ptiff_qa_mode: str = "manual",
 ) -> MagicMock:
     job = MagicMock()
     job.job_id = job_id
     job.pipeline_mode = pipeline_mode
-    job.ptiff_qa_mode = ptiff_qa_mode
     return job
 
 
@@ -57,7 +55,6 @@ def _make_page(
     page_number: int = 3,
     sub_page_index: int | None = None,
     status: str = "pending_human_correction",
-    ptiff_qa_approved: bool = False,
     output_image_uri: str | None = "s3://bucket/jobs/job-001/3.tiff",
     input_image_uri: str = "s3://bucket/raw/3.tiff",
 ) -> MagicMock:
@@ -67,7 +64,6 @@ def _make_page(
     page.page_number = page_number
     page.sub_page_index = sub_page_index
     page.status = status
-    page.ptiff_qa_approved = ptiff_qa_approved
     page.output_image_uri = output_image_uri
     page.input_image_uri = input_image_uri
     return page
@@ -500,7 +496,7 @@ class TestSplitCorrectionEndpoint:
 
     def test_split_409_when_parent_not_in_pending_correction(self) -> None:
         job = _make_job()
-        parent = _make_page(status="ptiff_qa_pending")
+        parent = _make_page(status="layout_detection")
         session = _make_session(job=job, first_results=[parent])
         self._inject(session)
 

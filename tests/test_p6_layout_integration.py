@@ -16,8 +16,8 @@ Coverage:
   4. Disagreement by histogram mismatch → agreed=False → Google fallback required.
   5. Single-model fallback: IEP2B unavailable (None or HTTP 500) →
      single_model_mode=True, agreed=False unconditionally → adjudication required.
-  6. PTIFF QA enforcement: state machine only permits ptiff_qa_pending →
-     layout_detection; all other source states are rejected.
+  6. Layout routing enforcement: state machine permits preprocessing/rectification/
+     pending_human_correction → layout_detection (automation-first model).
   7. End-to-end layout routing decisions:
      - local agreement → accepted
      - local disagreement + Google success → accepted using Google result
@@ -554,52 +554,43 @@ class TestSingleModelFallbackIntegration:
 # ---------------------------------------------------------------------------
 
 
-class TestPtiffQaEnforcement:
+class TestLayoutRoutingEnforcement:
     """
-    Spec Section 3.1: layout must not execute for pages in ptiff_qa_pending.
-    The state machine is the enforcement mechanism:
-      - ptiff_qa_pending → layout_detection is the ONLY valid path into layout.
-      - No other source state can reach layout_detection directly.
+    Automation-first routing: preprocessing/rectification route directly to
+    layout_detection without any intermediate gate.  pending_human_correction
+    resumes via layout_detection after correction.
     """
 
-    # --- Allowed transitions into layout_detection ---
+    # --- Allowed transitions INTO layout_detection (automation-first) ---
 
-    def test_ptiff_qa_pending_to_layout_detection_allowed(self) -> None:
-        assert "layout_detection" in ALLOWED_TRANSITIONS["ptiff_qa_pending"]
+    def test_preprocessing_can_reach_layout_detection(self) -> None:
+        assert "layout_detection" in ALLOWED_TRANSITIONS["preprocessing"]
 
-    def test_validate_transition_ptiff_qa_to_layout_does_not_raise(self) -> None:
-        try:
-            validate_transition("ptiff_qa_pending", "layout_detection")
-        except Exception as exc:
-            pytest.fail(f"Valid transition raised unexpectedly: {exc!r}")
+    def test_rectification_can_reach_layout_detection(self) -> None:
+        assert "layout_detection" in ALLOWED_TRANSITIONS["rectification"]
+
+    def test_pending_human_correction_can_reach_layout_detection(self) -> None:
+        assert "layout_detection" in ALLOWED_TRANSITIONS["pending_human_correction"]
+
+    def test_validate_transition_preprocessing_to_layout_does_not_raise(self) -> None:
+        validate_transition("preprocessing", "layout_detection")  # must not raise
+
+    def test_validate_transition_rectification_to_layout_does_not_raise(self) -> None:
+        validate_transition("rectification", "layout_detection")  # must not raise
+
+    def test_validate_transition_pending_correction_to_layout_does_not_raise(self) -> None:
+        validate_transition("pending_human_correction", "layout_detection")  # must not raise
 
     # --- Disallowed direct transitions to layout_detection ---
 
     def test_queued_cannot_reach_layout_detection(self) -> None:
         assert "layout_detection" not in ALLOWED_TRANSITIONS["queued"]
 
-    def test_preprocessing_cannot_reach_layout_detection(self) -> None:
-        assert "layout_detection" not in ALLOWED_TRANSITIONS["preprocessing"]
-
-    def test_rectification_cannot_reach_layout_detection(self) -> None:
-        assert "layout_detection" not in ALLOWED_TRANSITIONS["rectification"]
-
-    def test_pending_human_correction_cannot_reach_layout_detection(self) -> None:
-        assert "layout_detection" not in ALLOWED_TRANSITIONS["pending_human_correction"]
-
-    def test_validate_transition_rejects_preprocessing_to_layout(self) -> None:
-        with pytest.raises(InvalidTransitionError):
-            validate_transition("preprocessing", "layout_detection")
-
     def test_validate_transition_rejects_queued_to_layout(self) -> None:
         with pytest.raises(InvalidTransitionError):
             validate_transition("queued", "layout_detection")
 
-    def test_validate_transition_rejects_rectification_to_layout(self) -> None:
-        with pytest.raises(InvalidTransitionError):
-            validate_transition("rectification", "layout_detection")
-
-    # --- Allowed transitions out of layout_detection ---
+    # --- Allowed transitions OUT of layout_detection ---
 
     def test_layout_detection_to_accepted_allowed(self) -> None:
         assert "accepted" in ALLOWED_TRANSITIONS["layout_detection"]
@@ -610,16 +601,12 @@ class TestPtiffQaEnforcement:
     def test_layout_detection_to_failed_allowed(self) -> None:
         assert "failed" in ALLOWED_TRANSITIONS["layout_detection"]
 
+    def test_layout_detection_to_pending_human_correction_allowed(self) -> None:
+        # user can send page to review after layout detection
+        assert "pending_human_correction" in ALLOWED_TRANSITIONS["layout_detection"]
+
     def test_layout_detection_cannot_return_to_queued(self) -> None:
         assert "queued" not in ALLOWED_TRANSITIONS["layout_detection"]
-
-    def test_layout_detection_cannot_return_to_ptiff_qa_pending(self) -> None:
-        assert "ptiff_qa_pending" not in ALLOWED_TRANSITIONS["layout_detection"]
-
-    def test_ptiff_qa_pending_is_not_terminal(self) -> None:
-        from shared.state_machine import is_worker_terminal
-
-        assert is_worker_terminal("ptiff_qa_pending") is False
 
     def test_layout_detection_is_not_terminal(self) -> None:
         from shared.state_machine import is_worker_terminal

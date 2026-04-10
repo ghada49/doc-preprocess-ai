@@ -34,6 +34,13 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from shared.schemas.ucf import BoundingBox
 
 MaterialType = Literal["book", "newspaper", "archival_document"]
+LayoutArtifactRole = Literal[
+    "original_upload",
+    "normalized_output",
+    "human_corrected",
+    "split_child",
+]
+LayoutInputSource = Literal["page_output", "downsampled"]
 
 
 class RegionType(StrEnum):
@@ -61,6 +68,10 @@ class Region(BaseModel):
         type       — canonical RegionType
         bbox       — bounding box (from ucf.py)
         confidence — detection confidence [0, 1]
+        text       — OCR text content for this region, or None when the detector
+                     does not provide per-region text (e.g. layout-only detectors).
+                     Populated from Google Document AI textBlock.text when Google
+                     is the adjudicating source; None for local layout-only results.
 
     Validator:
         id must match the pattern ^r\\d+$ (e.g. r1, r2, r3).
@@ -70,6 +81,7 @@ class Region(BaseModel):
     type: RegionType
     bbox: BoundingBox
     confidence: Annotated[float, Field(ge=0.0, le=1.0)]
+    text: str | None = None
 
 
 class LayoutConfSummary(BaseModel):
@@ -178,6 +190,20 @@ class LayoutDetectResponse(BaseModel):
             if count < 0:
                 raise ValueError(f"region_type_histogram['{key}'] = {count} must be >= 0")
         return v
+
+
+class LayoutInputMetadata(BaseModel):
+    """Artifact metadata describing which page image IEP2 actually analyzed."""
+
+    source_page_artifact_uri: str
+    analyzed_artifact_uri: str
+    artifact_role: LayoutArtifactRole
+    input_source: LayoutInputSource
+    layout_input_width: Annotated[int, Field(gt=0)]
+    layout_input_height: Annotated[int, Field(gt=0)]
+    canonical_output_width: Annotated[int, Field(gt=0)]
+    canonical_output_height: Annotated[int, Field(gt=0)]
+    coordinate_rescaled: bool
 
 
 class LayoutConsensusResult(BaseModel):
@@ -321,7 +347,16 @@ class LayoutAdjudicationResult(BaseModel):
         iep2b_result             — full IEP2B LayoutDetectResponse (None if unavailable)
         google_document_ai_result — compact Google audit metadata; also used to
                                    preserve hard-failure vs empty-success distinction
-        final_layout_result      — canonical Region list used for acceptance routing
+        layout_input             — exact page artifact and analyzed derivative used
+                                   for this adjudication pass; may be None only for
+                                   legacy persisted payloads created before this
+                                   metadata existed
+        final_layout_result      — canonical Region list used for acceptance routing;
+                                   Region.text is populated when ocr_source="google"
+        ocr_source               — authoritative OCR source for final_layout_result:
+                                   "google"  → Region.text populated from Google textBlock.text
+                                   "paddle"  → local IEP2A result (text=None; layout-only)
+                                   None      → no regions / all sources failed
         status                   — "done" for the current IEP2 display policy;
                                    "failed" retained only for legacy payloads
         error                    — legacy failure description when status="failed"
@@ -341,7 +376,9 @@ class LayoutAdjudicationResult(BaseModel):
     iep2a_result: LayoutDetectResponse | None = None
     iep2b_result: LayoutDetectResponse | None = None
     google_document_ai_result: dict[str, Any] | None = None
+    layout_input: LayoutInputMetadata | None = None
     final_layout_result: list[Region] = Field(default_factory=list)
+    ocr_source: Literal["google", "paddle"] | None = None
     status: Literal["done", "failed"]
     error: str | None = None
     processing_time_ms: Annotated[float, Field(ge=0.0)]

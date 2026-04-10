@@ -57,9 +57,10 @@ export default function JobDetailPage() {
     refetchInterval: (query) => {
       const data = query.state.data;
       if (!data) return 8_000;
+      const operationalPages = filterOperationalPages(data.pages ?? []);
       const active =
         isJobActive(data.summary.status) ||
-        (data.pages && hasActivePages(data.pages));
+        (operationalPages.length > 0 && hasActivePages(operationalPages));
       return active ? 6_000 : false;
     },
   });
@@ -85,7 +86,8 @@ export default function JobDetailPage() {
   }
 
   const { summary, pages } = data;
-  const isActive = isJobActive(summary.status) || (pages && hasActivePages(pages));
+  const operationalPages = filterOperationalPages(pages);
+  const isActive = isJobActive(summary.status) || hasActivePages(operationalPages);
 
   return (
     <UserShell
@@ -159,7 +161,6 @@ export default function JobDetailPage() {
               <MetaField label="Collection" value={summary.collection_id} />
               <MetaField label="Material" value={summary.material_type} />
               <MetaField label="Pipeline" value={summary.pipeline_mode} />
-              <MetaField label="PTIFF QA" value={summary.ptiff_qa_mode} />
               <MetaField label="Policy" value={summary.policy_version} />
               <MetaField
                 label="Shadow"
@@ -221,7 +222,7 @@ export default function JobDetailPage() {
           <div>
             <h2 className="text-sm font-semibold text-slate-800 mb-3">
               Pages
-              <span className="ml-2 text-xs text-slate-400 font-normal">({pages.length})</span>
+              <span className="ml-2 text-xs text-slate-400 font-normal">({operationalPages.length})</span>
             </h2>
             <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
               <table className="w-full data-table">
@@ -238,9 +239,10 @@ export default function JobDetailPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {pages.map((page) => {
+                  {operationalPages.map((page) => {
                     const pageKey = `${page.page_number}-${page.sub_page_index ?? 0}`;
                     const isLayoutOpen = expandedLayoutKey === pageKey;
+                    const displayImageUri = page.output_image_uri ?? page.input_image_uri;
 
                     return (
                       <Fragment key={pageKey}>
@@ -261,15 +263,12 @@ export default function JobDetailPage() {
                               }`
                             )
                           }
-                          onOpenPtiffQa={() =>
-                            router.push(`/jobs/${summary.job_id}/ptiff-qa`)
-                          }
                         />
                         {isLayoutOpen && (
                           <tr className="bg-slate-50/80">
                             <td colSpan={8} className="px-4 py-4">
                               <LayoutOverlay
-                                imageUri={page.output_image_uri}
+                                imageUri={displayImageUri}
                                 layoutUri={page.output_layout_uri}
                                 pageLabel={`Page ${page.page_number}${
                                   page.sub_page_index != null
@@ -293,22 +292,33 @@ export default function JobDetailPage() {
   );
 }
 
+function filterOperationalPages(pages: JobPage[]): JobPage[] {
+  const pageNumbersWithChildren = new Set(
+    pages.filter((page) => page.sub_page_index != null).map((page) => page.page_number)
+  );
+  return pages.filter((page) => {
+    if (page.status === "split") return false;
+    if (page.sub_page_index == null && pageNumbersWithChildren.has(page.page_number)) {
+      return false;
+    }
+    return true;
+  });
+}
+
 function PageRow({
   page,
   isLayoutOpen,
   onToggleLayout,
   onOpenWorkspace,
-  onOpenPtiffQa,
 }: {
   page: JobPage;
   isLayoutOpen: boolean;
   onToggleLayout: () => void;
   onOpenWorkspace: () => void;
-  onOpenPtiffQa: () => void;
 }) {
   const isAttention = page.status === "pending_human_correction";
-  const isPtiffQa = page.status === "ptiff_qa_pending";
-  const canInspectLayout = Boolean(page.output_image_uri && page.output_layout_uri);
+  const displayImageUri = page.output_image_uri ?? page.input_image_uri;
+  const canInspectLayout = Boolean(displayImageUri && page.output_layout_uri);
 
   return (
     <tr
@@ -365,12 +375,12 @@ function PageRow({
       <td>
         <div className="flex items-center gap-2">
           <ArtifactImage
-            uri={page.output_image_uri}
+            uri={displayImageUri}
             containerClassName="h-9 w-8 rounded border border-slate-200"
             className="rounded object-cover"
             fallbackText=""
           />
-          <ArtifactLinkButton uri={page.output_image_uri} label="Open" size="xs" />
+          <ArtifactLinkButton uri={displayImageUri} label="Open" size="xs" />
         </div>
       </td>
       <td>
@@ -394,11 +404,6 @@ function PageRow({
             <Button size="xs" onClick={onOpenWorkspace} className="gap-1">
               <ChevronRight className="h-3 w-3" />
               Review
-            </Button>
-          )}
-          {isPtiffQa && (
-            <Button size="xs" variant="secondary" onClick={onOpenPtiffQa} className="gap-1">
-              PTIFF QA
             </Button>
           )}
         </div>

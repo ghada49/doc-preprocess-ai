@@ -10,7 +10,7 @@ Tests cover:
   - page_count matches submitted pages
   - created_at is present (ISO datetime string)
   - DB: Job and JobPage objects are created with correct field values
-  - DB: pipeline_mode and ptiff_qa_mode are stored on the Job row
+  - DB: pipeline_mode is stored on the Job row
   - Redis: one PageTask enqueued per submitted page
   - Validation: missing/invalid fields → 422
   - Redis unavailable → 503
@@ -60,7 +60,6 @@ _MINIMAL_BODY: dict[str, Any] = {
     "material_type": "book",
     "pages": [{"page_number": 1, "input_uri": "s3://libraryai/uploads/abc.tiff"}],
     "pipeline_mode": "layout",
-    "ptiff_qa_mode": "manual",
     "policy_version": "v1.0",
 }
 
@@ -73,7 +72,6 @@ _THREE_PAGE_BODY: dict[str, Any] = {
         {"page_number": 3, "input_uri": "s3://libraryai/uploads/p3.tiff"},
     ],
     "pipeline_mode": "preprocess",
-    "ptiff_qa_mode": "auto_continue",
     "policy_version": "v1.1",
     "shadow_mode": True,
 }
@@ -249,14 +247,6 @@ class TestJobDbRecord:
         client.post("/v1/jobs", json=_THREE_PAGE_BODY)
         assert _added_jobs(mock_db)[0].pipeline_mode == "preprocess"
 
-    def test_ptiff_qa_mode_manual(self, client: TestClient, mock_db: MagicMock) -> None:
-        client.post("/v1/jobs", json=_MINIMAL_BODY)
-        assert _added_jobs(mock_db)[0].ptiff_qa_mode == "manual"
-
-    def test_ptiff_qa_mode_auto_continue(self, client: TestClient, mock_db: MagicMock) -> None:
-        client.post("/v1/jobs", json=_THREE_PAGE_BODY)
-        assert _added_jobs(mock_db)[0].ptiff_qa_mode == "auto_continue"
-
     def test_material_type_stored(self, client: TestClient, mock_db: MagicMock) -> None:
         client.post("/v1/jobs", json=_MINIMAL_BODY)
         assert _added_jobs(mock_db)[0].material_type == "book"
@@ -428,12 +418,6 @@ class TestJobCreateValidation:
     def test_invalid_pipeline_mode(self, client: TestClient) -> None:
         assert (
             client.post("/v1/jobs", json={**_MINIMAL_BODY, "pipeline_mode": "batch"}).status_code
-            == 422
-        )
-
-    def test_invalid_ptiff_qa_mode(self, client: TestClient) -> None:
-        assert (
-            client.post("/v1/jobs", json={**_MINIMAL_BODY, "ptiff_qa_mode": "skip"}).status_code
             == 422
         )
 
