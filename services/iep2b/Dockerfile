@@ -59,6 +59,8 @@ ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
+RUN pip install --no-cache-dir --upgrade pip wheel "setuptools<81"
+
 RUN uv pip install --system \
     "fastapi>=0.110.0" \
     "uvicorn[standard]>=0.27.0" \
@@ -69,7 +71,8 @@ COPY models/iep2b/ /opt/models/iep2b/
 
 RUN if [ "$ENABLE_REAL_MODEL" = "true" ]; then \
       pip install --no-cache-dir \
-        "torch==2.1.0" \
+        "torch==2.2.2" \
+        "torchvision==0.17.2" \
         --index-url https://download.pytorch.org/whl/cpu \
       && pip install --no-cache-dir \
         -r /tmp/requirements-real-iep2b.txt; \

@@ -34,14 +34,13 @@ import { Separator } from "@/components/ui/separator";
 import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { ImageViewer } from "./image-viewer";
+import { LayoutOverlay } from "@/components/jobs/layout-overlay";
 
 type SourceView =
   | "original"
-  | "best_output"
-  | "iep1a"
-  | "iep1b"
-  | "iep1c"
-  | "iep1d";
+  | "current"
+  | "normalized"
+  | "rectified";
 
 interface WorkspaceProps {
   jobId: string;
@@ -74,9 +73,10 @@ export function CorrectionWorkspace({
     staleTime: 0,
   });
 
-  const [activeSource, setActiveSource] = useState<SourceView>("best_output");
+  const [activeSource, setActiveSource] = useState<SourceView>("current");
   const [cropBox, setCropBox] = useState<[number, number, number, number] | null>(null);
   const [deskewAngle, setDeskewAngle] = useState<number | null>(null);
+  const [splitX, setSplitX] = useState<number | null>(null);
   const [pageStructure, setPageStructure] = useState<PageStructure>("single");
   const [reviewerNotes, setReviewerNotes] = useState("");
   const [showRejectModal, setShowRejectModal] = useState(false);
@@ -91,7 +91,16 @@ export function CorrectionWorkspace({
     if (!workspace) return;
     setCropBox(workspace.current_crop_box ?? null);
     setDeskewAngle(workspace.current_deskew_angle ?? null);
+    setSplitX(workspace.current_split_x ?? null);
     setPageStructure(workspace.suggested_page_structure ?? "single");
+    setActiveSource((current) => {
+      if (resolveUri(workspace, current)) return current;
+      if (workspace.current_output_uri) return "current";
+      if (workspace.branch_outputs.iep1c_normalized) return "normalized";
+      if (workspace.branch_outputs.iep1d_rectified) return "rectified";
+      if (workspace.original_otiff_uri) return "original";
+      return "current";
+    });
   }, [workspace]);
 
   const workspacePathForSubPage = (nextSubPageIndex: number) =>
@@ -112,7 +121,7 @@ export function CorrectionWorkspace({
           deskew_angle:
             subPageIndex != null || pageStructure === "single" ? deskewAngle : null,
           page_structure: subPageIndex == null ? pageStructure : undefined,
-          split_x: null,
+          split_x: isSpreadSelection ? (splitX != null ? Math.round(splitX) : null) : null,
         },
         {
           subPageIndex,
@@ -122,7 +131,6 @@ export function CorrectionWorkspace({
     onSuccess: () => {
       toast.success("Correction submitted.");
       queryClient.invalidateQueries({ queryKey: ["correction-queue"] });
-      queryClient.invalidateQueries({ queryKey: ["ptiff-qa", jobId] });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       queryClient.invalidateQueries({
         queryKey: ["correction-workspace", jobId, pageNumber, subPageIndex],
@@ -199,6 +207,7 @@ export function CorrectionWorkspace({
   const hasChildPages = workspace.child_pages.length > 0;
   const isSpreadSelection = !isChildPage && pageStructure === "spread";
   const canEditGeometry = isChildPage || pageStructure === "single";
+  const canEditOnDisplayedSource = canEditGeometry && activeSource === "current";
 
   return (
     <div className="flex h-full flex-col bg-slate-50/80">
@@ -270,11 +279,11 @@ export function CorrectionWorkspace({
 
           <div className="flex flex-col gap-1 p-2">
             <SourceButton
-              label="Best Available"
-              description="Pipeline output"
-              active={activeSource === "best_output"}
-              available={!!workspace.best_output_uri}
-              onClick={() => setActiveSource("best_output")}
+              label="Current"
+              description={currentArtifactLabel(workspace.current_output_role)}
+              active={activeSource === "current"}
+              available={!!workspace.current_output_uri}
+              onClick={() => setActiveSource("current")}
               icon={<Eye className="h-3.5 w-3.5" />}
             />
             <SourceButton
@@ -285,58 +294,20 @@ export function CorrectionWorkspace({
               onClick={() => setActiveSource("original")}
               icon={<Eye className="h-3.5 w-3.5" />}
             />
-
-            <div className="px-2 py-1.5">
-              <p className="text-2xs font-semibold uppercase tracking-wider text-slate-400">
-                Branch Outputs
-              </p>
-            </div>
-
             <SourceButton
-              label="IEP1A"
-              description={
-                workspace.branch_outputs.iep1a_geometry
-                  ? `conf: ${(workspace.branch_outputs.iep1a_geometry.geometry_confidence ?? 0).toFixed(2)}`
-                  : "Not available"
-              }
-              active={activeSource === "iep1a"}
-              available={!!workspace.branch_outputs.iep1a_geometry}
-              onClick={() => setActiveSource("iep1a")}
-              icon={<GitBranch className="h-3.5 w-3.5" />}
-              badge={
-                workspace.branch_outputs.iep1a_geometry?.geometry_confidence != null
-                  ? workspace.branch_outputs.iep1a_geometry.geometry_confidence >= 0.8
-                    ? "success"
-                    : "warning"
-                  : undefined
-              }
-            />
-            <SourceButton
-              label="IEP1B"
-              description={
-                workspace.branch_outputs.iep1b_geometry
-                  ? `conf: ${(workspace.branch_outputs.iep1b_geometry.geometry_confidence ?? 0).toFixed(2)}`
-                  : "Not available"
-              }
-              active={activeSource === "iep1b"}
-              available={!!workspace.branch_outputs.iep1b_geometry}
-              onClick={() => setActiveSource("iep1b")}
-              icon={<GitBranch className="h-3.5 w-3.5" />}
-            />
-            <SourceButton
-              label="IEP1C"
+              label="Normalized"
               description="Normalized"
-              active={activeSource === "iep1c"}
+              active={activeSource === "normalized"}
               available={!!workspace.branch_outputs.iep1c_normalized}
-              onClick={() => setActiveSource("iep1c")}
+              onClick={() => setActiveSource("normalized")}
               icon={<GitBranch className="h-3.5 w-3.5" />}
             />
             <SourceButton
-              label="IEP1D"
+              label="Rectified"
               description="Rectified"
-              active={activeSource === "iep1d"}
+              active={activeSource === "rectified"}
               available={!!workspace.branch_outputs.iep1d_rectified}
-              onClick={() => setActiveSource("iep1d")}
+              onClick={() => setActiveSource("rectified")}
               icon={<GitBranch className="h-3.5 w-3.5" />}
             />
           </div>
@@ -346,6 +317,10 @@ export function CorrectionWorkspace({
               Metadata
             </p>
             <MetaRow label="Pipeline" value={workspace.pipeline_mode} />
+            <MetaRow
+              label="Current Artifact"
+              value={currentArtifactLabel(workspace.current_output_role)}
+            />
             {workspace.branch_outputs.iep1a_geometry && (
               <MetaRow
                 label="IEP1A split"
@@ -356,14 +331,36 @@ export function CorrectionWorkspace({
         </div>
 
         <div className="min-w-0 flex-1 bg-slate-50/70 p-4">
-          <ImageViewer
-            imageUrl={viewerData?.blobUrl ?? null}
-            isLoading={viewerLoading}
-            cropBox={cropBoxObj}
-            deskewAngle={deskewAngle ?? 0}
-            showCropOverlay
-            onCropBoxChange={(box) => setCropBox([box.x1, box.y1, box.x2, box.y2])}
-          />
+          <div className="space-y-4">
+            <ImageViewer
+              imageUrl={viewerData?.blobUrl ?? null}
+              isLoading={viewerLoading}
+              cropBox={canEditOnDisplayedSource ? cropBoxObj : null}
+              deskewAngle={deskewAngle ?? 0}
+              showCropOverlay={canEditOnDisplayedSource}
+              onCropBoxChange={
+                canEditOnDisplayedSource ? (box) => setCropBox([box.x1, box.y1, box.x2, box.y2]) : undefined
+              }
+              onCropAngleChange={canEditOnDisplayedSource ? (angle) => setDeskewAngle(angle) : undefined}
+              splitX={isSpreadSelection && activeSource === "current" ? splitX : null}
+              showSplitOverlay={isSpreadSelection && activeSource === "current"}
+              onSplitXChange={isSpreadSelection && activeSource === "current" ? (x) => setSplitX(x) : undefined}
+            />
+            {canEditGeometry && activeSource !== "current" && (
+              <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
+                Editing applies to the current artifact. Switch back to <strong>Current</strong> to drag crop, deskew, or split handles.
+              </div>
+            )}
+            {workspace.current_output_uri && workspace.current_layout_uri && (
+              <LayoutOverlay
+                imageUri={workspace.current_output_uri}
+                layoutUri={workspace.current_layout_uri}
+                pageLabel={`Correction Page ${workspace.page_number}${
+                  workspace.sub_page_index != null ? ` / ${workspace.sub_page_index}` : ""
+                }`}
+              />
+            )}
+          </div>
         </div>
 
         <div className="flex w-64 shrink-0 flex-col overflow-y-auto border-l border-slate-200 bg-white shadow-sm">
@@ -546,40 +543,25 @@ export function CorrectionWorkspace({
                       </button>
                     )}
                   </div>
-                  <div className="flex items-center gap-2">
-                    <input
-                      type="range"
-                      min="-45"
-                      max="45"
-                      step="0.1"
-                      value={deskewAngle ?? 0}
-                      onChange={(e) => setDeskewAngle(parseFloat(e.target.value))}
-                      className="h-1.5 flex-1 accent-indigo-500"
-                    />
-                    <Input
-                      type="number"
-                      step="0.1"
-                      min="-45"
-                      max="45"
-                      value={deskewAngle ?? ""}
-                      onChange={(e) => {
-                        const v = parseFloat(e.target.value);
-                        setDeskewAngle(Number.isNaN(v) ? null : Math.max(-45, Math.min(45, v)));
-                      }}
-                      placeholder="null"
-                      className="h-8 w-20 text-xs tabular-nums"
-                    />
-                  </div>
-                  {deskewAngle == null ? (
-                    <p className="flex items-center gap-1 text-2xs text-slate-400">
-                      <Info className="h-3 w-3" />
-                      No deskew - drag the slider or type a value.
-                    </p>
-                  ) : (
-                    <p className="text-2xs text-slate-400">
-                      Live preview shown on image.
-                    </p>
-                  )}
+                  <Input
+                    type="number"
+                    step="0.1"
+                    min="-45"
+                    max="45"
+                    value={deskewAngle ?? ""}
+                    onChange={(e) => {
+                      const v = parseFloat(e.target.value);
+                      setDeskewAngle(Number.isNaN(v) ? null : Math.max(-45, Math.min(45, v)));
+                    }}
+                    placeholder="null"
+                    className="h-8 text-xs tabular-nums"
+                  />
+                  <p className="flex items-center gap-1 text-2xs text-slate-400">
+                    <Info className="h-3 w-3" />
+                    {deskewAngle != null
+                      ? `${deskewAngle.toFixed(1)}° — drag ↻ on the crop box to adjust.`
+                      : "Drag the ↻ handle on the crop box or type a value."}
+                  </p>
                 </div>
 
                 <Separator />
@@ -625,11 +607,17 @@ export function CorrectionWorkspace({
                 value={
                   canEditGeometry
                     ? deskewAngle != null
-                      ? `${deskewAngle} deg`
+                      ? `${deskewAngle.toFixed(1)}°`
                       : "null"
                     : "child workflow"
                 }
               />
+              {isSpreadSelection && (
+                <SubmitRow
+                  label="Split X"
+                  value={splitX != null ? `${Math.round(splitX)}px` : "center (default)"}
+                />
+              )}
               {isSpreadSelection && (
                 <div className="flex items-center gap-1 text-2xs text-cyan-600">
                   <GitBranch className="h-2.5 w-2.5 shrink-0" />
@@ -687,17 +675,29 @@ function resolveUri(
   switch (source) {
     case "original":
       return workspace.original_otiff_uri;
-    case "best_output":
-      return workspace.best_output_uri;
-    case "iep1c":
+    case "current":
+      return workspace.current_output_uri;
+    case "normalized":
       return workspace.branch_outputs.iep1c_normalized;
-    case "iep1d":
+    case "rectified":
       return workspace.branch_outputs.iep1d_rectified;
-    case "iep1a":
-    case "iep1b":
-      return workspace.branch_outputs.iep1c_normalized ?? workspace.best_output_uri;
     default:
-      return workspace.best_output_uri;
+      return workspace.current_output_uri ?? workspace.best_output_uri;
+  }
+}
+
+function currentArtifactLabel(role: CorrectionWorkspaceDetail["current_output_role"]): string {
+  switch (role) {
+    case "human_corrected":
+      return "Human corrected";
+    case "split_child":
+      return "Split child";
+    case "normalized_output":
+      return "Normalized output";
+    case "original_upload":
+      return "Original upload";
+    default:
+      return "Unavailable";
   }
 }
 

@@ -1,11 +1,16 @@
 """
 services/eep/app/gates/layout_gate.py
 --------------------------------------
-EEP layout consensus gate (Packet 6.5).
+EEP layout consensus gate (Packet 6.5) and layout adjudication gate (P3.2).
 
-Implements spec Section 7.4: greedy IoU-based one-to-one matching between
-IEP2A (PaddleOCR PP-DocLayoutV2) and IEP2B (DocLayout-YOLO) canonical region lists, yielding
-a LayoutConsensusResult that drives the downstream routing decision.
+evaluate_layout_consensus — spec Section 7.4: greedy IoU-based one-to-one
+matching between IEP2A and IEP2B canonical region lists, yielding a
+LayoutConsensusResult that drives the downstream routing decision.
+
+evaluate_layout_adjudication — P3.2: wraps local consensus as a fast path
+and falls back to Google Document AI when local detectors disagree or are
+unavailable. If Google hard-fails, the gate still returns a displayable local
+fallback result. Returns a LayoutAdjudicationResult.
 
 Algorithm summary (spec Section 7.4):
   1. Greedy one-to-one matching by descending IoU.
@@ -18,22 +23,39 @@ Algorithm summary (spec Section 7.4):
      where histogram_flag = 1.0 if type_histogram_match else 0.0
   6. Single-model fallback (iep2b_regions is None): agreed=False unconditionally.
 
-Routing after this gate (spec Section 8.2, Step 12–13):
-  agreed == False                          → review / "layout_consensus_failed"
-  consensus_confidence < min_conf (0.6)   → review / "layout_consensus_low_confidence"
+IEP2 policy after this gate:
+  local agreement                          → use IEP2A regions
+  local disagreement / local detector miss → try Google Document AI
+  Google technical success                 → use Google's result (including empty)
+  Google hard failure                      → use best available local result
+  review routing                           → never for IEP2
 
 Exported:
-    LayoutGateConfig         — policy thresholds (spec Section 8.4 defaults)
-    evaluate_layout_consensus — main entry point
+    LayoutGateConfig              — policy thresholds (spec Section 8.4 defaults)
+    evaluate_layout_consensus     — original local-only entry point
+    evaluate_layout_adjudication  — new adjudication entry point (P3.2)
 """
 
 from __future__ import annotations
 
+import logging
+import time
 from collections.abc import Sequence
 from dataclasses import dataclass
+from typing import Any
 
-from shared.schemas.layout import LayoutConsensusResult, Region, RegionType
+from services.eep.app.google.document_ai import _derive_empty_reason
+from shared.metrics import GOOGLE_LAYOUT_ADJUDICATION_DECISIONS
+from shared.schemas.layout import (
+    LayoutAdjudicationResult,
+    LayoutConsensusResult,
+    LayoutDetectResponse,
+    Region,
+    RegionType,
+)
 from shared.schemas.ucf import BoundingBox
+
+logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Configuration
@@ -227,4 +249,361 @@ def evaluate_layout_consensus(
         agreed=agreed,
         consensus_confidence=round(consensus_confidence, 6),
         single_model_mode=False,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Layout adjudication gate (P3.2)
+# ---------------------------------------------------------------------------
+
+
+def _best_available_local_result(
+    iep2a_result: LayoutDetectResponse | None,
+    iep2b_result: LayoutDetectResponse | None,
+) -> tuple[list[Region], str]:
+    """
+    Return the best available local layout result for no-review fallback.
+
+    Preference order is product-mandated:
+      1. IEP2A if it exists and has regions
+      2. IEP2B if it exists and has regions
+      3. empty list
+    """
+    if iep2a_result is not None and iep2a_result.regions:
+        return list(iep2a_result.regions), "iep2a"
+    if iep2b_result is not None and iep2b_result.regions:
+        return list(iep2b_result.regions), "iep2b"
+    return [], "none"
+
+
+def _build_local_fallback_result(
+    *,
+    iep2a_result: LayoutDetectResponse | None,
+    iep2b_result: LayoutDetectResponse | None,
+    iep2a_region_count: int,
+    iep2b_region_count: int | None,
+    google_attempted: bool,
+    google_error: str,
+    google_response_time_ms: float | None,
+    google_metadata: dict[str, Any] | None,
+    t_start: float,
+) -> LayoutAdjudicationResult:
+    """Build the no-review local fallback result for Google hard failures."""
+    GOOGLE_LAYOUT_ADJUDICATION_DECISIONS.labels(source="local_fallback_unverified").inc()
+    final_layout_result, local_fallback_source = _best_available_local_result(
+        iep2a_result, iep2b_result
+    )
+    audit: dict[str, Any] = {
+        "attempted": google_attempted,
+        "success": False,
+        "hard_failure": True,
+        "empty_result": False,
+        "error": google_error,
+        "local_fallback_source": local_fallback_source,
+    }
+    if google_metadata:
+        audit.update(google_metadata)
+
+    elapsed = (time.monotonic() - t_start) * 1000.0
+    return LayoutAdjudicationResult(
+        agreed=False,
+        consensus_confidence=None,
+        layout_decision_source="local_fallback_unverified",
+        fallback_used=google_attempted,
+        iep2a_region_count=iep2a_region_count,
+        iep2b_region_count=iep2b_region_count,
+        matched_regions=None,
+        mean_matched_iou=None,
+        type_histogram_match=None,
+        iep2a_result=iep2a_result,
+        iep2b_result=iep2b_result,
+        google_document_ai_result=audit,
+        final_layout_result=final_layout_result,
+        ocr_source="paddle" if final_layout_result else None,
+        status="done",
+        error=None,
+        processing_time_ms=round(elapsed, 2),
+        google_response_time_ms=(
+            round(google_response_time_ms, 2) if google_response_time_ms is not None else None
+        ),
+    )
+
+
+async def evaluate_layout_adjudication(
+    iep2a_result: LayoutDetectResponse | None,
+    iep2b_result: LayoutDetectResponse | None,
+    google_client: Any | None,
+    image_bytes: bytes | None,
+    mime_type: str,
+    material_type: str,
+    image_uri: str,
+    config: LayoutGateConfig | None = None,
+) -> LayoutAdjudicationResult:
+    """
+    Run the full layout adjudication gate (P3.2 / spec Section 7.4–7.5).
+
+    Decision tree:
+      1. Both IEP2A and IEP2B succeeded → run local consensus.
+         a. agreed=True → fast path: return local_agreement result.
+         b. agreed=False → fall through to Google.
+      2. Either or both IEP2 detectors unavailable / failed → fall through
+         to Google (single-model or dual-failed path).
+      3. Google fallback:
+         a. Google technically succeeds → google_document_ai result
+            (including a valid empty layout).
+         b. Google hard-fails (no client, timeout, auth/API error, no response)
+            → return local_fallback_unverified using the best available local result.
+
+    Args:
+        iep2a_result   — LayoutDetectResponse from IEP2A, or None if it failed.
+        iep2b_result   — LayoutDetectResponse from IEP2B, or None if it failed.
+        google_client  — initialized CallGoogleDocumentAI instance, or None.
+        image_bytes    — raw page image bytes passed to Google (if available).
+        mime_type      — MIME type of image_bytes (e.g. "image/tiff").
+        material_type  — document material type hint ("book" / "newspaper" / …).
+        image_uri      — URI of the page image (used as fallback / for logging).
+        config         — gate policy thresholds; defaults to LayoutGateConfig().
+
+    Returns:
+        LayoutAdjudicationResult capturing the decision and all audit fields.
+    """
+    cfg = config if config is not None else LayoutGateConfig()
+    t_start = time.monotonic()
+
+    iep2a_region_count = len(iep2a_result.regions) if iep2a_result is not None else 0
+    iep2b_region_count = len(iep2b_result.regions) if iep2b_result is not None else None
+
+    # ── Path 1: Local consensus (both detectors available) ─────────────────
+    if iep2a_result is not None and iep2b_result is not None:
+        consensus = evaluate_layout_consensus(iep2a_result.regions, iep2b_result.regions, cfg)
+        if consensus.agreed:
+            elapsed = (time.monotonic() - t_start) * 1000.0
+            logger.info(
+                "layout_adjudication: local agreement — "
+                "matched=%d iou=%.3f conf=%.3f image_uri=%s",
+                consensus.matched_regions,
+                consensus.mean_matched_iou,
+                consensus.consensus_confidence,
+                image_uri,
+            )
+            GOOGLE_LAYOUT_ADJUDICATION_DECISIONS.labels(source="local_agreement").inc()
+            local_regions = list(iep2a_result.regions)
+            return LayoutAdjudicationResult(
+                agreed=True,
+                consensus_confidence=consensus.consensus_confidence,
+                layout_decision_source="local_agreement",
+                fallback_used=False,
+                iep2a_region_count=iep2a_region_count,
+                iep2b_region_count=iep2b_region_count,
+                matched_regions=consensus.matched_regions,
+                mean_matched_iou=consensus.mean_matched_iou,
+                type_histogram_match=consensus.type_histogram_match,
+                iep2a_result=iep2a_result,
+                iep2b_result=iep2b_result,
+                google_document_ai_result=None,
+                final_layout_result=local_regions,
+                ocr_source="paddle" if local_regions else None,
+                status="done",
+                error=None,
+                processing_time_ms=round(elapsed, 2),
+                google_response_time_ms=None,
+            )
+        # Local detectors disagreed — fall through to Google.
+        logger.info(
+            "layout_adjudication: local disagreement (conf=%.3f) — "
+            "falling back to Google, image_uri=%s",
+            consensus.consensus_confidence,
+            image_uri,
+        )
+    else:
+        # One or both detectors unavailable.
+        logger.info(
+            "layout_adjudication: IEP2A=%s IEP2B=%s — falling back to Google, image_uri=%s",
+            "ok" if iep2a_result is not None else "None",
+            "ok" if iep2b_result is not None else "None",
+            image_uri,
+        )
+
+    # ── Path 2: Google fallback ─────────────────────────────────────────────
+    if google_client is None:
+        logger.warning(
+            "layout_adjudication: Google client not available — using local fallback, image_uri=%s",
+            image_uri,
+        )
+        GOOGLE_LAYOUT_ADJUDICATION_DECISIONS.labels(source="google_skipped").inc()
+        return _build_local_fallback_result(
+            iep2a_result=iep2a_result,
+            iep2b_result=iep2b_result,
+            iep2a_region_count=iep2a_region_count,
+            iep2b_region_count=iep2b_region_count,
+            google_attempted=False,
+            google_error="Google Document AI not available",
+            google_response_time_ms=None,
+            google_metadata={"google_available": False},
+            t_start=t_start,
+        )
+
+    # Call Google Document AI.
+    t_google_start = time.monotonic()
+    try:
+        google_response = await google_client.process_layout(
+            image_uri=image_uri,
+            material_type=material_type,
+            image_bytes=image_bytes,
+            mime_type=mime_type,
+        )
+    except Exception as exc:  # noqa: BLE001
+        google_elapsed = (time.monotonic() - t_google_start) * 1000.0
+        logger.warning(
+            "layout_adjudication: Google hard failure — using local fallback, "
+            "error=%s image_uri=%s",
+            exc,
+            image_uri,
+        )
+        return _build_local_fallback_result(
+            iep2a_result=iep2a_result,
+            iep2b_result=iep2b_result,
+            iep2a_region_count=iep2a_region_count,
+            iep2b_region_count=iep2b_region_count,
+            google_attempted=True,
+            google_error=str(exc),
+            google_response_time_ms=google_elapsed,
+            google_metadata={"google_available": True},
+            t_start=t_start,
+        )
+    google_elapsed = (time.monotonic() - t_google_start) * 1000.0
+
+    if not google_response:
+        logger.warning(
+            "layout_adjudication: Google returned no response — using local fallback, image_uri=%s",
+            image_uri,
+        )
+        return _build_local_fallback_result(
+            iep2a_result=iep2a_result,
+            iep2b_result=iep2b_result,
+            iep2a_region_count=iep2a_region_count,
+            iep2b_region_count=iep2b_region_count,
+            google_attempted=True,
+            google_error="Google Document AI returned no response",
+            google_response_time_ms=google_elapsed,
+            google_metadata={"google_available": True},
+            t_start=t_start,
+        )
+
+    # Map Google response to canonical regions.
+    elements = google_response.get("elements", [])
+    page_width = google_response.get("page_width", 1)
+    page_height = google_response.get("page_height", 1)
+    try:
+        canonical_regions: list[Region] = google_client._map_google_to_canonical(
+            elements, page_width, page_height
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.warning(
+            "layout_adjudication: Google canonical mapping failed — using local fallback, "
+            "error=%s image_uri=%s",
+            exc,
+            image_uri,
+        )
+        return _build_local_fallback_result(
+            iep2a_result=iep2a_result,
+            iep2b_result=iep2b_result,
+            iep2a_region_count=iep2a_region_count,
+            iep2b_region_count=iep2b_region_count,
+            google_attempted=True,
+            google_error=f"Google canonical mapping failed: {exc}",
+            google_response_time_ms=google_elapsed,
+            google_metadata={
+                "google_available": True,
+                "page_width": page_width,
+                "page_height": page_height,
+                "region_count": google_response.get("region_count", len(elements)),
+            },
+            t_start=t_start,
+        )
+
+    # Store a compact audit summary (raw_response is not JSON-serialisable).
+    google_audit: dict[str, Any] = {
+        "attempted": True,
+        "success": True,
+        "hard_failure": False,
+        "empty_result": len(canonical_regions) == 0,
+        "region_count": google_response.get("region_count", len(elements)),
+        "page_width": page_width,
+        "page_height": page_height,
+        "document_layout_block_count": int(google_response.get("document_layout_block_count", 0)),
+        "pages_count": int(google_response.get("pages_count", 0)),
+        "text_length": int(google_response.get("text_length", 0)),
+        "document_layout_blocks_have_geometry": bool(
+            google_response.get("document_layout_blocks_have_geometry", False)
+        ),
+        "empty_reason": _derive_empty_reason(
+            canonical_region_count=len(canonical_regions),
+            document_layout_block_count=int(
+                google_response.get("document_layout_block_count", 0)
+            ),
+            pages_count=int(google_response.get("pages_count", 0)),
+            text_length=int(google_response.get("text_length", 0)),
+            document_layout_blocks_have_geometry=bool(
+                google_response.get("document_layout_blocks_have_geometry", False)
+            ),
+        ),
+    }
+
+    elapsed = (time.monotonic() - t_start) * 1000.0
+
+    if not canonical_regions:
+        logger.info(
+            "layout_adjudication: Google returned 0 canonical regions — "
+            "using empty Google result, image_uri=%s",
+            image_uri,
+        )
+        GOOGLE_LAYOUT_ADJUDICATION_DECISIONS.labels(source="google_document_ai").inc()
+        return LayoutAdjudicationResult(
+            agreed=False,
+            consensus_confidence=None,
+            layout_decision_source="google_document_ai",
+            fallback_used=False,  # Google was consulted and responded — not a fallback
+            iep2a_region_count=iep2a_region_count,
+            iep2b_region_count=iep2b_region_count,
+            matched_regions=None,
+            mean_matched_iou=None,
+            type_histogram_match=None,
+            iep2a_result=iep2a_result,
+            iep2b_result=iep2b_result,
+            google_document_ai_result=google_audit,
+            final_layout_result=[],
+            ocr_source="google",  # Google was authoritative (empty is a valid result)
+            status="done",
+            error=None,
+            processing_time_ms=round(elapsed, 2),
+            google_response_time_ms=round(google_elapsed, 2),
+        )
+
+    logger.info(
+        "layout_adjudication: Google success — %d regions, google_ms=%.0f, image_uri=%s",
+        len(canonical_regions),
+        google_elapsed,
+        image_uri,
+    )
+    GOOGLE_LAYOUT_ADJUDICATION_DECISIONS.labels(source="google_document_ai").inc()
+    return LayoutAdjudicationResult(
+        agreed=False,
+        consensus_confidence=None,
+        layout_decision_source="google_document_ai",
+        fallback_used=False,  # Google was consulted and succeeded — not a fallback
+        iep2a_region_count=iep2a_region_count,
+        iep2b_region_count=iep2b_region_count,
+        matched_regions=None,
+        mean_matched_iou=None,
+        type_histogram_match=None,
+        iep2a_result=iep2a_result,
+        iep2b_result=iep2b_result,
+        google_document_ai_result=google_audit,
+        final_layout_result=canonical_regions,
+        ocr_source="google",
+        status="done",
+        error=None,
+        processing_time_ms=round(elapsed, 2),
+        google_response_time_ms=round(google_elapsed, 2),
     )

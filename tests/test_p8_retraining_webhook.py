@@ -34,7 +34,7 @@ dependency overrides.
 from __future__ import annotations
 
 import uuid as uuid_mod
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -47,9 +47,9 @@ from services.eep.app.retraining_webhook import router
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_NOW = datetime(2026, 3, 28, 12, 0, 0, tzinfo=UTC)
+_NOW = datetime(2026, 3, 28, 12, 0, 0, tzinfo=timezone.utc)
 _STARTS_AT = "2026-03-28T10:00:00Z"
-_STARTS_AT_PARSED = datetime(2026, 3, 28, 10, 0, 0, tzinfo=UTC)
+_STARTS_AT_PARSED = datetime(2026, 3, 28, 10, 0, 0, tzinfo=timezone.utc)
 
 
 # ── Mock session factory ──────────────────────────────────────────────────────

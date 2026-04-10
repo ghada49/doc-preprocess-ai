@@ -61,13 +61,13 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import yaml
+import yaml  # type: ignore[import-untyped]
 from sqlalchemy.orm import Session
 
 from services.eep.app.db.models import PolicyVersion
 from services.eep.app.gates.geometry_selection import (
-    PreprocessingGateConfig,
     _DEFAULT_ASPECT_RATIO_BOUNDS,
+    PreprocessingGateConfig,
 )
 
 logger = logging.getLogger(__name__)
@@ -80,9 +80,7 @@ __all__ = ["load_gate_config", "parse_gate_config"]
 def _current_policy_yaml(db: Session) -> str | None:
     """Return config_yaml of the most recent PolicyVersion, or None."""
     pv: PolicyVersion | None = (
-        db.query(PolicyVersion)
-        .order_by(PolicyVersion.applied_at.desc())
-        .first()
+        db.query(PolicyVersion).order_by(PolicyVersion.applied_at.desc()).first()
     )
     return pv.config_yaml if pv is not None else None
 
@@ -118,10 +116,7 @@ def _parse_aspect_ratio_bounds(
         return dict(default)
     result: dict[str, tuple[float, float]] = dict(default)
     for material_type, bounds in raw.items():
-        if (
-            isinstance(bounds, (list, tuple))
-            and len(bounds) == 2
-        ):
+        if isinstance(bounds, list | tuple) and len(bounds) == 2:
             try:
                 lo = float(bounds[0])
                 hi = float(bounds[1])
@@ -203,24 +198,14 @@ def parse_gate_config(
     skew_residual_bad_min = _safe_float(
         pre.get("skew_residual_bad_min"), defaults.skew_residual_bad_min
     )
-    blur_score_good_max = _safe_float(
-        pre.get("blur_score_good_max"), defaults.blur_score_good_max
-    )
+    blur_score_good_max = _safe_float(pre.get("blur_score_good_max"), defaults.blur_score_good_max)
     border_score_good_min = _safe_float(
         pre.get("border_score_good_min"), defaults.border_score_good_min
     )
-    foreground_good_lo = _safe_float(
-        pre.get("foreground_good_lo"), defaults.foreground_good_lo
-    )
-    foreground_good_hi = _safe_float(
-        pre.get("foreground_good_hi"), defaults.foreground_good_hi
-    )
-    foreground_bad_lo = _safe_float(
-        pre.get("foreground_bad_lo"), defaults.foreground_bad_lo
-    )
-    foreground_bad_hi = _safe_float(
-        pre.get("foreground_bad_hi"), defaults.foreground_bad_hi
-    )
+    foreground_good_lo = _safe_float(pre.get("foreground_good_lo"), defaults.foreground_good_lo)
+    foreground_good_hi = _safe_float(pre.get("foreground_good_hi"), defaults.foreground_good_hi)
+    foreground_bad_lo = _safe_float(pre.get("foreground_bad_lo"), defaults.foreground_bad_lo)
+    foreground_bad_hi = _safe_float(pre.get("foreground_bad_hi"), defaults.foreground_bad_hi)
     geometry_confidence_good_min = _safe_float(
         pre.get("geometry_confidence_good_min"), defaults.geometry_confidence_good_min
     )
@@ -236,12 +221,8 @@ def parse_gate_config(
     weight_skew_residual = _safe_float(
         pre.get("weight_skew_residual"), defaults.weight_skew_residual
     )
-    weight_blur_score = _safe_float(
-        pre.get("weight_blur_score"), defaults.weight_blur_score
-    )
-    weight_border_score = _safe_float(
-        pre.get("weight_border_score"), defaults.weight_border_score
-    )
+    weight_blur_score = _safe_float(pre.get("weight_blur_score"), defaults.weight_blur_score)
+    weight_border_score = _safe_float(pre.get("weight_border_score"), defaults.weight_border_score)
     weight_foreground_coverage = _safe_float(
         pre.get("weight_foreground_coverage"), defaults.weight_foreground_coverage
     )

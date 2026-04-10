@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -100,6 +100,7 @@ def reject_correction(
     job_id: str,
     page_number: int,
     body: CorrectionRejectRequest = CorrectionRejectRequest(),
+    sub_page_index: int | None = Query(default=None),
     db: Session = Depends(get_session),
     user: CurrentUser = Depends(require_user),
 ) -> CorrectionRejectResponse:
@@ -125,7 +126,7 @@ def reject_correction(
         .filter(
             JobPage.job_id == job_id,
             JobPage.page_number == page_number,
-            JobPage.sub_page_index == None,  # non-split pages only  # noqa: E711
+            JobPage.sub_page_index == sub_page_index,
         )
         .first()
     )
@@ -133,7 +134,10 @@ def reject_correction(
     if page is None:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"Page {page_number} of job {job_id!r} not found.",
+            detail=(
+                f"Page {page_number} sub_page_index {sub_page_index!r} "
+                f"of job {job_id!r} not found."
+            ),
         )
 
     if page.status != "pending_human_correction":
@@ -153,7 +157,7 @@ def reject_correction(
         .filter(
             PageLineage.job_id == job_id,
             PageLineage.page_number == page_number,
-            PageLineage.sub_page_index == None,  # noqa: E711
+            PageLineage.sub_page_index == sub_page_index,
         )
         .first()
     )
@@ -163,7 +167,7 @@ def reject_correction(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=(
                 f"Data-integrity failure: no lineage row for job {job_id!r} "
-                f"page {page_number}. "
+                f"page {page_number} sub_page_index {sub_page_index!r}. "
                 "Page cannot be rejected without an existing lineage record."
             ),
         )
@@ -197,8 +201,9 @@ def reject_correction(
     db.commit()
 
     logger.info(
-        "Correction rejected: job=%s page=%d → review",
+        "Correction rejected: job=%s page=%d sub_page_index=%s → review",
         job_id,
         page_number,
+        sub_page_index,
     )
     return CorrectionRejectResponse(page_number=page_number)

@@ -13,16 +13,13 @@ validate_transition() from shared.state_machine so the two cannot diverge.
 
 State machine (valid transitions):
   queued               → preprocessing | failed
-  preprocessing        → rectification | ptiff_qa_pending |
+  preprocessing        → rectification | layout_detection | accepted |
                          pending_human_correction | split | failed
-  rectification        → ptiff_qa_pending | pending_human_correction |
-                         split | failed
-  ptiff_qa_pending     → accepted | layout_detection | pending_human_correction
-  pending_human_correction → ptiff_qa_pending | review | split
-  layout_detection     → accepted | review | failed
+  rectification        → layout_detection | accepted |
+                         pending_human_correction | split | failed
+  layout_detection     → accepted | review | failed | pending_human_correction
+  pending_human_correction → layout_detection | accepted | review | split
   split, accepted, review, failed → (terminal — no further transitions)
-
-ptiff_qa_pending is NOT in TERMINAL_PAGE_STATES (spec Section 9.1 / 12.1).
 
 TERMINAL_PAGE_STATES is re-exported from shared.schemas.eep — the canonical
 definition.  No other module may redefine it inline (spec Section 12.1).
@@ -35,7 +32,7 @@ Exported:
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -148,7 +145,7 @@ def advance_page_state(
             f"{sorted(VALID_TRANSITIONS.get(from_state, frozenset()))}"
         ) from exc
 
-    now = datetime.now(tz=UTC)
+    now = datetime.now(timezone.utc)
 
     updates: dict[str, Any] = {
         "status": to_state,

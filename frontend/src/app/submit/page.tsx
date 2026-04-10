@@ -22,7 +22,7 @@ import { Progress } from "@/components/ui/progress";
 import { getApiErrorMessage } from "@/lib/api/client";
 import { uploadFile } from "@/lib/api/upload";
 import { createJob } from "@/lib/api/jobs";
-import type { MaterialType, PipelineMode, PtiffQaMode } from "@/types/api";
+import type { MaterialType, PipelineMode } from "@/types/api";
 import { cn } from "@/lib/utils";
 
 interface FileUploadState {
@@ -39,7 +39,6 @@ export default function SubmitJobPage() {
   const [collectionId, setCollectionId] = useState("");
   const [materialType, setMaterialType] = useState<MaterialType>("book");
   const [pipelineMode, setPipelineMode] = useState<PipelineMode>("layout");
-  const [ptiffQaMode, setPtiffQaMode] = useState<PtiffQaMode>("manual");
   const [policyVersion, setPolicyVersion] = useState("v1");
   const [shadowMode, setShadowMode] = useState(false);
 
@@ -125,7 +124,6 @@ export default function SubmitJobPage() {
         material_type: materialType,
         pages,
         pipeline_mode: pipelineMode,
-        ptiff_qa_mode: ptiffQaMode,
         policy_version: policyVersion,
         shadow_mode: shadowMode,
       });
@@ -199,22 +197,6 @@ export default function SubmitJobPage() {
                 <SelectContent>
                   <SelectItem value="layout">Layout (full pipeline)</SelectItem>
                   <SelectItem value="preprocess">Preprocess only</SelectItem>
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-1.5">
-              <Label>PTIFF QA Mode</Label>
-              <Select
-                value={ptiffQaMode}
-                onValueChange={(v) => setPtiffQaMode(v as PtiffQaMode)}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="manual">Manual review</SelectItem>
-                  <SelectItem value="auto_continue">Auto continue</SelectItem>
                 </SelectContent>
               </Select>
             </div>

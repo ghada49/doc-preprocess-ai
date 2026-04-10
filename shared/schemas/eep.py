@@ -11,7 +11,6 @@ Exported:
     PageState              — Literal union of all valid page states
     MaterialType           — Literal union of valid material types
     PipelineMode           — Literal union of valid pipeline modes
-    PtiffQaMode            — Literal union of valid PTIFF QA modes
     JobStatus              — Literal union of valid job-level statuses
     PageInput              — single page submitted in a JobCreateRequest
     JobCreateRequest       — request to POST /v1/jobs
@@ -33,17 +32,13 @@ from pydantic import BaseModel, Field, model_validator
 
 MaterialType = Literal["book", "newspaper", "archival_document"]
 PipelineMode = Literal["preprocess", "layout"]
-PtiffQaMode = Literal["manual", "auto_continue"]
 JobStatus = Literal["queued", "running", "done", "failed"]
 
 # All valid page states (spec Section 9.1 + DB CHECK constraint in Section 13).
-# ptiff_qa_pending IS included here — it is a valid page state.
-# ptiff_qa_pending is NOT included in TERMINAL_PAGE_STATES.
 PageState = Literal[
     "queued",
     "preprocessing",
     "rectification",
-    "ptiff_qa_pending",
     "layout_detection",
     "pending_human_correction",
     "accepted",
@@ -54,23 +49,16 @@ PageState = Literal[
 
 # ── Terminal page state constant ───────────────────────────────────────────────
 
-# Exact definition from spec Section 9.1.
-# Exported from this module and imported by all components; never redefined inline.
+# Job/page terminal states for completion accounting.
+# Automated worker-stop semantics are defined separately in shared.state_machine.
 TERMINAL_PAGE_STATES: frozenset[str] = frozenset(
     {
         "accepted",
-        "pending_human_correction",
         "review",
         "failed",
         "split",
     }
 )
-
-# Invariant enforced at import time: ptiff_qa_pending must never be terminal.
-# (spec Section 3.1 PTIFF-stage QA checkpoint, Section 9.1, Section 12.1)
-assert (
-    "ptiff_qa_pending" not in TERMINAL_PAGE_STATES
-), "ptiff_qa_pending must not be in TERMINAL_PAGE_STATES (spec Section 9.1)"
 
 
 # ── PageInput ──────────────────────────────────────────────────────────────────
@@ -106,8 +94,6 @@ class JobCreateRequest(BaseModel):
         material_type  — one of book, newspaper, archival_document
         pages          — 1 to 1000 PageInput entries
         pipeline_mode  — "preprocess" (preprocessing only) or "layout" (+ layout detection)
-        ptiff_qa_mode  — "manual" (gate; reviewer approval required) or
-                         "auto_continue" (automatic progression through QA)
         policy_version — policy version string to pin processing rules
         shadow_mode    — True to enable async candidate model shadow evaluation
 
@@ -119,7 +105,6 @@ class JobCreateRequest(BaseModel):
     material_type: MaterialType
     pages: list[PageInput]
     pipeline_mode: PipelineMode = "layout"
-    ptiff_qa_mode: PtiffQaMode = "manual"
     policy_version: str
     shadow_mode: bool = False
 
@@ -187,6 +172,7 @@ class PageStatus(BaseModel):
         sub_page_index      — 0 (left) or 1 (right) for split child pages; None otherwise
         status              — current page state (one of PageState values)
         routing_path        — human-readable routing path label (e.g. "preprocessing_only")
+        input_image_uri     — URI of the original uploaded artifact for fallback display
         output_image_uri    — URI of the preprocessed output artifact; None while processing
         output_layout_uri   — URI of the layout JSON artifact; None if not yet produced
         quality_summary     — quality metrics summary; None while processing
@@ -200,6 +186,7 @@ class PageStatus(BaseModel):
     sub_page_index: int | None = None
     status: PageState
     routing_path: str | None = None
+    input_image_uri: str | None = None
     output_image_uri: str | None = None
     output_layout_uri: str | None = None
     quality_summary: QualitySummary | None = None
@@ -223,7 +210,6 @@ class JobStatusSummary(BaseModel):
         collection_id                — collection identifier
         material_type                — book, newspaper, or archival_document
         pipeline_mode                — preprocess or layout
-        ptiff_qa_mode                — manual or auto_continue
         policy_version               — policy version pinned at job creation
         shadow_mode                  — True if shadow evaluation is enabled
         created_by                   — user identifier from JWT sub; None if unavailable
@@ -243,7 +229,6 @@ class JobStatusSummary(BaseModel):
     collection_id: str
     material_type: MaterialType
     pipeline_mode: PipelineMode
-    ptiff_qa_mode: PtiffQaMode
     policy_version: str
     shadow_mode: bool
     created_by: str | None = None

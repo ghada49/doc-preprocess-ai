@@ -37,7 +37,7 @@ interactions are mocked via dependency overrides.
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -52,7 +52,7 @@ from services.eep.app.redis_client import get_redis
 
 # ── Constants / helpers ────────────────────────────────────────────────────────
 
-_NOW = datetime(2026, 3, 28, 12, 0, 0, tzinfo=UTC)
+_NOW = datetime(2026, 3, 28, 12, 0, 0, tzinfo=timezone.utc)
 _ADMIN_USER = CurrentUser(user_id="admin-001", role="admin")
 
 _ALL_GATES_PASS = {
