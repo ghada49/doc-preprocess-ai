@@ -64,7 +64,8 @@ RUN pip install --no-cache-dir --upgrade pip wheel "setuptools<81"
 RUN uv pip install --system \
     "fastapi>=0.110.0" \
     "uvicorn[standard]>=0.27.0" \
-    "prometheus-client>=0.20.0"
+    "prometheus-client>=0.20.0" \
+    "boto3>=1.34"
 
 COPY services/iep2b/requirements-real.txt /tmp/requirements-real-iep2b.txt
 COPY models/iep2b/ /opt/models/iep2b/

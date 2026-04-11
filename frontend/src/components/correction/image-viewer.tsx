@@ -5,6 +5,11 @@ import { ZoomIn, ZoomOut, Maximize2, RotateCcw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
+import {
+  computeFitZoom,
+  type QuadPoint,
+  updateQuadPoint,
+} from "./image-viewer-helpers";
 
 interface CropBox {
   x1: number;
@@ -54,28 +59,43 @@ function screenDeltaToImage(
 interface ImageViewerProps {
   imageUrl: string | null;
   cropBox?: CropBox | null;
+  quadPoints?: QuadPoint[] | null;
   splitX?: number | null;
   deskewAngle?: number;
   onCropBoxChange?: (box: CropBox) => void;
+  onQuadPointsChange?: (points: QuadPoint[]) => void;
   /** Called when the user drags the rotation handle on the crop overlay. */
   onCropAngleChange?: (angle: number) => void;
   onSplitXChange?: (x: number) => void;
+  /** Called once when the image loads; reports natural (preview PNG) dimensions. */
+  onNaturalSizeChange?: (w: number, h: number) => void;
   showCropOverlay?: boolean;
+  showQuadOverlay?: boolean;
   showSplitOverlay?: boolean;
   isLoading?: boolean;
+  isError?: boolean;
+  emptyMessage?: string;
+  errorMessage?: string;
 }
 
 export function ImageViewer({
   imageUrl,
   cropBox,
+  quadPoints,
   splitX,
   deskewAngle = 0,
   onCropBoxChange,
+  onQuadPointsChange,
   onCropAngleChange,
   onSplitXChange,
+  onNaturalSizeChange,
   showCropOverlay = true,
+  showQuadOverlay = false,
   showSplitOverlay = false,
   isLoading = false,
+  isError = false,
+  emptyMessage = "No image selected.",
+  errorMessage = "Failed to load image preview.",
 }: ImageViewerProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const imgRef = useRef<HTMLImageElement>(null);
@@ -85,6 +105,7 @@ export function ImageViewer({
   const [isPanning, setIsPanning] = useState(false);
   const [panStart, setPanStart] = useState({ x: 0, y: 0 });
   const [imgLoaded, setImgLoaded] = useState(false);
+  const [imgError, setImgError] = useState(false);
   const [naturalSize, setNaturalSize] = useState({ w: 0, h: 0 });
 
   // Active drag state for crop handles
@@ -98,6 +119,7 @@ export function ImageViewer({
 
   // Active drag for split line
   const [isDraggingSplit, setIsDraggingSplit] = useState(false);
+  const [activeQuadHandle, setActiveQuadHandle] = useState<number | null>(null);
 
   // Rotation drag state (for the rotation handle on the crop box)
   const [isRotating, setIsRotating] = useState(false);
@@ -107,9 +129,18 @@ export function ImageViewer({
 
   useEffect(() => {
     setImgLoaded(false);
+    setImgError(false);
+    setNaturalSize({ w: 0, h: 0 });
     setZoom(1);
     setPan({ x: 0, y: 0 });
   }, [imageUrl]);
+
+  useEffect(() => {
+    if (!imgLoaded || !naturalSize.w || !naturalSize.h || !containerRef.current) return;
+    const { width, height } = containerRef.current.getBoundingClientRect();
+    setZoom(computeFitZoom(width, height, naturalSize.w, naturalSize.h));
+    setPan({ x: 0, y: 0 });
+  }, [imgLoaded, naturalSize.w, naturalSize.h, imageUrl]);
 
   // When the split overlay activates and no splitX is set, default to image center
   useEffect(() => {
@@ -141,11 +172,35 @@ export function ImageViewer({
       setIsPanning(true);
       setPanStart({ x: e.clientX - pan.x, y: e.clientY - pan.y });
     },
-    [pan, activeHandle, isDraggingSplit, isRotating, showCropOverlay, onCropBoxChange, imgLoaded, zoom, naturalSize, deskewAngle]
+    [
+      pan,
+      activeHandle,
+      isDraggingSplit,
+      isRotating,
+      showCropOverlay,
+      onCropBoxChange,
+      imgLoaded,
+      zoom,
+      naturalSize,
+      deskewAngle,
+    ]
   );
 
   const handleMouseMove = useCallback(
     (e: React.MouseEvent) => {
+      if (activeQuadHandle != null && onQuadPointsChange && quadPoints && imgRef.current) {
+        const { imgX, imgY } = screenToImage(
+          e.clientX,
+          e.clientY,
+          imgRef,
+          zoom,
+          deskewAngle,
+          naturalSize
+        );
+        onQuadPointsChange(updateQuadPoint(quadPoints, activeQuadHandle, [imgX, imgY]));
+        return;
+      }
+
       if (isDrawing && onCropBoxChange && imgRef.current) {
         const { imgX, imgY } = screenToImage(e.clientX, e.clientY, imgRef, zoom, deskewAngle, naturalSize);
         const x1 = Math.min(drawStart.x, imgX);
@@ -209,17 +264,19 @@ export function ImageViewer({
     [
       isDrawing, drawStart,
       isPanning, panStart,
+      activeQuadHandle, quadPoints,
       activeHandle, dragStartCrop, dragStartPos,
       zoom, naturalSize, deskewAngle,
       isDraggingSplit,
       isRotating, rotateCenterScreen, rotateStartAngle, cropAngleAtStart,
-      onCropBoxChange, onSplitXChange, onCropAngleChange,
+      onCropBoxChange, onQuadPointsChange, onSplitXChange, onCropAngleChange,
     ]
   );
 
   const handleMouseUp = useCallback(() => {
     setIsDrawing(false);
     setIsPanning(false);
+    setActiveQuadHandle(null);
     setActiveHandle(null);
     setIsDraggingSplit(false);
     setIsRotating(false);
@@ -233,14 +290,12 @@ export function ImageViewer({
   const fitView = () => {
     if (!containerRef.current || !naturalSize.w) return;
     const { width, height } = containerRef.current.getBoundingClientRect();
-    const scaleX = width / naturalSize.w;
-    const scaleY = height / naturalSize.h;
-    setZoom(Math.min(scaleX, scaleY, 1) * 0.9);
+    setZoom(computeFitZoom(width, height, naturalSize.w, naturalSize.h));
     setPan({ x: 0, y: 0 });
   };
 
   return (
-    <div className="relative flex h-full flex-col overflow-hidden rounded-2xl border border-slate-200 bg-gradient-to-br from-white via-slate-50 to-slate-100 shadow-sm shadow-slate-200/70">
+    <div className="relative flex min-h-[420px] flex-1 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-gradient-to-br from-white via-slate-50 to-slate-100 shadow-sm shadow-slate-200/70">
       {/* Zoom controls */}
       <div className="absolute top-3 right-3 z-20 flex flex-col gap-1">
         <Button
@@ -301,15 +356,21 @@ export function ImageViewer({
         onMouseUp={handleMouseUp}
         onMouseLeave={handleMouseUp}
       >
-        {isLoading || !imageUrl ? (
+        {isLoading ? (
           <div className="flex items-center justify-center h-full">
-            {isLoading ? (
-              <Spinner size="lg" />
-            ) : (
-              <div className="text-center">
-                <div className="text-slate-400 text-xs">No image selected</div>
-              </div>
-            )}
+            <Spinner size="lg" />
+          </div>
+        ) : isError || imgError ? (
+          <div className="flex h-full items-center justify-center px-4">
+            <div className="max-w-xs text-center">
+              <div className="text-red-600 text-xs font-medium">{errorMessage}</div>
+            </div>
+          </div>
+        ) : !imageUrl ? (
+          <div className="flex items-center justify-center h-full px-4">
+            <div className="max-w-xs text-center">
+              <div className="text-slate-500 text-xs font-medium">{emptyMessage}</div>
+            </div>
           </div>
         ) : (
           <div
@@ -331,9 +392,26 @@ export function ImageViewer({
                   const img = e.currentTarget;
                   setNaturalSize({ w: img.naturalWidth, h: img.naturalHeight });
                   setImgLoaded(true);
+                  setImgError(false);
+                  onNaturalSizeChange?.(img.naturalWidth, img.naturalHeight);
                 }}
-                onError={() => setImgLoaded(false)}
+                onError={() => {
+                  setImgLoaded(false);
+                  setImgError(true);
+                }}
               />
+
+              {imgLoaded && showQuadOverlay && quadPoints && (
+                <QuadOverlay
+                  quadPoints={quadPoints}
+                  imgW={naturalSize.w}
+                  imgH={naturalSize.h}
+                  onHandleMouseDown={(index, e) => {
+                    e.stopPropagation();
+                    setActiveQuadHandle(index);
+                  }}
+                />
+              )}
 
               {/* Crop box overlay — renders whenever showCropOverlay is on */}
               {imgLoaded && showCropOverlay && cropBox && (
@@ -397,6 +475,66 @@ export function ImageViewer({
         )}
       </div>
     </div>
+  );
+}
+
+function QuadOverlay({
+  quadPoints,
+  imgW,
+  imgH,
+  onHandleMouseDown,
+}: {
+  quadPoints: QuadPoint[];
+  imgW: number;
+  imgH: number;
+  onHandleMouseDown: (index: number, e: React.MouseEvent) => void;
+}) {
+  const pointsAttr = quadPoints.map(([x, y]) => `${x},${y}`).join(" ");
+  const cornerLabels = ["TL", "TR", "BR", "BL"] as const;
+
+  return (
+    <>
+      <svg
+        className="pointer-events-none absolute inset-0"
+        width={imgW}
+        height={imgH}
+        viewBox={`0 0 ${imgW} ${imgH}`}
+      >
+        <path
+          d={`M0 0 H${imgW} V${imgH} H0 Z M${pointsAttr} Z`}
+          fill="rgba(15, 23, 42, 0.42)"
+          fillRule="evenodd"
+        />
+        <polygon
+          points={pointsAttr}
+          fill="rgba(99, 102, 241, 0.12)"
+          stroke="rgba(99, 102, 241, 0.95)"
+          strokeWidth="3"
+          strokeLinejoin="round"
+        />
+        <polyline
+          points={pointsAttr}
+          fill="none"
+          stroke="rgba(255, 255, 255, 0.95)"
+          strokeWidth="1"
+          strokeDasharray="8 6"
+          strokeLinejoin="round"
+        />
+      </svg>
+      {quadPoints.map(([x, y], index) => (
+        <div
+          key={`${index}-${x}-${y}`}
+          className="absolute z-10 flex h-10 w-10 -translate-x-1/2 -translate-y-1/2 cursor-grab items-center justify-center rounded-full active:cursor-grabbing"
+          style={{ left: x, top: y }}
+          onMouseDown={(event) => onHandleMouseDown(index, event)}
+        >
+          <div className="pointer-events-none absolute h-4 w-4 rounded-full border-2 border-white bg-indigo-500 shadow-[0_0_0_3px_rgba(99,102,241,0.18)]" />
+          <div className="pointer-events-none absolute top-full mt-1 rounded bg-slate-900/80 px-1.5 py-0.5 text-[10px] font-semibold tracking-wide text-white shadow-sm">
+            {cornerLabels[index]}
+          </div>
+        </div>
+      ))}
+    </>
   );
 }
 

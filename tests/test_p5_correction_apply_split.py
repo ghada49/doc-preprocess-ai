@@ -7,8 +7,8 @@ Covers:
   POST /v1/jobs/{job_id}/pages/{page_number}/correction
 
   - page_structure="spread" creates or reuses child sub-pages
-  - Child artifacts are true left/right TIFF splits, not parent copies
-  - Child lineage rows preserve parent linkage and store spread correction fields
+  - Split creates child review units without materializing child TIFF artifacts
+  - Child lineage rows preserve parent linkage and store parent-space crop defaults
   - Children remain in pending_human_correction for child-specific review
   - Parent closes to split once children exist
   - split_x can be derived from geometry gate when not provided by the client
@@ -101,6 +101,7 @@ def _make_lineage(
     lineage.policy_version = policy_version
     lineage.parent_page_id = parent_page_id
     lineage.split_source = split_source
+    lineage.iep1d_used = False
     lineage.human_corrected = False
     lineage.human_correction_timestamp = None
     lineage.human_correction_fields = human_correction_fields
@@ -258,7 +259,7 @@ class TestSplitCorrectionEndpoint:
         assert response.status_code == 200
         assert session.add.call_count == 4
 
-    def test_split_artifacts_written_for_each_child(self) -> None:
+    def test_split_does_not_write_child_artifacts_at_split_time(self) -> None:
         job = _make_job()
         parent = _make_page(output_image_uri="s3://bucket/jobs/job-001/3.tiff")
         parent_lineage = _make_lineage()
@@ -270,12 +271,9 @@ class TestSplitCorrectionEndpoint:
 
         assert response.status_code == 200
         self.mock_backend.get_bytes.assert_called_once_with("s3://bucket/jobs/job-001/3.tiff")
-        assert self.mock_backend.put_bytes.call_count == 2
-        put_calls = [call.args[0] for call in self.mock_backend.put_bytes.call_args_list]
-        assert "s3://bucket/jobs/job-001/corrected/3_0.tiff" in put_calls
-        assert "s3://bucket/jobs/job-001/corrected/3_1.tiff" in put_calls
+        self.mock_backend.put_bytes.assert_not_called()
 
-    def test_split_artifacts_are_actual_left_and_right_portions(self) -> None:
+    def test_split_children_start_without_materialized_output_artifacts(self) -> None:
         job = _make_job()
         parent = _make_page(output_image_uri="s3://bucket/jobs/job-001/3.tiff")
         parent_lineage = _make_lineage()
@@ -286,19 +284,72 @@ class TestSplitCorrectionEndpoint:
             response = self.client.post("/v1/jobs/job-001/pages/3/correction", json=_SPREAD_BODY)
 
         assert response.status_code == 200
-        written = {
-            call.args[0]: _decode_tiff(call.args[1])
-            for call in self.mock_backend.put_bytes.call_args_list
-        }
-        left = written["s3://bucket/jobs/job-001/corrected/3_0.tiff"]
-        right = written["s3://bucket/jobs/job-001/corrected/3_1.tiff"]
+        self.mock_backend.put_bytes.assert_not_called()
 
-        assert left.shape[1] == 450
-        assert right.shape[1] == 450
-        assert left.shape[1] != self.parent_image.shape[1]
-        assert right.shape[1] != self.parent_image.shape[1]
-        assert np.array_equal(left, self.parent_image[:, :450])
-        assert np.array_equal(right, self.parent_image[:, 450:])
+    def test_split_children_store_shared_parent_source_and_parent_space_quads(self) -> None:
+        job = _make_job()
+        parent = _make_page(output_image_uri="s3://bucket/jobs/job-001/3.tiff")
+        parent_lineage = _make_lineage()
+        session = _make_fresh_split_session(job, parent, parent_lineage, _make_gate())
+        self._inject(session)
+
+        added_objects: list[Any] = []
+        session.add.side_effect = added_objects.append
+
+        with patch("services.eep.app.correction.apply.advance_page_state", return_value=True):
+            response = self.client.post("/v1/jobs/job-001/pages/3/correction", json=_SPREAD_BODY)
+
+        assert response.status_code == 200
+
+        from services.eep.app.db.models import JobPage, PageLineage
+
+        child_pages = sorted(
+            (obj for obj in added_objects if isinstance(obj, JobPage)),
+            key=lambda row: row.sub_page_index,
+        )
+        child_lineages = sorted(
+            (obj for obj in added_objects if isinstance(obj, PageLineage)),
+            key=lambda row: row.sub_page_index,
+        )
+
+        assert [row.output_image_uri for row in child_pages] == [None, None]
+        assert [row.output_image_uri for row in child_lineages] == [None, None]
+        assert [row.human_correction_fields["source_artifact_uri"] for row in child_lineages] == [
+            "s3://bucket/jobs/job-001/3.tiff",
+            "s3://bucket/jobs/job-001/3.tiff",
+        ]
+        assert [row.human_correction_fields["selection_mode"] for row in child_lineages] == [
+            "quad",
+            "quad",
+        ]
+        assert [row.human_correction_fields["quad_points"] for row in child_lineages] == [
+            [[0.0, 0.0], [450.0, 0.0], [450.0, 8.0], [0.0, 8.0]],
+            [[450.0, 0.0], [900.0, 0.0], [900.0, 8.0], [450.0, 8.0]],
+        ]
+        assert [row.human_correction_fields["crop_box"] for row in child_lineages] == [
+            [0, 0, 450, 8],
+            [450, 0, 900, 8],
+        ]
+
+    def test_split_uses_requested_source_artifact_uri_when_provided(self) -> None:
+        job = _make_job()
+        parent = _make_page(
+            output_image_uri="s3://bucket/jobs/job-001/3.tiff",
+            input_image_uri="s3://bucket/raw/3-input.tiff",
+        )
+        parent_lineage = _make_lineage(otiff_uri="s3://bucket/otiff/3-original.tiff")
+        session = _make_fresh_split_session(job, parent, parent_lineage, _make_gate())
+        self._inject(session)
+
+        with patch("services.eep.app.correction.apply.advance_page_state", return_value=True):
+            response = self.client.post(
+                "/v1/jobs/job-001/pages/3/correction",
+                json={**_SPREAD_BODY, "source_artifact_uri": "s3://bucket/otiff/3-original.tiff"},
+            )
+
+        assert response.status_code == 200
+        self.mock_backend.get_bytes.assert_called_with("s3://bucket/otiff/3-original.tiff")
+        assert parent_lineage.human_correction_fields["source_artifact_uri"] == "s3://bucket/otiff/3-original.tiff"
 
     def test_children_remain_pending_human_correction_and_parent_closes_to_split(self) -> None:
         job = _make_job()
@@ -355,21 +406,31 @@ class TestSplitCorrectionEndpoint:
 
         added_lineages = [obj for obj in added_objects if isinstance(obj, PageLineage)]
         assert len(added_lineages) == 2
-        assert parent_lineage.human_correction_fields is None
+        assert parent_lineage.human_correction_fields["page_structure"] == "spread"
+        assert parent_lineage.human_correction_fields["split_x"] == 450
 
         for lineage in added_lineages:
             assert lineage.split_source is True
             assert lineage.parent_page_id == "parent-id-001"
             assert lineage.human_corrected is True
-            assert lineage.human_correction_fields["page_structure"] == "spread"
+            assert lineage.human_correction_fields["page_structure"] == "single"
             assert lineage.human_correction_fields["split_x"] == 450
-            assert lineage.human_correction_fields["crop_box"] == [10, 20, 900, 700]
-            assert lineage.human_correction_fields["deskew_angle"] == pytest.approx(0.5)
+            assert lineage.human_correction_fields["selection_mode"] == "quad"
+            assert lineage.human_correction_fields["source_artifact_uri"] == "s3://bucket/jobs/job-001/3.tiff"
+            assert lineage.human_correction_fields["deskew_angle"] is None
             assert lineage.material_type == "newspaper"
             assert lineage.policy_version == "v2.0"
             assert lineage.otiff_uri == "s3://bucket/otiff/3.tiff"
             assert lineage.correlation_id == "corr-xyz"
             assert lineage.reviewer_notes == "looks like two pages"
+        assert [lineage.human_correction_fields["crop_box"] for lineage in added_lineages] == [
+            [0, 0, 450, 8],
+            [450, 0, 900, 8],
+        ]
+        assert [lineage.human_correction_fields["quad_points"] for lineage in added_lineages] == [
+            [[0.0, 0.0], [450.0, 0.0], [450.0, 8.0], [0.0, 8.0]],
+            [[450.0, 0.0], [900.0, 0.0], [900.0, 8.0], [450.0, 8.0]],
+        ]
 
     def test_split_x_is_derived_from_geometry_gate_when_not_provided(self) -> None:
         job = _make_job()
@@ -386,17 +447,21 @@ class TestSplitCorrectionEndpoint:
             response = self.client.post("/v1/jobs/job-001/pages/3/correction", json=_SPREAD_BODY)
 
         assert response.status_code == 200
-        written = {
-            call.args[0]: _decode_tiff(call.args[1])
-            for call in self.mock_backend.put_bytes.call_args_list
-        }
-        assert written["s3://bucket/jobs/job-001/corrected/3_0.tiff"].shape[1] == 320
-        assert written["s3://bucket/jobs/job-001/corrected/3_1.tiff"].shape[1] == 580
+        self.mock_backend.put_bytes.assert_not_called()
 
         from services.eep.app.db.models import PageLineage
 
         added_lineages = [obj for obj in added_objects if isinstance(obj, PageLineage)]
         assert {lineage.human_correction_fields["split_x"] for lineage in added_lineages} == {320}
+        assert {lineage.human_correction_fields["selection_mode"] for lineage in added_lineages} == {"quad"}
+        assert [lineage.human_correction_fields["crop_box"] for lineage in added_lineages] == [
+            [0, 0, 320, 8],
+            [320, 0, 900, 8],
+        ]
+        assert [lineage.human_correction_fields["quad_points"] for lineage in added_lineages] == [
+            [[0.0, 0.0], [320.0, 0.0], [320.0, 8.0], [0.0, 8.0]],
+            [[320.0, 0.0], [900.0, 0.0], [900.0, 8.0], [320.0, 8.0]],
+        ]
 
     def test_idempotency_existing_children_reused(self) -> None:
         job = _make_job()
@@ -429,7 +494,11 @@ class TestSplitCorrectionEndpoint:
 
         assert response.status_code == 200
         session.add.assert_not_called()
-        assert self.mock_backend.put_bytes.call_count == 2
+        self.mock_backend.put_bytes.assert_not_called()
+        assert left_child.output_image_uri is None
+        assert left_lineage.output_image_uri is None
+        assert right_child.output_image_uri is None
+        assert right_lineage.output_image_uri is None
 
     def test_split_missing_parent_lineage_returns_500(self) -> None:
         job = _make_job()
@@ -445,12 +514,12 @@ class TestSplitCorrectionEndpoint:
         assert "lineage" in response.json()["detail"].lower()
 
     def test_split_missing_source_uri_returns_500(self) -> None:
-        # Both output_image_uri and input_image_uri must be None to get a 500 now;
-        # if either is set the code falls back gracefully (see test below).
+        # output_image_uri, otiff_uri, and input_image_uri must all be missing
+        # to trigger the data-integrity failure.
         job = _make_job()
         parent = _make_page(output_image_uri=None)
         parent.input_image_uri = None  # force truly no source
-        parent_lineage = _make_lineage(output_image_uri=None)
+        parent_lineage = _make_lineage(output_image_uri=None, otiff_uri=None)
         session = _make_session(job=job, first_results=[parent, parent_lineage])
         self._inject(session)
 
@@ -461,12 +530,12 @@ class TestSplitCorrectionEndpoint:
         assert "data-integrity failure" in response.json()["detail"].lower()
         assert "source artifact uri" in response.json()["detail"].lower()
 
-    def test_split_falls_back_to_input_uri_when_output_uri_is_none(self) -> None:
-        """Split must succeed when output_image_uri is None but input_image_uri is set.
+    def test_split_falls_back_to_otiff_when_output_uri_is_none(self) -> None:
+        """Split must succeed when output_image_uri is None but otiff_uri is set.
 
         Reproduces the live bug: page went to pending_human_correction before
         preprocessing completed, so output_image_uri was never populated.
-        The original uploaded OTIFF (input_image_uri) must be used as source.
+        The lineage OTIFF remains the authoritative shared source in that case.
         """
         job = _make_job()
         parent = _make_page(
@@ -481,10 +550,38 @@ class TestSplitCorrectionEndpoint:
             response = self.client.post("/v1/jobs/job-001/pages/3/correction", json=_SPREAD_BODY)
 
         assert response.status_code == 200
-        # Source must have been read from input_image_uri
-        self.mock_backend.get_bytes.assert_called_once_with("s3://bucket/raw/3.tiff")
-        # Both child artifacts must be written
-        assert self.mock_backend.put_bytes.call_count == 2
+        self.mock_backend.get_bytes.assert_called_once_with("s3://bucket/otiff/3.tiff")
+        self.mock_backend.put_bytes.assert_not_called()
+
+    def test_split_uses_pillow_fallback_when_cv2_cannot_decode(self) -> None:
+        """cv2.imdecode returns None for PTIFF/CCITT TIFFs; Pillow must be used instead."""
+        from PIL import Image as _PILImage
+
+        job = _make_job()
+        parent = _make_page(output_image_uri="s3://bucket/jobs/job-001/3.ptiff")
+        parent_lineage = _make_lineage()
+
+        # Build a real PNG (non-TIFF) that cv2.imdecode cannot handle as TIFF.
+        # We simulate PTIFF by making cv2.imdecode return None and ensuring Pillow succeeds.
+        pil_source = _PILImage.fromarray(self.parent_image)
+        import io as _io
+
+        pil_buf = _io.BytesIO()
+        pil_source.save(pil_buf, format="PNG")
+        ptiff_bytes = pil_buf.getvalue()
+        self.mock_backend.get_bytes.return_value = ptiff_bytes
+
+        session = _make_fresh_split_session(job, parent, parent_lineage, _make_gate())
+        self._inject(session)
+
+        with patch("services.eep.app.correction.apply.advance_page_state", return_value=True):
+            with patch("cv2.imdecode", return_value=None):
+                response = self.client.post(
+                    "/v1/jobs/job-001/pages/3/correction", json=_SPREAD_BODY
+                )
+
+        assert response.status_code == 200
+        self.mock_backend.put_bytes.assert_not_called()
 
     def test_split_404_when_parent_page_not_found(self) -> None:
         job = _make_job()

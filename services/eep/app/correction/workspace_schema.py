@@ -51,6 +51,8 @@ from shared.schemas.eep import MaterialType, PageState, PipelineMode
 from shared.schemas.layout import LayoutArtifactRole
 
 PageStructure = Literal["single", "spread"]
+SelectionMode = Literal["rect", "quad"]
+QuadPoint = tuple[float, float]
 
 # ── Branch-level geometry summary ──────────────────────────────────────────────
 
@@ -168,6 +170,10 @@ class CorrectionWorkspaceResponse(BaseModel):
     branch_outputs: BranchOutputs
     suggested_page_structure: PageStructure = "single"
     child_pages: list[ChildPageSummary] = Field(default_factory=list)
+    current_selection_mode: SelectionMode = "rect"
+    current_quad_points: Annotated[list[QuadPoint], Field(min_length=4, max_length=4)] | None = None
     current_crop_box: Annotated[list[int], Field(min_length=4, max_length=4)] | None = None
     current_deskew_angle: float | None = None
     current_split_x: int | None = None
+    page_image_width: int | None = None
+    page_image_height: int | None = None

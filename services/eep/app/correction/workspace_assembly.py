@@ -15,7 +15,7 @@ Assembly sources (in query order):
 
 Source image availability rules (spec Section 11.3):
   - original_otiff_uri: page_lineage.otiff_uri (always when available)
-  - best_output_uri:    job_pages.output_image_uri ?? page_lineage.output_image_uri
+  - best_output_uri:    current workspace preview source for correction
   - iep1c_normalized:   same as best_output_uri (the final IEP1C output in all paths)
   - iep1d_rectified:    from service_invocations.metrics['rectified_image_uri'] when available
 
@@ -55,6 +55,8 @@ from services.eep.app.correction.workspace_schema import (
     ChildPageSummary,
     CorrectionWorkspaceResponse,
     GeometrySummary,
+    QuadPoint,
+    SelectionMode,
 )
 from services.eep.app.db.models import Job, JobPage, PageLineage, QualityGateLog, ServiceInvocation
 from shared.schemas.layout import LayoutArtifactRole
@@ -216,7 +218,7 @@ def _geometry_summary_from_jsonb(geo: dict[str, Any]) -> GeometrySummary | None:
 
 def _params_from_human_correction(
     hcf: dict[str, Any],
-) -> tuple[list[int] | None, float | None, int | None]:
+) -> tuple[list[int] | None, float | None, int | None, SelectionMode, list[QuadPoint] | None]:
     """
     Extract crop, deskew, and any stored split boundary from human correction data.
 
@@ -226,11 +228,37 @@ def _params_from_human_correction(
     raw_crop = hcf.get("crop_box")
     deskew_angle: float | None = hcf.get("deskew_angle")
     raw_split = hcf.get("split_x")
+    raw_selection_mode = hcf.get("selection_mode")
+    raw_quad = hcf.get("quad_points")
 
     crop_box: list[int] | None = [int(v) for v in raw_crop] if raw_crop is not None else None
     split_x: int | None = int(raw_split) if raw_split is not None else None
+    selection_mode: SelectionMode = "quad" if raw_selection_mode == "quad" else "rect"
+    quad_points: list[QuadPoint] | None = None
+    if raw_quad is not None:
+        quad_points = [(float(point[0]), float(point[1])) for point in raw_quad]
+        selection_mode = "quad"
 
-    return crop_box, deskew_angle, split_x
+    return crop_box, deskew_angle, split_x, selection_mode, quad_points
+
+
+def _correction_source_uri(correction_fields: dict[str, Any]) -> str | None:
+    """Return the reviewer-selected source artifact recorded in correction fields."""
+    raw_source_uri = correction_fields.get("source_artifact_uri")
+    return raw_source_uri if isinstance(raw_source_uri, str) and raw_source_uri else None
+
+
+def _quad_points_from_crop_box(crop_box: list[int] | None) -> list[QuadPoint] | None:
+    """Return a rectangular quad from an axis-aligned crop box."""
+    if crop_box is None:
+        return None
+    x1, y1, x2, y2 = crop_box
+    return [
+        (float(x1), float(y1)),
+        (float(x2), float(y1)),
+        (float(x2), float(y2)),
+        (float(x1), float(y2)),
+    ]
 
 
 def _resolve_current_output_role(
@@ -369,12 +397,20 @@ def assemble_correction_workspace(
         lineage.otiff_uri if lineage is not None else page.input_image_uri
     )
 
+    correction_fields = (
+        lineage.human_correction_fields
+        if lineage is not None and isinstance(lineage.human_correction_fields, dict)
+        else {}
+    )
+    prior_source_uri = _correction_source_uri(correction_fields)
     # current_output_uri: the authoritative current artifact for correction/UI.
-    # job_pages.output_image_uri is the source of truth; page_lineage.output_image_uri
-    # is a compatibility fallback when the page row has not been refreshed yet.
+    # Child pages without a materialized child TIFF preview the shared parent
+    # source artifact recorded in their correction fields.
     current_output_uri: str | None = page.output_image_uri or (
         lineage.output_image_uri if lineage is not None else None
     )
+    if current_output_uri is None and page.sub_page_index is not None:
+        current_output_uri = prior_source_uri
     current_output_role = _resolve_current_output_role(
         page=page,
         lineage=lineage,
@@ -382,18 +418,10 @@ def assemble_correction_workspace(
         current_output_uri=current_output_uri,
     )
     current_layout_uri: str | None = page.output_layout_uri
-    correction_fields = (
-        lineage.human_correction_fields
-        if lineage is not None and isinstance(lineage.human_correction_fields, dict)
-        else {}
-    )
-    prior_source_uri = correction_fields.get("source_artifact_uri")
     normalized_output_uri: str | None = None
-    if page.sub_page_index is None and isinstance(prior_source_uri, str):
+    if page.sub_page_index is None and prior_source_uri is not None:
         if current_output_uri is None or prior_source_uri != current_output_uri:
             normalized_output_uri = prior_source_uri
-    elif current_output_role == "normalized_output":
-        normalized_output_uri = current_output_uri
 
     # ── Step 6: IEP1D rectified URI ────────────────────────────────────────────
     iep1d_rectified_uri: str | None = None
@@ -422,13 +450,39 @@ def assemble_correction_workspace(
     current_crop_box: list[int] | None = None
     current_deskew_angle: float | None = None
     current_split_x: int | None = None
+    current_selection_mode: SelectionMode = "rect"
+    current_quad_points: list[QuadPoint] | None = None
 
     if lineage is not None and lineage.human_correction_fields:
-        current_crop_box, current_deskew_angle, current_split_x = _params_from_human_correction(
-            lineage.human_correction_fields
-        )
+        (
+            current_crop_box,
+            current_deskew_angle,
+            current_split_x,
+            current_selection_mode,
+            current_quad_points,
+        ) = _params_from_human_correction(lineage.human_correction_fields)
     elif gate is not None:
         current_crop_box, current_deskew_angle, current_split_x = _params_from_gate(gate)
+
+    if page.sub_page_index is not None:
+        current_selection_mode = "quad"
+        if current_quad_points is None:
+            current_quad_points = _quad_points_from_crop_box(current_crop_box)
+
+    # ── Step 8b: Page image dimensions ────────────────────────────────────────
+    # Priority: stored correction_fields (exact) > gate-based approximation (2 * split_x).
+    # Dimensions let the frontend scale split_x between preview and original pixels.
+    page_image_width: int | None = None
+    page_image_height: int | None = None
+    raw_img_width = correction_fields.get("image_width")
+    if raw_img_width is not None:
+        page_image_width = int(raw_img_width)
+    elif current_split_x is not None:
+        # Approximation: assume split is roughly central (accurate for symmetric spreads).
+        page_image_width = 2 * current_split_x
+    raw_img_height = correction_fields.get("image_height")
+    if raw_img_height is not None:
+        page_image_height = int(raw_img_height)
 
     suggested_page_structure = _suggested_page_structure(
         current_split_x=current_split_x,
@@ -460,7 +514,11 @@ def assemble_correction_workspace(
         branch_outputs=branch_outputs,
         suggested_page_structure=suggested_page_structure,  # type: ignore[arg-type]
         child_pages=child_page_summaries,
+        current_selection_mode=current_selection_mode,
+        current_quad_points=current_quad_points,
         current_crop_box=current_crop_box,
         current_deskew_angle=current_deskew_angle,
         current_split_x=current_split_x,
+        page_image_width=page_image_width,
+        page_image_height=page_image_height,
     )

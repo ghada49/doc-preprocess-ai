@@ -18,7 +18,11 @@ import {
   rejectPage,
   submitCorrection,
 } from "@/lib/api/correction";
-import type { CorrectionWorkspaceDetail, PageStructure } from "@/types/api";
+import type {
+  CorrectionWorkspaceDetail,
+  PageStructure,
+  QuadPoint,
+} from "@/types/api";
 import { reviewReasonLabel, snakeToTitle, truncateId } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 import { getApiErrorMessage } from "@/lib/api/client";
@@ -35,12 +39,14 @@ import { Spinner } from "@/components/ui/spinner";
 import { Textarea } from "@/components/ui/textarea";
 import { ImageViewer } from "./image-viewer";
 import { LayoutOverlay } from "@/components/jobs/layout-overlay";
-
-type SourceView =
-  | "original"
-  | "current"
-  | "normalized"
-  | "rectified";
+import {
+  type SourceView,
+  getDefaultWorkspaceSource,
+  getWorkspaceEmptyMessage,
+  getWorkspacePreviewErrorMessage,
+  resolveWorkspaceSourceUri,
+} from "./workspace-source";
+import { scaleQuadPoints } from "./image-viewer-helpers";
 
 interface WorkspaceProps {
   jobId: string;
@@ -75,32 +81,47 @@ export function CorrectionWorkspace({
 
   const [activeSource, setActiveSource] = useState<SourceView>("current");
   const [cropBox, setCropBox] = useState<[number, number, number, number] | null>(null);
+  const [quadPoints, setQuadPoints] = useState<QuadPoint[] | null>(null);
   const [deskewAngle, setDeskewAngle] = useState<number | null>(null);
+  // splitX is stored in original image pixel coordinates (not preview pixels).
   const [splitX, setSplitX] = useState<number | null>(null);
+  // previewNaturalWidth: width of the preview PNG currently displayed (≤ 2400px).
+  // Used to scale splitX between original pixels and preview pixels.
+  const [previewNaturalWidth, setPreviewNaturalWidth] = useState<number | null>(null);
+  const [previewNaturalHeight, setPreviewNaturalHeight] = useState<number | null>(null);
   const [pageStructure, setPageStructure] = useState<PageStructure>("single");
   const [reviewerNotes, setReviewerNotes] = useState("");
   const [showRejectModal, setShowRejectModal] = useState(false);
 
-  const activeUri = resolveUri(workspace, activeSource);
-  const { data: viewerData, isLoading: viewerLoading } = useArtifactPreview(
+  const activeUri = resolveWorkspaceSourceUri(workspace, activeSource);
+  const {
+    data: viewerData,
+    isLoading: viewerLoading,
+    isError: viewerIsError,
+  } = useArtifactPreview(
     activeUri,
     { maxWidth: 2400 }
   );
 
   useEffect(() => {
+    setActiveSource("current");
+  }, [jobId, pageNumber, subPageIndex]);
+
+  // Reset preview size whenever the displayed image URL changes so that the
+  // split scale is recomputed against the newly loaded preview.
+  useEffect(() => {
+    setPreviewNaturalWidth(null);
+    setPreviewNaturalHeight(null);
+  }, [activeUri]);
+
+  useEffect(() => {
     if (!workspace) return;
     setCropBox(workspace.current_crop_box ?? null);
+    setQuadPoints(workspace.current_quad_points ?? null);
     setDeskewAngle(workspace.current_deskew_angle ?? null);
     setSplitX(workspace.current_split_x ?? null);
     setPageStructure(workspace.suggested_page_structure ?? "single");
-    setActiveSource((current) => {
-      if (resolveUri(workspace, current)) return current;
-      if (workspace.current_output_uri) return "current";
-      if (workspace.branch_outputs.iep1c_normalized) return "normalized";
-      if (workspace.branch_outputs.iep1d_rectified) return "rectified";
-      if (workspace.original_otiff_uri) return "original";
-      return "current";
-    });
+    setActiveSource((current) => getDefaultWorkspaceSource(workspace, current));
   }, [workspace]);
 
   const workspacePathForSubPage = (nextSubPageIndex: number) =>
@@ -113,15 +134,21 @@ export function CorrectionWorkspace({
         pageNumber,
         {
           crop_box:
-            subPageIndex != null || pageStructure === "single"
+            subPageIndex == null && pageStructure === "single"
               ? cropBox
                 ? (cropBox.map(Math.round) as [number, number, number, number])
                 : null
               : null,
           deskew_angle:
-            subPageIndex != null || pageStructure === "single" ? deskewAngle : null,
+            subPageIndex == null && pageStructure === "single" ? deskewAngle : null,
           page_structure: subPageIndex == null ? pageStructure : undefined,
           split_x: isSpreadSelection ? (splitX != null ? Math.round(splitX) : null) : null,
+          selection_mode: subPageIndex != null ? "quad" : undefined,
+          quad_points:
+            subPageIndex != null && quadPoints
+              ? quadPoints.map(([x, y]) => [Math.round(x), Math.round(y)] as QuadPoint)
+              : null,
+          source_artifact_uri: activeUri,
         },
         {
           subPageIndex,
@@ -203,11 +230,41 @@ export function CorrectionWorkspace({
   const cropBoxObj = cropBox
     ? { x1: cropBox[0], y1: cropBox[1], x2: cropBox[2], y2: cropBox[3] }
     : null;
+
   const isChildPage = workspace.sub_page_index != null;
   const hasChildPages = workspace.child_pages.length > 0;
   const isSpreadSelection = !isChildPage && pageStructure === "spread";
   const canEditGeometry = isChildPage || pageStructure === "single";
-  const canEditOnDisplayedSource = canEditGeometry && activeSource === "current";
+
+  // Scale factor: preview pixels / original image pixels.
+  // When image dimensions are unknown we fall back to 1 (legacy behaviour).
+  const pageImageWidth = workspace.page_image_width ?? null;
+  const pageImageHeight = workspace.page_image_height ?? null;
+  const splitScale =
+    pageImageWidth != null && previewNaturalWidth != null && previewNaturalWidth > 0
+      ? previewNaturalWidth / pageImageWidth
+      : 1;
+  const quadScaleX =
+    pageImageWidth != null && previewNaturalWidth != null && previewNaturalWidth > 0
+      ? previewNaturalWidth / pageImageWidth
+      : 1;
+  const quadScaleY =
+    pageImageHeight != null && previewNaturalHeight != null && previewNaturalHeight > 0
+      ? previewNaturalHeight / pageImageHeight
+      : 1;
+  const displayedQuadPoints = isChildPage
+    ? scaleQuadPoints(quadPoints, quadScaleX, quadScaleY)
+    : null;
+
+  const canEditOnDisplayedSource =
+    canEditGeometry && !!activeUri && (!isChildPage || activeSource === "current");
+  const canSubmitCorrection =
+    !!activeUri &&
+    (!isChildPage || activeSource === "current") &&
+    !submitMut.isPending &&
+    !rejectMut.isPending;
+  const viewerEmptyMessage = getWorkspaceEmptyMessage(workspace, activeSource);
+  const viewerErrorMessage = getWorkspacePreviewErrorMessage(workspace, activeSource);
 
   return (
     <div className="flex h-full flex-col bg-slate-50/80">
@@ -290,7 +347,7 @@ export function CorrectionWorkspace({
               label="Original OTIFF"
               description="Raw scan"
               active={activeSource === "original"}
-              available={!!workspace.original_otiff_uri}
+              available={!isChildPage && !!workspace.original_otiff_uri}
               onClick={() => setActiveSource("original")}
               icon={<Eye className="h-3.5 w-3.5" />}
             />
@@ -298,7 +355,7 @@ export function CorrectionWorkspace({
               label="Normalized"
               description="Normalized"
               active={activeSource === "normalized"}
-              available={!!workspace.branch_outputs.iep1c_normalized}
+              available={!isChildPage && !!workspace.branch_outputs.iep1c_normalized}
               onClick={() => setActiveSource("normalized")}
               icon={<GitBranch className="h-3.5 w-3.5" />}
             />
@@ -306,7 +363,7 @@ export function CorrectionWorkspace({
               label="Rectified"
               description="Rectified"
               active={activeSource === "rectified"}
-              available={!!workspace.branch_outputs.iep1d_rectified}
+              available={!isChildPage && !!workspace.branch_outputs.iep1d_rectified}
               onClick={() => setActiveSource("rectified")}
               icon={<GitBranch className="h-3.5 w-3.5" />}
             />
@@ -331,24 +388,62 @@ export function CorrectionWorkspace({
         </div>
 
         <div className="min-w-0 flex-1 bg-slate-50/70 p-4">
-          <div className="space-y-4">
+          <div className="flex h-full min-h-0 flex-col gap-4">
             <ImageViewer
               imageUrl={viewerData?.blobUrl ?? null}
               isLoading={viewerLoading}
-              cropBox={canEditOnDisplayedSource ? cropBoxObj : null}
-              deskewAngle={deskewAngle ?? 0}
-              showCropOverlay={canEditOnDisplayedSource}
+              isError={viewerIsError}
+              emptyMessage={viewerEmptyMessage}
+              errorMessage={viewerErrorMessage}
+              cropBox={!isChildPage && canEditOnDisplayedSource ? cropBoxObj : null}
+              quadPoints={isChildPage && canEditOnDisplayedSource ? displayedQuadPoints : null}
+              deskewAngle={!isChildPage ? deskewAngle ?? 0 : 0}
+              showCropOverlay={!isChildPage && canEditOnDisplayedSource}
+              showQuadOverlay={isChildPage && canEditOnDisplayedSource}
               onCropBoxChange={
-                canEditOnDisplayedSource ? (box) => setCropBox([box.x1, box.y1, box.x2, box.y2]) : undefined
+                !isChildPage && canEditOnDisplayedSource
+                  ? (box) => setCropBox([box.x1, box.y1, box.x2, box.y2])
+                  : undefined
               }
-              onCropAngleChange={canEditOnDisplayedSource ? (angle) => setDeskewAngle(angle) : undefined}
-              splitX={isSpreadSelection && activeSource === "current" ? splitX : null}
-              showSplitOverlay={isSpreadSelection && activeSource === "current"}
-              onSplitXChange={isSpreadSelection && activeSource === "current" ? (x) => setSplitX(x) : undefined}
+              onQuadPointsChange={
+                isChildPage && canEditOnDisplayedSource
+                  ? (nextQuad) => {
+                      const unscaled =
+                        pageImageWidth != null &&
+                        pageImageHeight != null &&
+                        previewNaturalWidth != null &&
+                        previewNaturalHeight != null &&
+                        previewNaturalWidth > 0 &&
+                        previewNaturalHeight > 0
+                          ? scaleQuadPoints(
+                              nextQuad,
+                              pageImageWidth / previewNaturalWidth,
+                              pageImageHeight / previewNaturalHeight
+                            )
+                          : nextQuad;
+                      setQuadPoints(unscaled);
+                    }
+                  : undefined
+              }
+              onCropAngleChange={
+                !isChildPage && canEditOnDisplayedSource ? (angle) => setDeskewAngle(angle) : undefined
+              }
+              splitX={isSpreadSelection && activeUri ? (splitX != null ? splitX * splitScale : null) : null}
+              showSplitOverlay={isSpreadSelection && !!activeUri}
+              onSplitXChange={isSpreadSelection && activeUri ? (x) => setSplitX(x / splitScale) : undefined}
+              onNaturalSizeChange={(w, h) => {
+                setPreviewNaturalWidth(w);
+                setPreviewNaturalHeight(h);
+              }}
             />
-            {canEditGeometry && activeSource !== "current" && (
+            {canEditGeometry && !activeUri && (
               <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
-                Editing applies to the current artifact. Switch back to <strong>Current</strong> to drag crop, deskew, or split handles.
+                No displayable artifact is available for the selected source. Choose another source before submitting a correction.
+              </div>
+            )}
+            {canEditGeometry && activeUri && activeSource !== "current" && !isChildPage && (
+              <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
+                Edits will be applied using the selected <strong>{sourceViewLabel(activeSource)}</strong> artifact and the result will become the new current artifact.
               </div>
             )}
             {workspace.current_output_uri && workspace.current_layout_uri && (
@@ -487,84 +582,115 @@ export function CorrectionWorkspace({
 
             {canEditGeometry && (
               <>
-                <div className="space-y-2">
-                  <Label className="text-xs text-slate-600">
-                    Crop Box{" "}
-                    <span className="font-normal text-slate-400">[x1, y1, x2, y2]</span>
-                  </Label>
-                  <div className="grid grid-cols-2 gap-1.5">
-                    {["X1", "Y1", "X2", "Y2"].map((field, index) => (
-                      <div key={field} className="space-y-0.5">
-                        <span className="text-2xs text-slate-500">{field}</span>
-                        <Input
-                          type="number"
-                          value={cropBox?.[index] != null ? Math.round(cropBox[index]) : ""}
-                          onChange={(event) => {
-                            const value = parseFloat(event.target.value);
-                            if (Number.isNaN(value)) return;
-                            const next = [...(cropBox ?? [0, 0, 0, 0])] as [
-                              number,
-                              number,
-                              number,
-                              number,
-                            ];
-                            next[index] = value;
-                            setCropBox(next);
-                          }}
-                          className="h-8 text-xs tabular-nums"
-                          placeholder="-"
-                        />
+                {isChildPage ? (
+                  <>
+                    <div className="space-y-2">
+                      <Label className="text-xs text-slate-600">
+                        Page Quad{" "}
+                        <span className="font-normal text-slate-400">[x, y] in parent image</span>
+                      </Label>
+                      <div className="grid grid-cols-2 gap-2">
+                        {(quadPoints ?? []).map((point, index) => (
+                          <div key={`quad-${index}`} className="space-y-0.5">
+                            <span className="text-2xs text-slate-500">
+                              {["TL", "TR", "BR", "BL"][index]}
+                            </span>
+                            <div className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-2xs tabular-nums text-slate-600">
+                              [{Math.round(point[0])}, {Math.round(point[1])}]
+                            </div>
+                          </div>
+                        ))}
                       </div>
-                    ))}
-                  </div>
-                  {!cropBox && (
-                    <p className="flex items-center gap-1 text-2xs text-slate-400">
-                      <Info className="h-3 w-3" />
-                      No geometry. Drag on the image to set it.
-                    </p>
-                  )}
-                </div>
+                      <p className="flex items-start gap-1 text-2xs text-slate-400">
+                        <Info className="mt-0.5 h-3 w-3 shrink-0" />
+                        Drag each corner handle on the shared parent image. The child artifact will be rectified from this quadrilateral only when you submit.
+                      </p>
+                    </div>
 
-                <Separator />
+                    <Separator />
+                  </>
+                ) : (
+                  <>
+                    <div className="space-y-2">
+                      <Label className="text-xs text-slate-600">
+                        Crop Box{" "}
+                        <span className="font-normal text-slate-400">[x1, y1, x2, y2]</span>
+                      </Label>
+                      <div className="grid grid-cols-2 gap-1.5">
+                        {["X1", "Y1", "X2", "Y2"].map((field, index) => (
+                          <div key={field} className="space-y-0.5">
+                            <span className="text-2xs text-slate-500">{field}</span>
+                            <Input
+                              type="number"
+                              value={cropBox?.[index] != null ? Math.round(cropBox[index]) : ""}
+                              onChange={(event) => {
+                                const value = parseFloat(event.target.value);
+                                if (Number.isNaN(value)) return;
+                                const next = [...(cropBox ?? [0, 0, 0, 0])] as [
+                                  number,
+                                  number,
+                                  number,
+                                  number,
+                                ];
+                                next[index] = value;
+                                setCropBox(next);
+                              }}
+                              className="h-8 text-xs tabular-nums"
+                              placeholder="-"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                      {!cropBox && (
+                        <p className="flex items-center gap-1 text-2xs text-slate-400">
+                          <Info className="h-3 w-3" />
+                          No geometry. Drag on the image to set it.
+                        </p>
+                      )}
+                    </div>
 
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <Label className="text-xs text-slate-600">
-                      Deskew Angle{" "}
-                      <span className="font-normal text-slate-400">(deg)</span>
-                    </Label>
-                    {deskewAngle != null && (
-                      <button
-                        type="button"
-                        onClick={() => setDeskewAngle(null)}
-                        className="text-2xs text-slate-400 hover:text-slate-600"
-                      >
-                        clear
-                      </button>
-                    )}
-                  </div>
-                  <Input
-                    type="number"
-                    step="0.1"
-                    min="-45"
-                    max="45"
-                    value={deskewAngle ?? ""}
-                    onChange={(e) => {
-                      const v = parseFloat(e.target.value);
-                      setDeskewAngle(Number.isNaN(v) ? null : Math.max(-45, Math.min(45, v)));
-                    }}
-                    placeholder="null"
-                    className="h-8 text-xs tabular-nums"
-                  />
-                  <p className="flex items-center gap-1 text-2xs text-slate-400">
-                    <Info className="h-3 w-3" />
-                    {deskewAngle != null
-                      ? `${deskewAngle.toFixed(1)}° — drag ↻ on the crop box to adjust.`
-                      : "Drag the ↻ handle on the crop box or type a value."}
-                  </p>
-                </div>
+                    <Separator />
 
-                <Separator />
+                    <div className="space-y-2">
+                      <div className="flex items-center justify-between">
+                        <Label className="text-xs text-slate-600">
+                          Deskew Angle{" "}
+                          <span className="font-normal text-slate-400">(deg)</span>
+                        </Label>
+                        {deskewAngle != null && (
+                          <button
+                            type="button"
+                            onClick={() => setDeskewAngle(null)}
+                            className="text-2xs text-slate-400 hover:text-slate-600"
+                          >
+                            clear
+                          </button>
+                        )}
+                      </div>
+                      <Input
+                        type="number"
+                        step="0.1"
+                        min="-45"
+                        max="45"
+                        value={deskewAngle ?? ""}
+                        onChange={(e) => {
+                          const v = parseFloat(e.target.value);
+                          setDeskewAngle(Number.isNaN(v) ? null : Math.max(-45, Math.min(45, v)));
+                        }}
+                        placeholder="null"
+                        className="h-8 text-xs tabular-nums"
+                      />
+                      <p className="flex items-center gap-1 text-2xs text-slate-400">
+                        <Info className="h-3 w-3" />
+                        {deskewAngle != null
+                          ? `${deskewAngle.toFixed(1)}° — drag ↻ on the crop box to adjust.`
+                          : "Drag the ↻ handle on the crop box or type a value."}
+                      </p>
+                    </div>
+
+                    <Separator />
+                  </>
+                )}
               </>
             )}
 
@@ -583,6 +709,10 @@ export function CorrectionWorkspace({
                 Will Submit
               </p>
               <SubmitRow
+                label="Source"
+                value={activeUri ? sourceViewLabel(activeSource) : "Unavailable"}
+              />
+              <SubmitRow
                 label="Structure"
                 value={
                   isChildPage
@@ -593,19 +723,27 @@ export function CorrectionWorkspace({
                 }
               />
               <SubmitRow
-                label="Crop Box"
+                label={isChildPage ? "Quad" : "Crop Box"}
                 value={
-                  canEditGeometry && cropBox
-                    ? `[${cropBox.map((value) => Math.round(value)).join(", ")}]`
-                    : canEditGeometry
-                      ? "null"
-                      : "child workflow"
+                  isChildPage
+                    ? quadPoints
+                      ? quadPoints
+                          .map(([x, y], index) => `${["TL", "TR", "BR", "BL"][index]}(${Math.round(x)},${Math.round(y)})`)
+                          .join(" ")
+                      : "null"
+                    : canEditGeometry && cropBox
+                      ? `[${cropBox.map((value) => Math.round(value)).join(", ")}]`
+                      : canEditGeometry
+                        ? "null"
+                        : "child workflow"
                 }
               />
               <SubmitRow
-                label="Deskew"
+                label={isChildPage ? "Rectify" : "Deskew"}
                 value={
-                  canEditGeometry
+                  isChildPage
+                    ? "perspective warp"
+                    : canEditGeometry
                     ? deskewAngle != null
                       ? `${deskewAngle.toFixed(1)}°`
                       : "null"
@@ -632,11 +770,16 @@ export function CorrectionWorkspace({
               className="w-full gap-2"
               onClick={() => submitMut.mutate()}
               loading={submitMut.isPending}
-              disabled={rejectMut.isPending}
+              disabled={!canSubmitCorrection}
             >
               <CheckCircle className="h-4 w-4" />
               {isSpreadSelection ? "Create Child Pages" : "Submit Correction"}
             </Button>
+            {!activeUri && (
+              <p className="text-2xs text-amber-600">
+                Select a displayable source artifact before submitting a correction.
+              </p>
+            )}
             <Button
               variant="danger"
               className="w-full gap-2"
@@ -667,25 +810,6 @@ export function CorrectionWorkspace({
   );
 }
 
-function resolveUri(
-  workspace: CorrectionWorkspaceDetail | undefined,
-  source: SourceView
-): string | null {
-  if (!workspace) return null;
-  switch (source) {
-    case "original":
-      return workspace.original_otiff_uri;
-    case "current":
-      return workspace.current_output_uri;
-    case "normalized":
-      return workspace.branch_outputs.iep1c_normalized;
-    case "rectified":
-      return workspace.branch_outputs.iep1d_rectified;
-    default:
-      return workspace.current_output_uri ?? workspace.best_output_uri;
-  }
-}
-
 function currentArtifactLabel(role: CorrectionWorkspaceDetail["current_output_role"]): string {
   switch (role) {
     case "human_corrected":
@@ -698,6 +822,20 @@ function currentArtifactLabel(role: CorrectionWorkspaceDetail["current_output_ro
       return "Original upload";
     default:
       return "Unavailable";
+  }
+}
+
+function sourceViewLabel(source: SourceView): string {
+  switch (source) {
+    case "original":
+      return "Original OTIFF";
+    case "normalized":
+      return "Normalized";
+    case "rectified":
+      return "Rectified";
+    case "current":
+    default:
+      return "Current";
   }
 }
 

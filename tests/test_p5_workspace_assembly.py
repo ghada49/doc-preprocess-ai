@@ -34,7 +34,7 @@ Session is mocked — no live database required.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -88,6 +88,7 @@ def _make_page(
     page.status = status
     page.review_reasons = review_reasons
     page.output_image_uri = output_image_uri
+    page.output_layout_uri = None
     page.input_image_uri = input_image_uri
     return page
 
@@ -100,6 +101,8 @@ def _make_lineage(
     otiff_uri: str = "s3://bucket/raw/page1.tiff",
     output_image_uri: str | None = None,
     iep1d_used: bool = False,
+    human_corrected: bool = False,
+    split_source: bool = False,
     human_correction_fields: dict[str, Any] | None = None,
 ) -> PageLineage:
     lin = MagicMock(spec=PageLineage)
@@ -110,6 +113,9 @@ def _make_lineage(
     lin.otiff_uri = otiff_uri
     lin.output_image_uri = output_image_uri
     lin.iep1d_used = iep1d_used
+    # Explicitly set boolean flags so MagicMock attributes are not truthy by accident.
+    lin.human_corrected = human_corrected
+    lin.split_source = split_source
     lin.human_correction_fields = human_correction_fields
     return lin
 
@@ -129,7 +135,7 @@ def _make_gate(
     gate.iep1a_geometry = iep1a_geometry
     gate.iep1b_geometry = iep1b_geometry
     gate.selected_model = selected_model
-    gate.created_at = datetime.now(tz=timezone.utc)
+    gate.created_at = datetime.now(tz=UTC)
     return gate
 
 
@@ -260,33 +266,45 @@ class TestGeometrySummaryFromJsonb:
 class TestParamsFromHumanCorrection:
     def test_full_correction_fields(self) -> None:
         hcf = {"crop_box": [100, 80, 2400, 3200], "deskew_angle": 1.3, "split_x": None}
-        crop, deskew, split = _params_from_human_correction(hcf)
+        crop, deskew, split, selection_mode, quad_points = _params_from_human_correction(hcf)
         assert crop == [100, 80, 2400, 3200]
         assert deskew == pytest.approx(1.3)
         assert split is None
+        assert selection_mode == "rect"
+        assert quad_points is None
 
     def test_split_correction_fields(self) -> None:
-        hcf = {"crop_box": [50, 60, 1200, 3000], "deskew_angle": 0.5, "split_x": 600}
-        crop, deskew, split = _params_from_human_correction(hcf)
+        hcf = {
+            "crop_box": [50, 60, 1200, 3000],
+            "deskew_angle": 0.5,
+            "split_x": 600,
+            "selection_mode": "quad",
+            "quad_points": [[50, 60], [1200, 50], [1180, 3000], [60, 3010]],
+        }
+        crop, deskew, split, selection_mode, quad_points = _params_from_human_correction(hcf)
         assert crop == [50, 60, 1200, 3000]
         assert split == 600
+        assert selection_mode == "quad"
+        assert quad_points == [(50.0, 60.0), (1200.0, 50.0), (1180.0, 3000.0), (60.0, 3010.0)]
 
     def test_all_null_fields(self) -> None:
         hcf = {"crop_box": None, "deskew_angle": None, "split_x": None}
-        crop, deskew, split = _params_from_human_correction(hcf)
+        crop, deskew, split, selection_mode, quad_points = _params_from_human_correction(hcf)
         assert crop is None
         assert deskew is None
         assert split is None
+        assert selection_mode == "rect"
+        assert quad_points is None
 
     def test_coerces_crop_box_to_int(self) -> None:
         hcf = {"crop_box": [100.9, 80.1, 2400.5, 3200.0]}
-        crop, _, _ = _params_from_human_correction(hcf)
+        crop, _, _, _, _ = _params_from_human_correction(hcf)
         assert crop == [100, 80, 2400, 3200]
         assert all(isinstance(v, int) for v in crop)
 
     def test_coerces_split_x_to_int(self) -> None:
         hcf = {"split_x": 600.7}
-        _, _, split = _params_from_human_correction(hcf)
+        _, _, split, _, _ = _params_from_human_correction(hcf)
         assert split == 600
         assert isinstance(split, int)
 
@@ -467,8 +485,9 @@ class TestAssembleCorrectionWorkspace:
 
         assert result.original_otiff_uri == "s3://bucket/raw/page1.tiff"
         assert result.best_output_uri == "s3://bucket/normalized/page1.tiff"
-        # iep1c_normalized == best_output_uri
-        assert result.branch_outputs.iep1c_normalized == "s3://bucket/normalized/page1.tiff"
+        # Untouched normalized pages do not currently expose iep1c_normalized;
+        # only the current artifact carries the normalized URI.
+        assert result.branch_outputs.iep1c_normalized is None
         # iep1d not used → null
         assert result.branch_outputs.iep1d_rectified is None
         # IEP1A geometry summary
@@ -883,8 +902,10 @@ class TestAssembleCorrectionWorkspace:
 
     # ── iep1c_normalized == best_output_uri invariant ─────────────────────────
 
-    def test_iep1c_normalized_equals_best_output_uri(self, session: MagicMock) -> None:
-        """iep1c_normalized is always the same as best_output_uri."""
+    def test_iep1c_normalized_is_none_for_untouched_normalized_page(
+        self, session: MagicMock
+    ) -> None:
+        """Current behavior: iep1c_normalized is omitted until a prior source exists."""
         job = _make_job()
         page = _make_page(
             status="pending_human_correction",
@@ -895,7 +916,8 @@ class TestAssembleCorrectionWorkspace:
         _setup_session(session, job=job, page=page, lineage=lineage, gate=gate)
 
         result = assemble_correction_workspace(session, "job-001", 1)
-        assert result.branch_outputs.iep1c_normalized == result.best_output_uri
+        assert result.best_output_uri == "s3://bucket/norm.tiff"
+        assert result.branch_outputs.iep1c_normalized is None
 
     # ── Malformed gate JSONB tolerance ────────────────────────────────────────
 
@@ -942,3 +964,245 @@ class TestAssembleCorrectionWorkspace:
 
         result = assemble_correction_workspace(session, "job-001", 1)
         assert result.original_otiff_uri == "s3://bucket/fallback_input.tiff"
+
+    def test_child_workspace_current_output_uri_points_to_shared_parent_source(
+        self, session: MagicMock
+    ) -> None:
+        job = _make_job()
+        page = _make_page(
+            status="pending_human_correction",
+            sub_page_index=1,
+            output_image_uri=None,
+        )
+        lineage = _make_lineage(
+            sub_page_index=1,
+            output_image_uri=None,
+            human_corrected=True,
+            human_correction_fields={
+                "source_artifact_uri": "s3://bucket/norm/page1.tiff",
+                "crop_box": [1150, 0, 2300, 3200],
+                "split_x": 1150,
+                "image_width": 2300,
+                "image_height": 3200,
+            },
+        )
+        gate = _make_gate(
+            iep1a_geometry=_geo_jsonb(split_x=1150, split_required=True, page_count=2),
+            selected_model="iep1a",
+        )
+        children = [
+            _make_page(
+                page_id="child-0",
+                sub_page_index=0,
+                status="pending_human_correction",
+                output_image_uri="s3://bucket/jobs/job-001/corrected/1_0.tiff",
+            ),
+            _make_page(
+                page_id="child-1",
+                sub_page_index=1,
+                status="pending_human_correction",
+                output_image_uri="s3://bucket/jobs/job-001/corrected/1_1.tiff",
+            ),
+        ]
+        _setup_session(
+            session,
+            job=job,
+            page=page,
+            lineage=lineage,
+            gate=gate,
+            child_pages=children,
+        )
+
+        result = assemble_correction_workspace(session, "job-001", 1, sub_page_index=1)
+
+        assert result.current_output_uri == "s3://bucket/norm/page1.tiff"
+        assert result.best_output_uri == "s3://bucket/norm/page1.tiff"
+        assert result.current_output_role == "split_child"
+        assert result.current_selection_mode == "quad"
+        assert result.current_quad_points == [
+            (1150.0, 0.0),
+            (2300.0, 0.0),
+            (2300.0, 3200.0),
+            (1150.0, 3200.0),
+        ]
+        assert result.current_crop_box == [1150, 0, 2300, 3200]
+        assert result.page_image_width == 2300
+        assert result.page_image_height == 3200
+
+    def test_split_children_have_independent_parent_space_quads(self, session: MagicMock) -> None:
+        job = _make_job()
+        gate = _make_gate(
+            iep1a_geometry=_geo_jsonb(split_x=1150, split_required=True, page_count=2),
+            selected_model="iep1a",
+        )
+        children = [
+            _make_page(
+                page_id="child-0",
+                sub_page_index=0,
+                status="pending_human_correction",
+                output_image_uri=None,
+            ),
+            _make_page(
+                page_id="child-1",
+                sub_page_index=1,
+                status="pending_human_correction",
+                output_image_uri=None,
+            ),
+        ]
+
+        left_page = _make_page(
+            status="pending_human_correction",
+            sub_page_index=0,
+            output_image_uri=None,
+        )
+        left_lineage = _make_lineage(
+            sub_page_index=0,
+            output_image_uri=None,
+            human_corrected=True,
+            human_correction_fields={
+                "source_artifact_uri": "s3://bucket/norm/page1.tiff",
+                "crop_box": [0, 0, 1150, 3200],
+                "split_x": 1150,
+                "image_width": 2300,
+                "image_height": 3200,
+            },
+        )
+        _setup_session(
+            session,
+            job=job,
+            page=left_page,
+            lineage=left_lineage,
+            gate=gate,
+            child_pages=children,
+        )
+
+        left_result = assemble_correction_workspace(session, "job-001", 1, sub_page_index=0)
+
+        session.reset_mock()
+
+        right_page = _make_page(
+            status="pending_human_correction",
+            sub_page_index=1,
+            output_image_uri=None,
+        )
+        right_lineage = _make_lineage(
+            sub_page_index=1,
+            output_image_uri=None,
+            human_corrected=True,
+            human_correction_fields={
+                "source_artifact_uri": "s3://bucket/norm/page1.tiff",
+                "crop_box": [1150, 0, 2300, 3200],
+                "split_x": 1150,
+                "image_width": 2300,
+                "image_height": 3200,
+            },
+        )
+        _setup_session(
+            session,
+            job=job,
+            page=right_page,
+            lineage=right_lineage,
+            gate=gate,
+            child_pages=children,
+        )
+
+        right_result = assemble_correction_workspace(session, "job-001", 1, sub_page_index=1)
+
+        assert left_result.current_output_uri == "s3://bucket/norm/page1.tiff"
+        assert right_result.current_output_uri == "s3://bucket/norm/page1.tiff"
+        assert left_result.current_selection_mode == "quad"
+        assert right_result.current_selection_mode == "quad"
+        assert left_result.current_quad_points == [
+            (0.0, 0.0),
+            (1150.0, 0.0),
+            (1150.0, 3200.0),
+            (0.0, 3200.0),
+        ]
+        assert right_result.current_quad_points == [
+            (1150.0, 0.0),
+            (2300.0, 0.0),
+            (2300.0, 3200.0),
+            (1150.0, 3200.0),
+        ]
+        assert left_result.current_crop_box == [0, 0, 1150, 3200]
+        assert right_result.current_crop_box == [1150, 0, 2300, 3200]
+
+    # ── current_output_role classification (post mock-fix regression) ─────────
+
+    def test_current_output_role_normalized_output_for_untouched_page(
+        self, session: MagicMock
+    ) -> None:
+        """Untouched normalized page (no prior human correction) → role=normalized_output."""
+        job = _make_job()
+        page = _make_page(
+            status="pending_human_correction",
+            output_image_uri="s3://bucket/norm/page1.tiff",
+        )
+        lineage = _make_lineage(
+            otiff_uri="s3://bucket/raw/page1.tiff",
+            output_image_uri="s3://bucket/norm/page1.tiff",
+            human_corrected=False,
+            split_source=False,
+        )
+        _setup_session(session, job=job, page=page, lineage=lineage, gate=None)
+
+        result = assemble_correction_workspace(session, "job-001", 1)
+
+        assert result.current_output_role == "normalized_output"
+        # iep1c_normalized must be None for an untouched page — no prior source to compare
+        assert result.branch_outputs.iep1c_normalized is None
+        assert result.best_output_uri == "s3://bucket/norm/page1.tiff"
+
+    def test_iep1c_normalized_populated_when_prior_source_differs(
+        self, session: MagicMock
+    ) -> None:
+        """Re-correction: iep1c_normalized shows the prior source when it differs from current."""
+        job = _make_job()
+        page = _make_page(
+            status="pending_human_correction",
+            output_image_uri="s3://bucket/corrected/page1.tiff",
+        )
+        lineage = _make_lineage(
+            otiff_uri="s3://bucket/raw/page1.tiff",
+            output_image_uri="s3://bucket/corrected/page1.tiff",
+            human_corrected=True,
+            human_correction_fields={
+                "source_artifact_uri": "s3://bucket/norm/page1.tiff",
+                "crop_box": [100, 80, 2400, 3200],
+                "deskew_angle": None,
+                "split_x": None,
+            },
+        )
+        _setup_session(session, job=job, page=page, lineage=lineage, gate=None)
+
+        result = assemble_correction_workspace(session, "job-001", 1)
+
+        # The prior source (the normalized artifact the reviewer inspected) is exposed
+        # as iep1c_normalized so the UI can show it alongside the corrected output.
+        assert result.branch_outputs.iep1c_normalized == "s3://bucket/norm/page1.tiff"
+        assert result.current_output_uri == "s3://bucket/corrected/page1.tiff"
+        assert result.current_output_role == "human_corrected"
+
+    def test_iep1c_normalized_none_when_prior_source_equals_current(
+        self, session: MagicMock
+    ) -> None:
+        """Re-correction where source_artifact_uri equals current output → no separate display."""
+        job = _make_job()
+        page = _make_page(
+            status="pending_human_correction",
+            output_image_uri="s3://bucket/corrected/page1.tiff",
+        )
+        lineage = _make_lineage(
+            otiff_uri="s3://bucket/raw/page1.tiff",
+            output_image_uri="s3://bucket/corrected/page1.tiff",
+            human_corrected=True,
+            human_correction_fields={
+                "source_artifact_uri": "s3://bucket/corrected/page1.tiff",
+            },
+        )
+        _setup_session(session, job=job, page=page, lineage=lineage, gate=None)
+
+        result = assemble_correction_workspace(session, "job-001", 1)
+
+        # source == current → no separate normalized tab needed
+        assert result.branch_outputs.iep1c_normalized is None
