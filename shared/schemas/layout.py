@@ -144,14 +144,16 @@ class LayoutDetectRequest(BaseModel):
     Request sent to IEP2A (POST /v1/layout-detect) or IEP2B (POST /v1/layout-detect).
 
     Fields:
-        job_id        — job identifier
-        page_number   — 1-indexed page number (>= 1)
-        image_uri     — URI of the page artifact to analyse
-        material_type — one of book, newspaper, archival_document
+        job_id          — job identifier
+        page_number     — 1-indexed page number (>= 1)
+        sub_page_index  — 0 (left) or 1 (right) for split child pages; None for unsplit
+        image_uri       — URI of the page artifact to analyse
+        material_type   — one of book, newspaper, archival_document
     """
 
     job_id: str
     page_number: Annotated[int, Field(ge=1)]
+    sub_page_index: int | None = None
     image_uri: str
     material_type: MaterialType
 

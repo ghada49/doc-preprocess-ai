@@ -4,6 +4,7 @@ import type { CorrectionWorkspaceDetail } from "../../types/api";
 import {
   getDefaultWorkspaceSource,
   getWorkspaceEmptyMessage,
+  getWorkspaceInteractionState,
   resolveWorkspaceSourceUri,
 } from "./workspace-source.ts";
 
@@ -157,4 +158,55 @@ function makeWorkspace(
     getWorkspaceEmptyMessage(workspace, "current"),
     /Current child review source unavailable/
   );
+}
+
+{
+  const workspace = makeWorkspace({
+    child_pages: [
+      { page_number: 1, sub_page_index: 0, status: "pending_human_correction" },
+      { page_number: 1, sub_page_index: 1, status: "pending_human_correction" },
+    ],
+  });
+
+  const state = getWorkspaceInteractionState(
+    workspace,
+    "spread",
+    "current",
+    workspace.current_output_uri
+  );
+
+  assert.equal(state.isParentLineageAnchor, true);
+  assert.equal(state.canChoosePageStructure, false);
+  assert.equal(state.isSpreadSelection, false);
+  assert.equal(state.canEditGeometry, false);
+  assert.equal(state.canSubmitCorrection, false);
+}
+
+{
+  const childWorkspace = makeWorkspace({
+    sub_page_index: 0,
+    child_pages: [
+      { page_number: 1, sub_page_index: 0, status: "pending_human_correction" },
+      { page_number: 1, sub_page_index: 1, status: "pending_human_correction" },
+    ],
+    current_output_uri: "s3://bucket/parent-source.tiff",
+  });
+
+  const currentState = getWorkspaceInteractionState(
+    childWorkspace,
+    "single",
+    "current",
+    childWorkspace.current_output_uri
+  );
+  const originalState = getWorkspaceInteractionState(
+    childWorkspace,
+    "single",
+    "original",
+    childWorkspace.current_output_uri
+  );
+
+  assert.equal(currentState.canEditOnDisplayedSource, true);
+  assert.equal(currentState.canSubmitCorrection, true);
+  assert.equal(originalState.canEditOnDisplayedSource, false);
+  assert.equal(originalState.canSubmitCorrection, false);
 }

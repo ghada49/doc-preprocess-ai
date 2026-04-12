@@ -503,6 +503,7 @@ async def _call_layout_service(
     endpoint: str,
     job_id: str,
     page_number: int,
+    sub_page_index: int | None,
     image_uri: str,
     material_type: str,
     backend: GPUBackend,
@@ -510,19 +511,22 @@ async def _call_layout_service(
 ) -> LayoutDetectResponse | None:
     if not circuit_breaker.allow_call():
         logger.warning(
-            "worker_loop: %s skipped by open circuit breaker job=%s page=%d",
+            "worker_loop: %s skipped by open circuit breaker job=%s page=%d sub=%s",
             service_name,
             job_id,
             page_number,
+            sub_page_index,
         )
         return None
 
-    payload = {
+    payload: dict[str, object] = {
         "job_id": job_id,
         "page_number": page_number,
         "image_uri": image_uri,
         "material_type": material_type,
     }
+    if sub_page_index is not None:
+        payload["sub_page_index"] = sub_page_index
 
     try:
         raw = await backend.call(endpoint, payload)
@@ -532,29 +536,32 @@ async def _call_layout_service(
     except BackendError as exc:
         circuit_breaker.record_failure(exc.kind)
         logger.warning(
-            "worker_loop: %s failed job=%s page=%d kind=%s error=%s",
+            "worker_loop: %s failed job=%s page=%d sub=%s kind=%s error=%s",
             service_name,
             job_id,
             page_number,
+            sub_page_index,
             exc.kind.value,
             exc,
         )
     except ValidationError as exc:
         circuit_breaker.record_failure(None)
         logger.warning(
-            "worker_loop: %s returned malformed response job=%s page=%d error=%s",
+            "worker_loop: %s returned malformed response job=%s page=%d sub=%s error=%s",
             service_name,
             job_id,
             page_number,
+            sub_page_index,
             exc,
         )
     except Exception:
         circuit_breaker.record_failure(None)
         logger.exception(
-            "worker_loop: unexpected %s failure job=%s page=%d",
+            "worker_loop: unexpected %s failure job=%s page=%d sub=%s",
             service_name,
             job_id,
             page_number,
+            sub_page_index,
         )
     return None
 
@@ -1296,6 +1303,7 @@ async def _run_layout(
         endpoint=config.iep2a_endpoint,
         job_id=job.job_id,
         page_number=page.page_number,
+        sub_page_index=page.sub_page_index,
         image_uri=layout_image_uri,
         material_type=material_type,
         backend=config.backend,
@@ -1306,6 +1314,7 @@ async def _run_layout(
         endpoint=config.iep2b_endpoint,
         job_id=job.job_id,
         page_number=page.page_number,
+        sub_page_index=page.sub_page_index,
         image_uri=layout_image_uri,
         material_type=material_type,
         backend=config.backend,

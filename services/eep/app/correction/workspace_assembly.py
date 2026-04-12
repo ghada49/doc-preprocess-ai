@@ -63,6 +63,7 @@ from shared.schemas.layout import LayoutArtifactRole
 
 __all__ = [
     "PageNotInCorrectionError",
+    "_full_res_dims_from_lineage",
     "assemble_correction_workspace",
 ]
 
@@ -286,9 +287,10 @@ def _params_from_gate(
     """
     Derive current workspace defaults from the geometry gate log.
 
-    crop_box: derived from the selected model's pages[0].bbox (x_min, y_min, x_max, y_max).
-    split_x:  derived from the selected model's top-level split_x field as
-              backend context for structure suggestions or fallback behavior.
+    crop_box:    derived from the selected model's pages[0].bbox (x_min, y_min, x_max, y_max).
+    split_x:     always None.  Gate JSONB stores model outputs in proxy-image pixel space;
+                 the proxy dimensions are not persisted in the gate log so the value cannot
+                 be scaled to full-resolution safely.
     deskew_angle: always None — the IEP1C normalization deskew angle is not stored
                   in the DB (see module-level known-limitation note).
 
@@ -317,20 +319,58 @@ def _params_from_gate(
         if bbox is not None and len(bbox) == 4:
             crop_box = [int(v) for v in bbox]
 
-    # Derive split_x from top-level geometry split_x
-    raw_split_x = geo_jsonb.get("split_x")
-    split_x: int | None = int(raw_split_x) if raw_split_x is not None else None
+    # split_x from gate JSONB is in proxy-image pixel space.  The proxy
+    # dimensions required to scale it to full-resolution are not stored in the
+    # gate log, so the value cannot be used safely here.
+    return crop_box, None, None
 
-    return crop_box, None, split_x
+
+def _full_res_dims_from_lineage(
+    lineage: "PageLineage | None",
+) -> tuple[int | None, int | None]:
+    """
+    Read actual full-resolution image dimensions from the downsample gate stored
+    in page_lineage.gate_results["downsample"]["original_width/height"].
+
+    The worker writes these values via run_downsample_step() before geometry
+    inference.  They are in full-resolution pixel space and safe to use directly.
+
+    Returns (width, height) when both fields are present and positive;
+    (None, None) otherwise.
+    """
+    if lineage is None:
+        return None, None
+    gate_results = lineage.gate_results
+    if not isinstance(gate_results, dict):
+        return None, None
+    downsample = gate_results.get("downsample")
+    if not isinstance(downsample, dict):
+        return None, None
+    raw_w = downsample.get("original_width")
+    raw_h = downsample.get("original_height")
+    if raw_w is None or raw_h is None:
+        return None, None
+    try:
+        w, h = int(raw_w), int(raw_h)
+    except (TypeError, ValueError):
+        return None, None
+    if w <= 0 or h <= 0:
+        return None, None
+    return w, h
 
 
 def _suggested_page_structure(
     *,
-    current_split_x: int | None,
     child_pages: list[JobPage],
 ) -> str:
-    """Derive the default single-page vs spread choice for the workspace UI."""
-    if child_pages or current_split_x is not None:
+    """
+    Derive the default single-page vs spread choice for the workspace UI.
+
+    Only existing child pages (a DB fact) drive a "spread" suggestion.
+    Model-derived split_x is not used here: it is in proxy-image space and
+    cannot safely represent a structural decision without reviewer input.
+    """
+    if child_pages:
         return "spread"
     return "single"
 
@@ -470,22 +510,25 @@ def assemble_correction_workspace(
             current_quad_points = _quad_points_from_crop_box(current_crop_box)
 
     # ── Step 8b: Page image dimensions ────────────────────────────────────────
-    # Priority: stored correction_fields (exact) > gate-based approximation (2 * split_x).
+    # Priority: stored correction_fields (exact, full-res) > downsample gate
+    # (original_width/height from lineage.gate_results, also full-res).
     # Dimensions let the frontend scale split_x between preview and original pixels.
     page_image_width: int | None = None
     page_image_height: int | None = None
     raw_img_width = correction_fields.get("image_width")
     if raw_img_width is not None:
         page_image_width = int(raw_img_width)
-    elif current_split_x is not None:
-        # Approximation: assume split is roughly central (accurate for symmetric spreads).
-        page_image_width = 2 * current_split_x
     raw_img_height = correction_fields.get("image_height")
     if raw_img_height is not None:
         page_image_height = int(raw_img_height)
+    if page_image_width is None or page_image_height is None:
+        lineage_w, lineage_h = _full_res_dims_from_lineage(lineage)
+        if page_image_width is None:
+            page_image_width = lineage_w
+        if page_image_height is None:
+            page_image_height = lineage_h
 
     suggested_page_structure = _suggested_page_structure(
-        current_split_x=current_split_x,
         child_pages=child_pages,
     )
     child_page_summaries = [

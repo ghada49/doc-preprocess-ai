@@ -310,7 +310,9 @@ class TestParamsFromHumanCorrection:
 
 
 class TestParamsFromGate:
-    def test_selected_iep1a_provides_crop_and_split_x(self) -> None:
+    def test_selected_iep1a_provides_crop_split_x_always_none(self) -> None:
+        # split_x from the gate is proxy-space and cannot be scaled without
+        # proxy dimensions; _params_from_gate always returns None for split_x.
         gate = _make_gate(
             iep1a_geometry=_geo_jsonb(split_x=1200, bbox=(100, 80, 2400, 3200)),
             selected_model="iep1a",
@@ -318,7 +320,7 @@ class TestParamsFromGate:
         crop, deskew, split = _params_from_gate(gate)
         assert crop == [100, 80, 2400, 3200]
         assert deskew is None  # never available from gate
-        assert split == 1200
+        assert split is None
 
     def test_selected_iep1b_provides_crop_from_iep1b(self) -> None:
         gate = _make_gate(
@@ -362,13 +364,14 @@ class TestParamsFromGate:
         _, _, split = _params_from_gate(gate)
         assert split is None
 
-    def test_split_page_has_split_x(self) -> None:
+    def test_split_page_split_x_still_none(self) -> None:
+        # Even for split pages, gate split_x is proxy-space; always None.
         gate = _make_gate(
             iep1a_geometry=_geo_jsonb(split_x=1150, split_required=True, page_count=2),
             selected_model="iep1a",
         )
         _, _, split = _params_from_gate(gate)
-        assert split == 1150
+        assert split is None
 
     def test_deskew_angle_always_none(self) -> None:
         gate = _make_gate(
@@ -499,11 +502,13 @@ class TestAssembleCorrectionWorkspace:
         assert result.branch_outputs.iep1b_geometry is not None
         assert result.branch_outputs.iep1b_geometry.page_count == 1
         assert result.branch_outputs.iep1b_geometry.split_required is False
-        # Correction params derived from gate (iep1a selected)
+        # Correction params derived from gate (iep1a selected).
+        # split_x is not propagated from gate (proxy-space); structural
+        # suggestion is "single" because no child pages exist yet.
         assert result.current_crop_box == [100, 80, 2400, 3200]
-        assert result.current_split_x == 1200
+        assert result.current_split_x is None
         assert result.current_deskew_angle is None  # never from gate
-        assert result.suggested_page_structure == "spread"
+        assert result.suggested_page_structure == "single"
 
     # ── Missing optional branch outputs ───────────────────────────────────────
 
@@ -611,7 +616,9 @@ class TestAssembleCorrectionWorkspace:
         assert result.current_split_x is None
         assert result.suggested_page_structure == "single"
 
-    def test_split_page_has_split_x_from_gate(self, session: MagicMock) -> None:
+    def test_split_page_gate_split_x_not_propagated(self, session: MagicMock) -> None:
+        # Gate split_x is proxy-space; it must not surface as current_split_x
+        # and must not auto-drive suggested_page_structure to "spread".
         job = _make_job()
         page = _make_page(
             status="pending_human_correction",
@@ -626,8 +633,8 @@ class TestAssembleCorrectionWorkspace:
         _setup_session(session, job=job, page=page, lineage=lineage, gate=gate)
 
         result = assemble_correction_workspace(session, "job-001", 1)
-        assert result.current_split_x == 1150
-        assert result.suggested_page_structure == "spread"
+        assert result.current_split_x is None
+        assert result.suggested_page_structure == "single"
 
     def test_split_child_sub_page_index_0(self, session: MagicMock) -> None:
         job = _make_job()

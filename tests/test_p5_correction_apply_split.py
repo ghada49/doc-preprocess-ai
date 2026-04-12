@@ -432,7 +432,10 @@ class TestSplitCorrectionEndpoint:
             [[450.0, 0.0], [900.0, 0.0], [900.0, 8.0], [450.0, 8.0]],
         ]
 
-    def test_split_x_is_derived_from_geometry_gate_when_not_provided(self) -> None:
+    def test_split_x_defaults_to_center_when_gate_not_used(self) -> None:
+        # Gate split_x is proxy-space and is no longer used. When no explicit
+        # split_x is provided, _resolve_split_x falls back to image_width // 2.
+        # The mock image is 900 px wide, so the default split is 450.
         job = _make_job()
         parent = _make_page(output_image_uri="s3://bucket/jobs/job-001/3.tiff")
         parent_lineage = _make_lineage()
@@ -452,15 +455,15 @@ class TestSplitCorrectionEndpoint:
         from services.eep.app.db.models import PageLineage
 
         added_lineages = [obj for obj in added_objects if isinstance(obj, PageLineage)]
-        assert {lineage.human_correction_fields["split_x"] for lineage in added_lineages} == {320}
+        assert {lineage.human_correction_fields["split_x"] for lineage in added_lineages} == {450}
         assert {lineage.human_correction_fields["selection_mode"] for lineage in added_lineages} == {"quad"}
         assert [lineage.human_correction_fields["crop_box"] for lineage in added_lineages] == [
-            [0, 0, 320, 8],
-            [320, 0, 900, 8],
+            [0, 0, 450, 8],
+            [450, 0, 900, 8],
         ]
         assert [lineage.human_correction_fields["quad_points"] for lineage in added_lineages] == [
-            [[0.0, 0.0], [320.0, 0.0], [320.0, 8.0], [0.0, 8.0]],
-            [[320.0, 0.0], [900.0, 0.0], [900.0, 8.0], [320.0, 8.0]],
+            [[0.0, 0.0], [450.0, 0.0], [450.0, 8.0], [0.0, 8.0]],
+            [[450.0, 0.0], [900.0, 0.0], [900.0, 8.0], [450.0, 8.0]],
         ]
 
     def test_idempotency_existing_children_reused(self) -> None:

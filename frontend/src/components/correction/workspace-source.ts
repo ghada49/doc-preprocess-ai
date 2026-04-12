@@ -2,6 +2,17 @@ import type { CorrectionWorkspaceDetail } from "../../types/api";
 
 export type SourceView = "original" | "current" | "normalized" | "rectified";
 
+export interface WorkspaceInteractionState {
+  isChildPage: boolean;
+  hasChildPages: boolean;
+  isParentLineageAnchor: boolean;
+  canChoosePageStructure: boolean;
+  isSpreadSelection: boolean;
+  canEditGeometry: boolean;
+  canEditOnDisplayedSource: boolean;
+  canSubmitCorrection: boolean;
+}
+
 export function resolveWorkspaceSourceUri(
   workspace: CorrectionWorkspaceDetail | undefined,
   source: SourceView
@@ -42,6 +53,35 @@ export function getDefaultWorkspaceSource(
   if (workspace.branch_outputs.iep1d_rectified) return "rectified";
   if (workspace.original_otiff_uri) return "original";
   return "current";
+}
+
+export function getWorkspaceInteractionState(
+  workspace: CorrectionWorkspaceDetail | undefined,
+  pageStructure: "single" | "spread",
+  activeSource: SourceView,
+  activeUri: string | null
+): WorkspaceInteractionState {
+  const isChildPage = workspace?.sub_page_index != null;
+  const hasChildPages = (workspace?.child_pages.length ?? 0) > 0;
+  const isParentLineageAnchor = !isChildPage && hasChildPages;
+  const canChoosePageStructure = !isChildPage && !hasChildPages;
+  const isSpreadSelection = canChoosePageStructure && pageStructure === "spread";
+  const canEditGeometry = isChildPage || (!hasChildPages && pageStructure === "single");
+  const canEditOnDisplayedSource =
+    canEditGeometry && !!activeUri && (!isChildPage || activeSource === "current");
+  const canSubmitCorrection =
+    !!activeUri && !isParentLineageAnchor && (!isChildPage || activeSource === "current");
+
+  return {
+    isChildPage,
+    hasChildPages,
+    isParentLineageAnchor,
+    canChoosePageStructure,
+    isSpreadSelection,
+    canEditGeometry,
+    canEditOnDisplayedSource,
+    canSubmitCorrection,
+  };
 }
 
 export function getWorkspaceEmptyMessage(

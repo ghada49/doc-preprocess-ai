@@ -268,7 +268,24 @@ def validate_google_startup() -> GoogleWorkerState:
         )
         return GoogleWorkerState(enabled=False, config=config, client=None)
 
-    # ── 3. Instantiate client ──────────────────────────────────────────────────
+    # ── 3. Verify Google SDK is importable ────────────────────────────────────
+    # CallGoogleDocumentAI.__init__ defers the SDK import to _lazy_init(), so
+    # merely constructing the wrapper does NOT detect a missing package.  Check
+    # importability here so a missing SDK is a hard startup error, not a silent
+    # runtime failure that surfaces as "Google returned no response".
+    try:
+        from google.api_core.client_options import ClientOptions  # noqa: F401
+        from google.cloud import documentai_v1  # noqa: F401
+    except ImportError as exc:
+        logger.error(
+            "Google Document AI: disabling — SDK not installed: %s. "
+            "Add 'google-cloud-documentai>=2.20' to the eep-worker Dockerfile "
+            "RUN pip install block, then rebuild and redeploy the image.",
+            exc,
+        )
+        return GoogleWorkerState(enabled=False, config=config, client=None)
+
+    # ── 4. Instantiate client ──────────────────────────────────────────────────
     try:
         client = CallGoogleDocumentAI(config)
         logger.info(

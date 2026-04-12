@@ -117,6 +117,10 @@ export function ImageViewer({
   const [isDrawing, setIsDrawing] = useState(false);
   const [drawStart, setDrawStart] = useState({ x: 0, y: 0 });
 
+  // Draw-new-quad drag state
+  const [isDrawingQuad, setIsDrawingQuad] = useState(false);
+  const [quadDrawStart, setQuadDrawStart] = useState({ x: 0, y: 0 });
+
   // Active drag for split line
   const [isDraggingSplit, setIsDraggingSplit] = useState(false);
   const [activeQuadHandle, setActiveQuadHandle] = useState<number | null>(null);
@@ -161,6 +165,14 @@ export function ImageViewer({
       if (activeHandle || isDraggingSplit || isRotating) return;
       if (e.button !== 0) return;
 
+      // Draw a new quad by dragging on the canvas (takes priority over panning)
+      if (showQuadOverlay && onQuadPointsChange && imgLoaded && imgRef.current) {
+        const { imgX, imgY } = screenToImage(e.clientX, e.clientY, imgRef, zoom, deskewAngle, naturalSize);
+        setIsDrawingQuad(true);
+        setQuadDrawStart({ x: imgX, y: imgY });
+        return;
+      }
+
       // Draw a new crop box by dragging on the canvas
       if (showCropOverlay && onCropBoxChange && imgLoaded && imgRef.current) {
         const { imgX, imgY } = screenToImage(e.clientX, e.clientY, imgRef, zoom, deskewAngle, naturalSize);
@@ -177,6 +189,8 @@ export function ImageViewer({
       activeHandle,
       isDraggingSplit,
       isRotating,
+      showQuadOverlay,
+      onQuadPointsChange,
       showCropOverlay,
       onCropBoxChange,
       imgLoaded,
@@ -198,6 +212,18 @@ export function ImageViewer({
           naturalSize
         );
         onQuadPointsChange(updateQuadPoint(quadPoints, activeQuadHandle, [imgX, imgY]));
+        return;
+      }
+
+      if (isDrawingQuad && onQuadPointsChange && imgRef.current) {
+        const { imgX, imgY } = screenToImage(e.clientX, e.clientY, imgRef, zoom, deskewAngle, naturalSize);
+        const x1 = Math.min(quadDrawStart.x, imgX);
+        const y1 = Math.min(quadDrawStart.y, imgY);
+        const x2 = Math.max(quadDrawStart.x, imgX);
+        const y2 = Math.max(quadDrawStart.y, imgY);
+        if (x2 - x1 > 2 && y2 - y1 > 2) {
+          onQuadPointsChange([[x1, y1], [x2, y1], [x2, y2], [x1, y2]]);
+        }
         return;
       }
 
@@ -263,6 +289,7 @@ export function ImageViewer({
     },
     [
       isDrawing, drawStart,
+      isDrawingQuad, quadDrawStart,
       isPanning, panStart,
       activeQuadHandle, quadPoints,
       activeHandle, dragStartCrop, dragStartPos,
@@ -275,6 +302,7 @@ export function ImageViewer({
 
   const handleMouseUp = useCallback(() => {
     setIsDrawing(false);
+    setIsDrawingQuad(false);
     setIsPanning(false);
     setActiveQuadHandle(null);
     setActiveHandle(null);
@@ -342,9 +370,9 @@ export function ImageViewer({
         ref={containerRef}
         className={cn(
           "flex-1 overflow-hidden relative select-none",
-          isDrawing
+          isDrawing || isDrawingQuad
             ? "cursor-crosshair"
-            : showCropOverlay && onCropBoxChange
+            : (showQuadOverlay && onQuadPointsChange) || (showCropOverlay && onCropBoxChange)
             ? "cursor-crosshair"
             : isPanning
             ? "cursor-grabbing"

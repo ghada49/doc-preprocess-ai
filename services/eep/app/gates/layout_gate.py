@@ -474,8 +474,13 @@ async def evaluate_layout_adjudication(
     google_elapsed = (time.monotonic() - t_google_start) * 1000.0
 
     if not google_response:
+        # Surface the real reason: SDK missing, permanent error, or retries
+        # exhausted each produce a distinct _last_process_error string.
+        last_err = getattr(google_client, "_last_process_error", None)
+        google_error_msg = last_err if last_err else "Google Document AI returned no response"
         logger.warning(
-            "layout_adjudication: Google returned no response — using local fallback, image_uri=%s",
+            "layout_adjudication: Google returned no response — %s, image_uri=%s",
+            google_error_msg,
             image_uri,
         )
         return _build_local_fallback_result(
@@ -484,7 +489,7 @@ async def evaluate_layout_adjudication(
             iep2a_region_count=iep2a_region_count,
             iep2b_region_count=iep2b_region_count,
             google_attempted=True,
-            google_error="Google Document AI returned no response",
+            google_error=google_error_msg,
             google_response_time_ms=google_elapsed,
             google_metadata={"google_available": True},
             t_start=t_start,

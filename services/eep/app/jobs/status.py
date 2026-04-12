@@ -29,9 +29,9 @@ page requiring human review remains 'running', never 'done'.
 Counter fields
 --------------
 accepted_count, review_count, failed_count, and
-pending_human_correction_count are read directly from the jobs row.
-Workers maintain these counters when they update page states.
-This endpoint does not recompute them.
+pending_human_correction_count are derived live from current leaf page states.
+This avoids exposing stale denormalized job counters after out-of-band page
+transitions such as human correction actions.
 
 Error responses
 ---------------
@@ -53,6 +53,11 @@ from sqlalchemy.orm import Session
 from services.eep.app.auth import CurrentUser, assert_job_ownership, require_user
 from services.eep.app.db.models import Job, JobPage
 from services.eep.app.db.session import get_session
+from services.eep.app.jobs.summary import (
+    derive_job_status as _derive_job_status,
+    leaf_pages_from_pages,
+    summarize_leaf_pages,
+)
 from shared.schemas.eep import (
     JobStatus,
     JobStatusResponse,
@@ -63,56 +68,6 @@ from shared.schemas.eep import (
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
-
-# Non-terminal page states: a job remains 'running' if any leaf page is in
-# one of these states.  pending_human_correction keeps job 'running' so the
-# job never reports 'done' while pages require human review.
-_NON_TERMINAL: frozenset[str] = frozenset(
-    {
-        "queued",
-        "preprocessing",
-        "rectification",
-        "layout_detection",
-        "pending_human_correction",
-    }
-)
-
-
-# ---------------------------------------------------------------------------
-# Status derivation
-# ---------------------------------------------------------------------------
-
-
-def _derive_job_status(leaf_pages: list[JobPage]) -> JobStatus:
-    """
-    Derive the job-level status from leaf page states.
-
-    This is the single authoritative implementation of the derivation rule.
-    Call it only after filtering split-parent records from ``leaf_pages``.
-
-    Args:
-        leaf_pages: Pages with status != 'split' for this job.
-
-    Returns:
-        One of 'queued' | 'running' | 'done' | 'failed'.
-    """
-    if not leaf_pages or all(p.status == "queued" for p in leaf_pages):
-        return "queued"
-
-    if any(p.status in _NON_TERMINAL for p in leaf_pages):
-        return "running"
-
-    # All leaf pages are worker-terminal.
-    if all(p.status == "failed" for p in leaf_pages):
-        return "failed"
-
-    return "done"
-
-
-# ---------------------------------------------------------------------------
-# Endpoint
-# ---------------------------------------------------------------------------
-
 
 @router.get(
     "/v1/jobs/{job_id}",
@@ -133,8 +88,7 @@ def get_job_status(
     (see module docstring for derivation rules).
 
     Counter fields (accepted_count, review_count, failed_count,
-    pending_human_correction_count) are read from the stored job row and
-    maintained by workers.
+    pending_human_correction_count) are derived live from current leaf pages.
 
     **Auth:** enforced in Phase 7 (Packet 7.1) — not yet active.
 
@@ -153,10 +107,9 @@ def get_job_status(
 
     all_pages: list[JobPage] = db.query(JobPage).filter(JobPage.job_id == job_id).all()
 
-    # Leaf pages exclude split-parent records.
-    leaf_pages = [p for p in all_pages if p.status != "split"]
-
+    leaf_pages = leaf_pages_from_pages(all_pages)
     derived_status: JobStatus = _derive_job_status(leaf_pages)
+    counts = summarize_leaf_pages(leaf_pages)
 
     summary = JobStatusSummary(
         job_id=job.job_id,
@@ -168,10 +121,10 @@ def get_job_status(
         created_by=job.created_by,
         status=derived_status,
         page_count=job.page_count,
-        accepted_count=job.accepted_count,
-        review_count=job.review_count,
-        failed_count=job.failed_count,
-        pending_human_correction_count=job.pending_human_correction_count,
+        accepted_count=counts.accepted_count,
+        review_count=counts.review_count,
+        failed_count=counts.failed_count,
+        pending_human_correction_count=counts.pending_human_correction_count,
         created_at=job.created_at,
         updated_at=job.updated_at,
         completed_at=job.completed_at,

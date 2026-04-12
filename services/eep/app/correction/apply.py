@@ -337,23 +337,14 @@ def _resolve_correction_source_uri(
 
 
 def _split_x_from_gate(gate: QualityGateLog | None) -> int | None:
-    """Extract the selected split_x from the latest geometry gate when available."""
-    if gate is None:
-        return None
-
-    geo_jsonb: dict[str, Any] | None = None
-    if gate.selected_model == "iep1a":
-        geo_jsonb = gate.iep1a_geometry
-    elif gate.selected_model == "iep1b":
-        geo_jsonb = gate.iep1b_geometry
-
-    if geo_jsonb is None:
-        geo_jsonb = gate.iep1a_geometry or gate.iep1b_geometry
-    if geo_jsonb is None:
-        return None
-
-    raw_split_x = geo_jsonb.get("split_x")
-    return int(raw_split_x) if raw_split_x is not None else None
+    """
+    The geometry gate stores model responses in proxy-image pixel space.
+    The proxy dimensions required to scale split_x to full-resolution are not
+    recorded in the gate log, so the value cannot be used safely as a full-res
+    coordinate.  Always returns None; _resolve_split_x falls through to the
+    correct image_width // 2 default.
+    """
+    return None
 
 
 def _resolve_split_x(

@@ -30,7 +30,8 @@ RUN uv pip install --system \
     "python-jose[cryptography]>=3.3" \
     "python-multipart>=0.0.9" \
     "PyYAML>=6.0" \
-    "bcrypt>=4.0"
+    "bcrypt>=4.0" \
+    "google-cloud-documentai>=2.20"
 
 # Source code is volume-mounted in development (see docker-compose.yml)
 # CMD is supplied by docker-compose.yml

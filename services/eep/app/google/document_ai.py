@@ -366,6 +366,9 @@ class CallGoogleDocumentAI:
         self._client: Any = None
         self._credentials_valid = False
         self._init_error: str | None = None
+        # Set to a short reason string whenever process_layout() returns None
+        # so callers can surface the actual cause rather than "no response".
+        self._last_process_error: str | None = None
 
     async def _lazy_init(self) -> bool:
         """
@@ -454,6 +457,7 @@ class CallGoogleDocumentAI:
             return None
 
         if not await self._lazy_init():
+            self._last_process_error = f"sdk_missing_or_init_failed: {self._init_error}"
             return None
 
         # Capture source pixel dimensions before PDF conversion.
@@ -482,6 +486,7 @@ class CallGoogleDocumentAI:
                     "process_layout: failed to convert image to PDF before Google call: %s",
                     exc,
                 )
+                self._last_process_error = f"pdf_conversion_failed: {exc}"
                 return None
 
         start_time = time.time()
@@ -545,6 +550,7 @@ class CallGoogleDocumentAI:
                     job_id or "unknown",
                     reason,
                 )
+                self._last_process_error = f"permanent_api_error: {reason}"
                 return None
 
         elapsed_ms = (time.time() - start_time) * 1000
@@ -556,6 +562,7 @@ class CallGoogleDocumentAI:
             last_error,
             elapsed_ms,
         )
+        self._last_process_error = f"retries_exhausted: {last_error}"
         return None
 
     async def process_cleanup(
