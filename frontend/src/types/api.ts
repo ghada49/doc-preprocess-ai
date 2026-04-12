@@ -331,6 +331,7 @@ export interface SubmitCorrectionRequest {
   deskew_angle: number | null;
   page_structure?: PageStructure | null;
   split_x: number | null;
+  split_x_natural_width?: number | null;
   selection_mode?: SelectionMode | null;
   quad_points?: QuadPoint[] | null;
   source_artifact_uri?: string | null;

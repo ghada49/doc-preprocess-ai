@@ -145,7 +145,11 @@ export function CorrectionWorkspace({
           crop_box: null,
           deskew_angle: null,
           page_structure: subPageIndex == null ? pageStructure : undefined,
-          split_x: isSpreadSelection ? (splitX != null ? Math.round(splitX) : null) : null,
+          // Send split_x in preview-pixel space so the backend can scale it
+          // to source-image space via split_x * source_width / split_x_natural_width.
+          // splitX * splitScale cancels pageImageWidth, giving the raw preview position.
+          split_x: isSpreadSelection ? (splitX != null ? Math.round(splitX * splitScale) : null) : null,
+          split_x_natural_width: isSpreadSelection && previewNaturalWidth != null ? Math.round(previewNaturalWidth) : undefined,
           selection_mode: !isSpreadSelection ? "quad" : undefined,
           quad_points:
             !isSpreadSelection && quadPoints

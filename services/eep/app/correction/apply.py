@@ -133,6 +133,9 @@ class CorrectionApplyRequest(BaseModel):
     deskew_angle: float | None = None
     page_structure: PageStructure | None = None
     split_x: int | None = None
+    # When provided, split_x is in preview-image pixel space and will be scaled
+    # to source-image pixel space using (split_x * source_width / split_x_natural_width).
+    split_x_natural_width: int | None = None
     selection_mode: SelectionMode | None = None
     quad_points: list[QuadPoint] | None = None
     source_artifact_uri: str | None = None
@@ -655,15 +658,26 @@ def _apply_split_correction(
     parent_backend = get_backend(source_uri)
     parent_image_bytes = parent_backend.get_bytes(source_uri)
     parent_image = _decode_split_source_image(source_uri, parent_image_bytes)
-    gate = _fetch_latest_geometry_gate(db, parent.job_id, parent.page_number)
-    resolved_split_x = _resolve_split_x(
-        requested_split_x=body.split_x,
-        parent_lineage=parent_lineage,
-        gate=gate,
-        image_width=int(parent_image.shape[1]),
-    )
     parent_image_height = int(parent_image.shape[0])
     parent_image_width = int(parent_image.shape[1])
+    gate = _fetch_latest_geometry_gate(db, parent.job_id, parent.page_number)
+    # Scale split_x from preview-image space to source-image space when the
+    # frontend provides the preview width. This corrects for the mismatch
+    # between page_image_width (original scan) and the actual correction source
+    # (normalized artifact), which can have different dimensions.
+    submitted_split_x = body.split_x
+    if (
+        submitted_split_x is not None
+        and body.split_x_natural_width is not None
+        and body.split_x_natural_width > 0
+    ):
+        submitted_split_x = round(submitted_split_x * parent_image_width / body.split_x_natural_width)
+    resolved_split_x = _resolve_split_x(
+        requested_split_x=submitted_split_x,
+        parent_lineage=parent_lineage,
+        gate=gate,
+        image_width=parent_image_width,
+    )
     correction_fields: dict[str, Any] = {
         "crop_box": body.crop_box,
         "deskew_angle": body.deskew_angle,
