@@ -20,7 +20,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter
 from fastapi.responses import Response
-from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
+from prometheus_client import (
+    CONTENT_TYPE_LATEST,
+    Counter,
+    Gauge,
+    Histogram,
+    generate_latest,
+)
 
 # ── Bucket sets ───────────────────────────────────────────────────────────────
 
@@ -215,42 +221,6 @@ IEP1D_GPU_INFERENCE_SECONDS = Histogram(
     buckets=_GPU_SECONDS_BUCKETS,
 )
 
-IEP1D_QUALITY_GATE_DECISIONS = Counter(
-    "iep1d_quality_gate_decisions_total",
-    "IEP1D quality gate decision count",
-    ["decision"],
-    # decision label values: rectified_accepted, rectification_rejected
-)
-
-IEP1D_REJECTION_REASONS = Counter(
-    "iep1d_rejection_reasons_total",
-    "IEP1D quality gate rejection reason count (multiple reasons may fire per event)",
-    ["reason"],
-    # reason label values: low_confidence, skew_not_improved, border_regressed, warning_veto
-)
-
-# ── Google Document AI cleanup metrics ────────────────────────────────────────
-
-GOOGLE_CLEANUP_DECISIONS = Counter(
-    "google_cleanup_decisions_total",
-    "Google Document AI cleanup decision count in rescue flow",
-    ["decision"],
-    # decision label values: cleanup_accepted, cleanup_failed
-)
-
-# ── Google Document AI layout adjudication metrics ────────────────────────────
-
-GOOGLE_LAYOUT_ADJUDICATION_DECISIONS = Counter(
-    "google_layout_adjudication_decisions_total",
-    "Google Document AI layout adjudication decision count in IEP2 gate",
-    ["source"],
-    # source label values:
-    #   local_agreement          — IEP2A+IEP2B agreed; Google not called
-    #   google_document_ai       — Google called and succeeded (including empty result)
-    #   local_fallback_unverified — Google hard-failed; best local result used
-    #   google_skipped           — Google client not available; local fallback used
-)
-
 # ── IEP2A metrics ─────────────────────────────────────────────────────────────
 
 IEP2A_REGION_CONFIDENCE = Histogram(
@@ -328,7 +298,6 @@ SHADOW_CONF_DELTA = Histogram(
 
 
 # ── /metrics endpoint factory ─────────────────────────────────────────────────
-
 
 def make_metrics_router() -> APIRouter:
     """

@@ -17,8 +17,8 @@ Implements Steps 4 and 5 of the EEP worker pipeline (spec Section 6.1):
 
 Route decision (Packet 4.4 output):
     accept_now      — geometry trust HIGH (route_decision="accepted") AND
-                      artifact validation passed.  Caller routes directly to
-                      layout_detection or accepted (Packet 4.6).
+                      artifact validation passed.  Caller routes to ptiff_qa_pending
+                      (Packet 4.6).
     rescue_required — any of: geometry trust LOW ("rectification"), no geometry
                       ("pending_human_correction"), or artifact validation failed.
                       Caller routes to the rescue/rectification path (Packet 4.5).

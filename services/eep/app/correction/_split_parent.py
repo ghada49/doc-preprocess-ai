@@ -1,8 +1,8 @@
 """
 services/eep/app/correction/_split_parent.py
 ---------------------------------------------
-Pure SQLAlchemy helpers for closing legacy split parents once all their
-children reach a final state.
+Pure SQLAlchemy helpers for closing a split parent page once all its
+children reach a worker-terminal state.
 
 Extracted from ptiff_qa.py so that callers that do not need the FastAPI
 router (EEP worker, unit tests) can import without pulling in auth.py
@@ -26,10 +26,10 @@ from services.eep.app.db.page_state import advance_page_state
 
 logger = logging.getLogger(__name__)
 
-# Legacy closure states: only fully resolved child states should close a
-# parent. New split corrections now close the parent immediately.
+# Worker-terminal states: states in which a split child is considered "done"
+# for the purpose of closing the split parent (spec Section 8.6).
 _WORKER_TERMINAL_STATES: frozenset[str] = frozenset(
-    {"accepted", "review", "failed", "split"}
+    {"accepted", "pending_human_correction", "review", "failed"}
 )
 
 
@@ -39,7 +39,7 @@ def _close_parent_if_children_terminal(
     children: list[JobPage],
 ) -> bool:
     """
-    Core logic: transition parent to 'split' if all children are resolved.
+    Core logic: transition parent to 'split' if all children are worker-terminal.
 
     Uses pre-loaded JobPage objects; performs no DB queries. This function is
     called from _apply_split_correction (apply.py) where children are already
@@ -86,7 +86,7 @@ def _maybe_close_split_parent(
     page_number: int,
 ) -> bool:
     """
-    Query DB for parent and children, close parent if all children are resolved.
+    Query DB for parent and children, close parent if all children are worker-terminal.
 
     Used from PTIFF QA approve endpoints after gate release, where pre-loaded
     child objects may not be available.  The parent must be in

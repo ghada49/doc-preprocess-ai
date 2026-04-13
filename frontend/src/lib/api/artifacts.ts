@@ -17,25 +17,6 @@ export async function presignReadUrl(
   return response.read_url;
 }
 
-export async function fetchArtifactJson<T>(
-  uri: string,
-  expiresIn = 300
-): Promise<T> {
-  const readUrl = await presignReadUrl(uri, expiresIn);
-  const response = await fetch(readUrl, {
-    cache: "no-store",
-    headers: {
-      Accept: "application/json",
-    },
-  });
-
-  if (!response.ok) {
-    throw new Error(`Artifact fetch failed (HTTP ${response.status})`);
-  }
-
-  return response.json() as Promise<T>;
-}
-
 /**
  * Call POST /v1/artifacts/preview, receive PNG bytes, and return an object
  * URL suitable for <img src={...}>.

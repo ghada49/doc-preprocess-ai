@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import logging
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 from sqlalchemy.orm import Session
 
@@ -117,7 +117,7 @@ def execute_retraining_task(trigger: RetrainingTrigger, db: Session) -> None:
         trigger: ORM row; must already have status='processing'.
         db:      Open SQLAlchemy session owned by the caller.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     trigger_type = trigger.trigger_type
     pipeline_type = _TRIGGER_PIPELINE.get(trigger_type)
 
@@ -187,13 +187,13 @@ def execute_retraining_task(trigger: RetrainingTrigger, db: Session) -> None:
 
     # Mark job completed
     job.status = "completed"
-    job.completed_at = datetime.now(timezone.utc)
+    job.completed_at = datetime.now(UTC)
     job.result_model_version = ",".join(created_version_tags) if created_version_tags else None
     job.promotion_decision = "pending_gate_review"
 
     # Mark trigger completed
     trigger.status = "completed"
-    trigger.resolved_at = datetime.now(timezone.utc)
+    trigger.resolved_at = datetime.now(UTC)
 
     db.commit()
 

@@ -1,13 +1,15 @@
 """
 tests/test_p4_split_step.py
 -----------------------------
-Packet 4.6 — split normalization and post-preprocessing routing tests.
+Packet 4.6 — split normalization and PTIFF QA routing tests.
 
 Covers:
-  TestDecideNextRoute (3 tests):
-    1. preprocess → accepted, routing_path="preprocessing_only"
-    2. layout → layout_detection
-    3. Unknown pipeline_mode → ValueError
+  TestDecidePtiffQaRoute (5 tests):
+    1. manual → ptiff_qa_pending
+    2. auto_continue + preprocess → accepted, routing_path="preprocessing_only"
+    3. auto_continue + layout → layout_detection
+    4. Unknown ptiff_qa_mode → ValueError
+    5. Unknown pipeline_mode with auto_continue → ValueError
 
   TestRunSplitNormalization (12 tests):
     Happy-path / both-pass:
@@ -51,7 +53,7 @@ from services.eep_worker.app.normalization_step import NormalizationOutcome
 from services.eep_worker.app.rescue_step import RescueOutcome
 from services.eep_worker.app.split_step import (
     SplitOutcome,
-    decide_next_route,
+    decide_ptiff_qa_route,
     run_split_normalization,
 )
 from shared.schemas.geometry import GeometryResponse, PageRegion
@@ -160,7 +162,6 @@ def _make_image() -> np.ndarray:
 async def _run_split(
     norm_side_effects: list[NormalizationOutcome],
     rescue_side_effects: list[RescueOutcome] | None = None,
-    iep1d_execution_timeout_seconds: float | None = None,
 ) -> SplitOutcome:
     """
     Run run_split_normalization with mocked normalization and rescue flows.
@@ -207,7 +208,6 @@ async def _run_split(
             iep1b_circuit_breaker=cb_b,
             backend=MagicMock(),
             session=MagicMock(),
-            iep1d_execution_timeout_seconds=iep1d_execution_timeout_seconds,
         )
         # Make mocks accessible for assertion via result metadata trick
         result._mock_norm = mock_norm  # type: ignore[attr-defined]
@@ -215,23 +215,32 @@ async def _run_split(
     return result
 
 
-# ── TestDecideNextRoute ──────────────────────────────────────────────────────────
+# ── TestDecidePtiffQaRoute ──────────────────────────────────────────────────────
 
 
-class TestDecideNextRoute:
-    def test_preprocess_mode(self) -> None:
-        route = decide_next_route(pipeline_mode="preprocess")
+class TestDecidePtiffQaRoute:
+    def test_manual_mode(self) -> None:
+        route = decide_ptiff_qa_route(pipeline_mode="layout", ptiff_qa_mode="manual")
+        assert route.next_status == "ptiff_qa_pending"
+        assert route.routing_path is None
+
+    def test_auto_continue_preprocess(self) -> None:
+        route = decide_ptiff_qa_route(pipeline_mode="preprocess", ptiff_qa_mode="auto_continue")
         assert route.next_status == "accepted"
         assert route.routing_path == "preprocessing_only"
 
-    def test_layout_mode(self) -> None:
-        route = decide_next_route(pipeline_mode="layout")
+    def test_auto_continue_layout(self) -> None:
+        route = decide_ptiff_qa_route(pipeline_mode="layout", ptiff_qa_mode="auto_continue")
         assert route.next_status == "layout_detection"
         assert route.routing_path is None
 
-    def test_unknown_pipeline_mode_raises(self) -> None:
+    def test_unknown_ptiff_qa_mode_raises(self) -> None:
+        with pytest.raises(ValueError, match="ptiff_qa_mode"):
+            decide_ptiff_qa_route(pipeline_mode="layout", ptiff_qa_mode="unknown_mode")
+
+    def test_auto_continue_unknown_pipeline_mode_raises(self) -> None:
         with pytest.raises(ValueError, match="pipeline_mode"):
-            decide_next_route(pipeline_mode="bad_mode")
+            decide_ptiff_qa_route(pipeline_mode="bad_mode", ptiff_qa_mode="auto_continue")
 
 
 # ── TestRunSplitNormalization ───────────────────────────────────────────────────
@@ -322,7 +331,6 @@ class TestRunSplitNormalization:
                 iep1b_circuit_breaker=cb_b,
                 backend=MagicMock(),
                 session=MagicMock(),
-                iep1d_execution_timeout_seconds=240.0,
             )
 
         mock_rescue.assert_called_once()
@@ -332,7 +340,6 @@ class TestRunSplitNormalization:
         assert call_kwargs["artifact_uri"] == _LEFT_URI
         assert call_kwargs["rescue_output_uri"] == _LEFT_RESCUE_URI
         assert call_kwargs["rectified_proxy_uri"] == _LEFT_PROXY_URI
-        assert call_kwargs["iep1d_execution_timeout_seconds"] == 240.0
 
     @pytest.mark.asyncio
     async def test_left_rescue_succeeds(self) -> None:

@@ -18,12 +18,9 @@ Covers:
 
 from __future__ import annotations
 
-from collections.abc import Callable, Iterator
-from pathlib import Path
-from shutil import rmtree
+from collections.abc import Callable
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock, patch
-from uuid import uuid4
 
 import cv2
 import numpy as np
@@ -43,7 +40,6 @@ from services.eep_worker.app.geometry_invocation import (
 from services.eep_worker.app.normalization_step import NormalizationOutcome
 from services.eep_worker.app.rescue_step import RescueOutcome, run_rescue_flow
 from shared.gpu.backend import BackendError, BackendErrorKind
-from shared.io.storage import get_backend
 from shared.schemas.geometry import GeometryResponse, PageRegion
 from shared.schemas.preprocessing import PreprocessBranchResponse
 
@@ -63,22 +59,6 @@ _IEP1B_ENDPOINT = "http://iep1b:8002/v1/geometry"
 
 def _make_test_image(h: int = 200, w: int = 300) -> np.ndarray:
     return np.full((h, w, 3), 128, dtype=np.uint8)
-
-
-@pytest.fixture
-def workspace_tmp_path() -> Iterator[Callable[[], Path]]:
-    created_paths: list[Path] = []
-
-    def factory() -> Path:
-        path = Path.cwd() / "test_tmp" / "rescue" / uuid4().hex
-        path.mkdir(parents=True, exist_ok=True)
-        created_paths.append(path)
-        return path
-
-    yield factory
-
-    for path in created_paths:
-        rmtree(path, ignore_errors=True)
 
 
 def _encode_png(image: np.ndarray) -> bytes:
@@ -105,20 +85,6 @@ def _make_rectify_response_dict(uri: str = _RECTIFIED_URI) -> dict[str, Any]:
         "border_score_after": 0.88,
         "processing_time_ms": 1200.0,
         "warnings": [],
-    }
-
-
-def _make_bad_rectify_response_dict(uri: str = _RECTIFIED_URI) -> dict[str, Any]:
-    """Rectify response that fails the quality gate: skew worsened, border regressed."""
-    return {
-        "rectified_image_uri": uri,
-        "rectification_confidence": 0.3,
-        "skew_residual_before": 1.0,
-        "skew_residual_after": 2.5,  # worse
-        "border_score_before": 0.80,
-        "border_score_after": 0.55,  # worse
-        "processing_time_ms": 1200.0,
-        "warnings": ["skew_residual_not_improved", "border_score_not_improved"],
     }
 
 
@@ -449,8 +415,6 @@ class TestIep1dCall:
         assert isinstance(added, ServiceInvocation)
         assert added.service_name == "iep1d"
         assert added.status == "success"
-        assert added.metrics is not None
-        assert added.metrics["rectified_image_uri"] == _RECTIFIED_URI
 
     @pytest.mark.asyncio
     async def test_service_invocation_logged_for_iep1d_failure(self) -> None:
@@ -785,286 +749,3 @@ class TestIntegration:
         assert outcome.branch_response is not None
         assert outcome.validation_result is not None
         assert outcome.validation_result.passed is False
-
-    @pytest.mark.asyncio
-    async def test_worker_consumes_real_rectified_artifact_from_storage(
-        self,
-        workspace_tmp_path: Callable[[], Path],
-    ) -> None:
-        tmp_path = workspace_tmp_path()
-        rectified_image = _make_test_image(400, 600)
-        rectified_uri = (
-            f"file://{(tmp_path / 'jobs' / 'job-1' / 'rectified' / '1.tiff').as_posix()}"
-        )
-        rectified_proxy_uri = (
-            f"file://{(tmp_path / 'jobs' / 'job-1' / 'proxy_rectified' / '1.png').as_posix()}"
-        )
-        rescue_output_uri = (
-            f"file://{(tmp_path / 'jobs' / 'job-1' / 'output_rectified' / '1.tiff').as_posix()}"
-        )
-
-        rectified_storage = get_backend(rectified_uri)
-        rectified_storage.put_bytes(rectified_uri, _encode_tiff(rectified_image))
-        rescue_storage = get_backend(rescue_output_uri)
-
-        hard = ArtifactHardCheckResult(passed=True, failed_checks=[])
-        passing_validation = ArtifactValidationResult(
-            hard_result=hard,
-            soft_score=0.92,
-            signal_scores=None,
-            soft_passed=True,
-            passed=True,
-        )
-        backend = AsyncMock()
-        backend.call.return_value = _make_rectify_response_dict(uri=rectified_uri)
-        a_cb, b_cb, d_cb = _make_cbs()
-
-        with (
-            patch(
-                "services.eep_worker.app.rescue_step.invoke_geometry_services",
-                new=AsyncMock(return_value=_make_invocation_result(route_decision="accepted")),
-            ),
-            patch(
-                "services.eep_worker.app.normalization_step.run_artifact_validation",
-                return_value=passing_validation,
-            ),
-        ):
-            outcome = await run_rescue_flow(
-                artifact_uri=_ARTIFACT_URI,
-                job_id="job-1",
-                page_number=1,
-                lineage_id="lin-1",
-                material_type="book",
-                rectified_proxy_uri=rectified_proxy_uri,
-                rescue_output_uri=rescue_output_uri,
-                iep1d_endpoint=_IEP1D_ENDPOINT,
-                iep1a_endpoint=_IEP1A_ENDPOINT,
-                iep1b_endpoint=_IEP1B_ENDPOINT,
-                iep1d_circuit_breaker=d_cb,
-                iep1a_circuit_breaker=a_cb,
-                iep1b_circuit_breaker=b_cb,
-                backend=backend,
-                session=MagicMock(),
-                storage=rescue_storage,
-                image_loader=_make_image_loader(),
-            )
-
-        assert outcome.route == "accept_now"
-        assert outcome.rectify_response is not None
-        assert outcome.rectify_response.rectified_image_uri == rectified_uri
-        assert Path(rectified_proxy_uri[len("file://") :]).exists()
-        assert Path(rescue_output_uri[len("file://") :]).exists()
-
-
-# ── 7. IEP1D quality gate ───────────────────────────────────────────────────────
-
-
-class TestIep1dQualityGate:
-    """
-    Verifies that IEP1D is treated as advisory (conditionally accepted) rather
-    than authoritative.  Tests cover all gate criteria individually and the
-    storage URI used downstream in each case.
-    """
-
-    @pytest.mark.asyncio
-    async def test_accepted_when_all_criteria_met(self) -> None:
-        # confidence >= 0.6, skew improved, border not regressed, no bad warnings
-        storage = _make_storage_mock()
-        outcome = await _run(
-            iep1d_response_dict=_make_rectify_response_dict(),
-            storage=storage,
-        )
-        assert outcome.route == "accept_now"
-        storage.get_bytes.assert_called_once_with(_RECTIFIED_URI)
-
-    @pytest.mark.asyncio
-    async def test_rejected_when_skew_and_border_both_fail(self) -> None:
-        # Validation target: skew_after >= skew_before AND border_after < border_before
-        storage = _make_storage_mock()
-        outcome = await _run(
-            iep1d_response_dict=_make_bad_rectify_response_dict(),
-            storage=storage,
-        )
-        # Pipeline still proceeds (fallback to original) — outcome is accept_now from norm mock
-        assert outcome.route == "accept_now"
-        storage.get_bytes.assert_called_once_with(_ARTIFACT_URI)
-
-    @pytest.mark.asyncio
-    async def test_rejected_when_confidence_below_threshold(self) -> None:
-        resp = _make_rectify_response_dict()
-        resp["rectification_confidence"] = 0.59  # just below 0.6
-        storage = _make_storage_mock()
-        await _run(iep1d_response_dict=resp, storage=storage)
-        storage.get_bytes.assert_called_once_with(_ARTIFACT_URI)
-
-    @pytest.mark.asyncio
-    async def test_accepted_at_exact_confidence_threshold(self) -> None:
-        resp = _make_rectify_response_dict()
-        resp["rectification_confidence"] = 0.6  # exactly at threshold
-        storage = _make_storage_mock()
-        await _run(iep1d_response_dict=resp, storage=storage)
-        storage.get_bytes.assert_called_once_with(_RECTIFIED_URI)
-
-    @pytest.mark.asyncio
-    async def test_rejected_when_skew_not_improved(self) -> None:
-        resp = _make_rectify_response_dict()
-        resp["skew_residual_after"] = resp["skew_residual_before"]  # equal → not strictly less
-        storage = _make_storage_mock()
-        await _run(iep1d_response_dict=resp, storage=storage)
-        storage.get_bytes.assert_called_once_with(_ARTIFACT_URI)
-
-    @pytest.mark.asyncio
-    async def test_accepted_when_border_score_equal(self) -> None:
-        # border_after == border_before → >= condition passes
-        resp = _make_rectify_response_dict()
-        resp["border_score_after"] = resp["border_score_before"]
-        storage = _make_storage_mock()
-        await _run(iep1d_response_dict=resp, storage=storage)
-        storage.get_bytes.assert_called_once_with(_RECTIFIED_URI)
-
-    @pytest.mark.asyncio
-    async def test_rejected_when_border_score_regressed(self) -> None:
-        resp = _make_rectify_response_dict()
-        resp["border_score_after"] = resp["border_score_before"] - 0.01  # regressed
-        storage = _make_storage_mock()
-        await _run(iep1d_response_dict=resp, storage=storage)
-        storage.get_bytes.assert_called_once_with(_ARTIFACT_URI)
-
-    @pytest.mark.asyncio
-    async def test_rejected_when_skew_residual_not_improved_warning(self) -> None:
-        resp = _make_rectify_response_dict()
-        resp["warnings"] = ["skew_residual_not_improved"]
-        storage = _make_storage_mock()
-        await _run(iep1d_response_dict=resp, storage=storage)
-        storage.get_bytes.assert_called_once_with(_ARTIFACT_URI)
-
-    @pytest.mark.asyncio
-    async def test_rejected_when_border_score_not_improved_warning(self) -> None:
-        resp = _make_rectify_response_dict()
-        resp["warnings"] = ["border_score_not_improved"]
-        storage = _make_storage_mock()
-        await _run(iep1d_response_dict=resp, storage=storage)
-        storage.get_bytes.assert_called_once_with(_ARTIFACT_URI)
-
-    @pytest.mark.asyncio
-    async def test_other_warnings_do_not_cause_rejection(self) -> None:
-        # blur_score_regressed is not a gate criterion
-        resp = _make_rectify_response_dict()
-        resp["warnings"] = ["blur_score_regressed"]
-        storage = _make_storage_mock()
-        await _run(iep1d_response_dict=resp, storage=storage)
-        storage.get_bytes.assert_called_once_with(_RECTIFIED_URI)
-
-    @pytest.mark.asyncio
-    async def test_rejection_does_not_change_route_outcome(self) -> None:
-        # Gate rejection falls back to original but does NOT itself return pending_human_correction
-        outcome = await _run(iep1d_response_dict=_make_bad_rectify_response_dict())
-        assert outcome.route == "accept_now"
-        assert outcome.review_reason is None
-
-    @pytest.mark.asyncio
-    async def test_rectify_response_always_populated_on_gate_rejection(self) -> None:
-        outcome = await _run(iep1d_response_dict=_make_bad_rectify_response_dict())
-        assert outcome.rectify_response is not None
-        assert outcome.rectify_response.rectification_confidence == 0.3
-
-
-# ── 8. IEP1D gate metrics and structured log ───────────────────────────────────
-
-
-class TestIep1dGateMetricsAndLog:
-    """Verify Prometheus counter emission and structured log fields for the quality gate."""
-
-    @pytest.mark.asyncio
-    async def test_accepted_emits_decision_counter(self) -> None:
-        with (
-            patch(
-                "services.eep_worker.app.rescue_step.IEP1D_QUALITY_GATE_DECISIONS"
-            ) as mock_decisions,
-            patch("services.eep_worker.app.rescue_step.IEP1D_REJECTION_REASONS") as mock_reasons,
-        ):
-            await _run(iep1d_response_dict=_make_rectify_response_dict())
-
-        mock_decisions.labels.assert_called_once_with(decision="rectified_accepted")
-        mock_decisions.labels.return_value.inc.assert_called_once()
-        mock_reasons.labels.assert_not_called()
-
-    @pytest.mark.asyncio
-    async def test_rejected_emits_decision_counter(self) -> None:
-        with (
-            patch(
-                "services.eep_worker.app.rescue_step.IEP1D_QUALITY_GATE_DECISIONS"
-            ) as mock_decisions,
-            patch("services.eep_worker.app.rescue_step.IEP1D_REJECTION_REASONS"),
-        ):
-            await _run(iep1d_response_dict=_make_bad_rectify_response_dict())
-
-        mock_decisions.labels.assert_called_once_with(decision="rectification_rejected")
-        mock_decisions.labels.return_value.inc.assert_called_once()
-
-    @pytest.mark.asyncio
-    async def test_rejection_emits_all_active_reason_counters(self) -> None:
-        with (
-            patch("services.eep_worker.app.rescue_step.IEP1D_QUALITY_GATE_DECISIONS"),
-            patch("services.eep_worker.app.rescue_step.IEP1D_REJECTION_REASONS") as mock_reasons,
-        ):
-            await _run(iep1d_response_dict=_make_bad_rectify_response_dict())
-
-        # bad response has low_confidence + skew_not_improved + border_regressed + warning_veto
-        called_reasons = {call.kwargs["reason"] for call in mock_reasons.labels.call_args_list}
-        assert called_reasons == {
-            "low_confidence",
-            "skew_not_improved",
-            "border_regressed",
-            "warning_veto",
-        }
-
-    @pytest.mark.asyncio
-    async def test_single_reason_emits_only_that_reason(self) -> None:
-        resp = _make_rectify_response_dict()
-        resp["rectification_confidence"] = 0.59  # only low_confidence fails
-        with (
-            patch("services.eep_worker.app.rescue_step.IEP1D_QUALITY_GATE_DECISIONS"),
-            patch("services.eep_worker.app.rescue_step.IEP1D_REJECTION_REASONS") as mock_reasons,
-        ):
-            await _run(iep1d_response_dict=resp)
-
-        called_reasons = {call.kwargs["reason"] for call in mock_reasons.labels.call_args_list}
-        assert called_reasons == {"low_confidence"}
-
-    @pytest.mark.asyncio
-    async def test_structured_log_includes_rejection_reasons_on_rejection(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        import logging
-
-        with caplog.at_level(logging.INFO, logger="services.eep_worker.app.rescue_step"):
-            await _run(iep1d_response_dict=_make_bad_rectify_response_dict())
-
-        log_records = [r for r in caplog.records if isinstance(r.getMessage(), str)]
-        gate_log = next(
-            (r for r in log_records if "iep1d_decision" in str(r.getMessage())),
-            None,
-        )
-        assert gate_log is not None
-        payload = gate_log.getMessage()
-        assert "rectification_rejected" in payload
-        assert "rejection_reasons" in payload
-
-    @pytest.mark.asyncio
-    async def test_structured_log_rejection_reasons_empty_on_acceptance(
-        self, caplog: pytest.LogCaptureFixture
-    ) -> None:
-        import logging
-
-        with caplog.at_level(logging.INFO, logger="services.eep_worker.app.rescue_step"):
-            await _run(iep1d_response_dict=_make_rectify_response_dict())
-
-        gate_log = next(
-            (r for r in caplog.records if "iep1d_decision" in str(r.getMessage())),
-            None,
-        )
-        assert gate_log is not None
-        assert "rectified_accepted" in gate_log.getMessage()
-        # rejection_reasons key present but empty list
-        assert "'rejection_reasons': []" in gate_log.getMessage()

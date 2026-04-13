@@ -99,7 +99,6 @@ class S3Backend:
     def __init__(self) -> None:
         try:
             import boto3
-            from botocore.config import Config as BotoConfig
         except ImportError as exc:
             raise RuntimeError(
                 "boto3 is required for s3:// artifact access but is not installed"
@@ -107,23 +106,12 @@ class S3Backend:
 
         access_key = os.environ.get("S3_ACCESS_KEY") or os.environ.get("S3_ACCESS_KEY_ID")
         secret_key = os.environ.get("S3_SECRET_KEY") or os.environ.get("S3_SECRET_ACCESS_KEY")
-        connect_timeout = _env_float("S3_CONNECT_TIMEOUT_SECONDS", 5.0)
-        read_timeout = _env_float("S3_READ_TIMEOUT_SECONDS", 60.0)
-        max_retries = _env_int("S3_MAX_RETRIES", 3)
-        max_pool_connections = _env_int("S3_MAX_POOL_CONNECTIONS", 10)
 
         self._client: Any = boto3.client(
             "s3",
             endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
             aws_access_key_id=access_key,
             aws_secret_access_key=secret_key,
-            region_name=os.environ.get("AWS_DEFAULT_REGION") or os.environ.get("AWS_REGION"),
-            config=BotoConfig(
-                connect_timeout=connect_timeout,
-                read_timeout=read_timeout,
-                retries={"max_attempts": max_retries, "mode": "standard"},
-                max_pool_connections=max_pool_connections,
-            ),
         )
 
     @staticmethod
@@ -196,23 +184,3 @@ def get_backend(uri: str) -> StorageBackend:
     if scheme == "s3":
         return S3Backend()
     raise ValueError(f"Unsupported URI scheme '{scheme}'. Supported schemes: file://, s3://")
-
-
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        return default
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return default

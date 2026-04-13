@@ -1,7 +1,7 @@
 """
 services/eep_worker/app/split_step.py
 --------------------------------------
-Packet 4.6 — split handling and preprocess-only stop path.
+Packet 4.6 — split handling, PTIFF QA routing, and preprocess-only stop path.
 
 Implements two routing layers of the EEP worker pipeline:
 
@@ -12,11 +12,13 @@ Implements two routing layers of the EEP worker pipeline:
     trigger the rescue flow (with is_split_child=True).  Processing is
     sequential (spec: left before right).
 
-  Post-preprocessing routing (automation-first):
+  PTIFF QA routing (spec Section 8.5):
     After any page completes successful preprocessing (route="accept_now"),
-    decide_next_route() maps pipeline_mode to the next page status:
-      pipeline_mode="preprocess" → accepted (routing_path="preprocessing_only")
-      pipeline_mode="layout"     → layout_detection
+    decide_ptiff_qa_route() maps (ptiff_qa_mode × pipeline_mode) to the next
+    page status:
+      manual          → ptiff_qa_pending
+      auto_continue + preprocess → accepted (routing_path="preprocessing_only")
+      auto_continue + layout     → layout_detection
 
 Caller responsibilities (NOT done here):
     - Create child JobPage rows (parent_page_id, sub_page_index).
@@ -29,9 +31,9 @@ Caller responsibilities (NOT done here):
 Exported:
     SplitChildOutcome      — result for a single split child
     SplitOutcome           — combined result for both children
-    PostPreprocessRoute    — post-preprocessing routing decision
+    PtiffQaRoute           — PTIFF QA routing decision
     run_split_normalization — main split entry point (async)
-    decide_next_route      — pure routing function (pipeline_mode only)
+    decide_ptiff_qa_route  — pure PTIFF QA routing function
 """
 
 from __future__ import annotations
@@ -64,9 +66,9 @@ from shared.schemas.preprocessing import PreprocessBranchResponse
 __all__ = [
     "SplitChildOutcome",
     "SplitOutcome",
-    "PostPreprocessRoute",
+    "PtiffQaRoute",
     "run_split_normalization",
-    "decide_next_route",
+    "decide_ptiff_qa_route",
 ]
 
 
@@ -117,9 +119,9 @@ class SplitOutcome:
 
 
 @dataclasses.dataclass
-class PostPreprocessRoute:
+class PtiffQaRoute:
     """
-    Post-preprocessing routing decision (automation-first model).
+    PTIFF QA routing decision (spec Section 8.5).
 
     Attributes:
         next_status:  The page status to transition to after preprocessing
@@ -128,37 +130,52 @@ class PostPreprocessRoute:
                       None.
     """
 
-    next_status: Literal["accepted", "layout_detection"]
+    next_status: Literal["ptiff_qa_pending", "accepted", "layout_detection"]
     routing_path: str | None
 
 
-# ── Post-preprocessing routing ─────────────────────────────────────────────────
+# ── PTIFF QA routing ───────────────────────────────────────────────────────────
 
 
-def decide_next_route(
+def decide_ptiff_qa_route(
     pipeline_mode: str,
-) -> PostPreprocessRoute:
+    ptiff_qa_mode: str,
+) -> PtiffQaRoute:
     """
-    Determine the next page status after successful preprocessing.
+    Determine the next page status after successful preprocessing (spec Section 8.5).
 
-    Automation-first routing table:
-        pipeline_mode="preprocess" → accepted, routing_path="preprocessing_only"
-        pipeline_mode="layout"     → layout_detection
+    The routing table is:
+        ptiff_qa_mode="manual"
+            → ptiff_qa_pending (regardless of pipeline_mode)
+        ptiff_qa_mode="auto_continue" + pipeline_mode="preprocess"
+            → accepted, routing_path="preprocessing_only"
+        ptiff_qa_mode="auto_continue" + pipeline_mode="layout"
+            → layout_detection
 
     Args:
         pipeline_mode: "preprocess" or "layout" (from job/config).
+        ptiff_qa_mode: "manual" or "auto_continue" (from config).
 
     Returns:
-        PostPreprocessRoute with next_status and routing_path.
+        PtiffQaRoute with next_status and routing_path.
 
     Raises:
-        ValueError: For any unrecognised pipeline_mode.
+        ValueError: For any unrecognised combination (guard against bad config).
     """
-    if pipeline_mode == "preprocess":
-        return PostPreprocessRoute(next_status="accepted", routing_path="preprocessing_only")
-    if pipeline_mode == "layout":
-        return PostPreprocessRoute(next_status="layout_detection", routing_path=None)
-    raise ValueError(f"decide_next_route: unrecognised pipeline_mode={pipeline_mode!r}")
+    if ptiff_qa_mode == "manual":
+        return PtiffQaRoute(next_status="ptiff_qa_pending", routing_path=None)
+
+    if ptiff_qa_mode == "auto_continue":
+        if pipeline_mode == "preprocess":
+            return PtiffQaRoute(next_status="accepted", routing_path="preprocessing_only")
+        if pipeline_mode == "layout":
+            return PtiffQaRoute(next_status="layout_detection", routing_path=None)
+        raise ValueError(
+            f"decide_ptiff_qa_route: unrecognised pipeline_mode={pipeline_mode!r} "
+            f"with ptiff_qa_mode='auto_continue'"
+        )
+
+    raise ValueError(f"decide_ptiff_qa_route: unrecognised ptiff_qa_mode={ptiff_qa_mode!r}")
 
 
 # ── Split child helpers ─────────────────────────────────────────────────────────
@@ -239,7 +256,6 @@ async def run_split_normalization(
     iep1b_circuit_breaker: CircuitBreaker,
     backend: GPUBackend,
     session: Session,
-    iep1d_execution_timeout_seconds: float | None = None,
     proxy_config: ProxyConfig | None = None,
     gate_config: PreprocessingGateConfig | None = None,
 ) -> SplitOutcome:
@@ -278,9 +294,6 @@ async def run_split_normalization(
         iep1a_circuit_breaker:  Per-worker CircuitBreaker for IEP1A.
         iep1b_circuit_breaker:  Per-worker CircuitBreaker for IEP1B.
         backend:                Shared GPUBackend instance.
-        iep1d_execution_timeout_seconds:
-                                Optional warm-inference timeout override for the
-                                IEP1D rectification call only.
         session:                SQLAlchemy session (caller owns commit/rollback).
         proxy_config:           ProxyConfig; defaults to ProxyConfig().
         gate_config:            Policy thresholds; defaults to PreprocessingGateConfig().
@@ -331,7 +344,6 @@ async def run_split_normalization(
             iep1a_circuit_breaker=iep1a_circuit_breaker,
             iep1b_circuit_breaker=iep1b_circuit_breaker,
             backend=backend,
-            iep1d_execution_timeout_seconds=iep1d_execution_timeout_seconds,
             session=session,
             storage=storage,
             image_loader=image_loader,
@@ -376,7 +388,6 @@ async def run_split_normalization(
             iep1a_circuit_breaker=iep1a_circuit_breaker,
             iep1b_circuit_breaker=iep1b_circuit_breaker,
             backend=backend,
-            iep1d_execution_timeout_seconds=iep1d_execution_timeout_seconds,
             session=session,
             storage=storage,
             image_loader=image_loader,

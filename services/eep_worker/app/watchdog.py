@@ -40,7 +40,7 @@ import dataclasses
 import logging
 import time
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 
 __all__ = [
     "WatchdogConfig",
@@ -161,7 +161,7 @@ class TaskWatchdog:
         report = StaleTaskReport(
             stale_task_ids=stale,
             checked_count=len(self._active),
-            checked_at=datetime.now(timezone.utc),
+            checked_at=datetime.now(tz=UTC),
         )
         if stale:
             logger.warning(

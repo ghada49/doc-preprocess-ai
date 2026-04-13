@@ -32,7 +32,7 @@ Exported:
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 
 from sqlalchemy.orm import Session
@@ -233,7 +233,7 @@ def update_lineage_completion(
         output_image_uri:    S3 URI of the output artifact (if produced).
         gate_results:        Consolidated gate decision summary (JSONB).
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(tz=UTC)
 
     updates: dict[str, Any] = {
         "acceptance_decision": acceptance_decision,
@@ -277,7 +277,7 @@ def record_human_correction(
         reviewed_by:       Reviewer user_id (optional).
         reviewer_notes:    Free-text notes from the reviewer (optional).
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(tz=UTC)
 
     updates: dict[str, Any] = {
         "human_corrected": True,

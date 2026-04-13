@@ -2,17 +2,14 @@
 
 import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
-import {
-  presignReadArtifact,
-  fetchArtifactPreviewBlobUrl,
-  fetchArtifactJson,
-} from "@/lib/api/artifacts";
-import {
-  artifactPreviewQueryKey,
-  artifactReadQueryKey,
-} from "./artifact-query-key";
+import { presignReadArtifact, fetchArtifactPreviewBlobUrl } from "@/lib/api/artifacts";
 
-export { artifactPreviewQueryKey, artifactReadQueryKey };
+export function artifactReadQueryKey(
+  uri: string | null,
+  expiresIn = 300
+) {
+  return ["artifact-read", uri, expiresIn] as const;
+}
 
 export function useArtifactRead(
   uri: string | null,
@@ -27,19 +24,6 @@ export function useArtifactRead(
   });
 }
 
-export function useArtifactJson<T>(
-  uri: string | null,
-  expiresIn = 300
-) {
-  return useQuery({
-    queryKey: ["artifact-json", uri, expiresIn] as const,
-    queryFn: () => fetchArtifactJson<T>(uri!, expiresIn),
-    enabled: Boolean(uri),
-    staleTime: Math.max(0, expiresIn - 30) * 1000,
-    gcTime: expiresIn * 1000,
-  });
-}
-
 /**
  * Fetch a browser-displayable PNG preview for any stored artifact URI.
  * Returns { blobUrl } — a blob: URL safe to use in <img src={...}>.
@@ -48,21 +32,16 @@ export function useArtifactJson<T>(
  */
 export function useArtifactPreview(
   uri: string | null,
-  options: { pageIndex?: number; maxWidth?: number } = {},
-  queryOptions: {
-    scopeKey?: unknown;
-    staleTimeMs?: number;
-    gcTimeMs?: number;
-    refetchOnMount?: boolean | "always";
-  } = {}
+  options: { pageIndex?: number; maxWidth?: number } = {}
 ) {
+  const optionsKey = JSON.stringify(options);
+
   const result = useQuery({
-    queryKey: artifactPreviewQueryKey(uri, options, queryOptions.scopeKey),
+    queryKey: ["artifact-preview", uri, optionsKey] as const,
     queryFn: () => fetchArtifactPreviewBlobUrl(uri!, options),
     enabled: Boolean(uri),
-    staleTime: queryOptions.staleTimeMs ?? 5 * 60 * 1000,
-    gcTime: queryOptions.gcTimeMs ?? 10 * 60 * 1000,
-    refetchOnMount: queryOptions.refetchOnMount,
+    staleTime: 5 * 60 * 1000,
+    gcTime: 10 * 60 * 1000,
   });
 
   // Revoke the blob URL when it changes or the component unmounts.

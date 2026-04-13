@@ -54,8 +54,7 @@ RUN pip install --no-cache-dir --upgrade pip wheel "setuptools<81"
 RUN pip install --no-cache-dir \
     "fastapi>=0.110.0" \
     "uvicorn[standard]>=0.27.0" \
-    "prometheus-client>=0.20.0" \
-    "boto3>=1.34"
+    "prometheus-client>=0.20.0"
 
 COPY services/iep2a/requirements-real.txt /tmp/requirements-real-iep2a.txt
 COPY models/iep2a/ /opt/models/iep2a/

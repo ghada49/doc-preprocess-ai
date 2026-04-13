@@ -174,32 +174,6 @@ services:
              uvicorn services.eep.app.main:app --host 0.0.0.0 --port 8000 --reload"
 
   # ── EEP worker ───────────────────────────────────────────────────────────────
-  #
-  # Google Document AI credentials (local dev only):
-  #   If you want to test Google Document AI locally, bind-mount your service
-  #   account key file into the container and enable the integration in .env:
-  #
-  #     volumes:
-  #       - /path/to/your/sa-key.json:/var/secrets/google/key.json:ro
-  #
-  #   Then set in .env:
-  #     GOOGLE_ENABLED=true
-  #     GOOGLE_PROJECT_ID=your-gcp-project
-  #     GOOGLE_PROCESSOR_ID_LAYOUT=your-layout-processor-id
-  #
-  # Kubernetes (ops must apply externally — no full K8s manifests in this repo):
-  #   Mount Secret 'google-documentai-sa' at /var/secrets/google (readOnly: true).
-  #   Example snippet for the eep-worker Deployment:
-  #     volumes:
-  #       - name: google-documentai-sa
-  #         secret:
-  #           secretName: google-documentai-sa
-  #     volumeMounts:
-  #       - name: google-documentai-sa
-  #         mountPath: /var/secrets/google
-  #         readOnly: true
-  #   Non-secret settings (GOOGLE_PROJECT_ID, GOOGLE_LOCATION, etc.) go in a
-  #   ConfigMap and are referenced as env vars in the Deployment spec.
 
   eep-worker:
     build:
@@ -207,11 +181,6 @@ services:
       dockerfile: services/eep_worker/Dockerfile
     volumes:
       - .:/app
-      # Mount the local Google service-account JSON into the container.
-      - type: bind
-        source: ${GOOGLE_CREDENTIALS_HOST_PATH:-./google-credentials-stub.json}
-        target: /var/secrets/google/key.json
-        read_only: true
     environment:
       PYTHONPATH: /app
       PYTHONDONTWRITEBYTECODE: "1"
@@ -230,22 +199,7 @@ services:
         condition: service_started
       minio:
         condition: service_started
-    command:
-      [
-        "uvicorn",
-        "services.eep_worker.app.main:app",
-        "--host",
-        "0.0.0.0",
-        "--port",
-        "9100",
-        "--reload",
-        "--reload-dir",
-        "/app/services/eep_worker",
-        "--reload-dir",
-        "/app/services/eep/app",
-        "--reload-dir",
-        "/app/shared",
-      ]
+    command: ["uvicorn", "services.eep_worker.app.main:app", "--host", "0.0.0.0", "--port", "9100", "--reload"]
 
   # ── EEP recovery ─────────────────────────────────────────────────────────────
 
@@ -454,13 +408,10 @@ services:
       dockerfile: services/iep1d/Dockerfile
     volumes:
       - .:/app
-      # Development-only override for a mounted UVDoc checkpoint.
-      - "${IEP1D_LOCAL_WEIGHTS_DIR:-./models/iep1d}:/dev-models/iep1d:ro"
     environment:
       PYTHONPATH: /app
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
-      IEP1D_LOCAL_WEIGHTS_PATH: /dev-models/iep1d/best_model.pkl
     env_file: .env
     ports:
       - "8003:8003"
@@ -497,9 +448,6 @@ services:
       PYTHONPATH: /app
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
-      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL}
-      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
-      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
       # IEP2A_USE_REAL_MODEL is intentionally NOT set here.
       # Add IEP2A_USE_REAL_MODEL=true to .env to enable real inference.
     env_file: .env
@@ -548,9 +496,6 @@ services:
       PYTHONPATH: /app
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
-      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL}
-      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
-      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
       # IEP2B_USE_REAL_MODEL is intentionally NOT set here.
       # Add IEP2B_USE_REAL_MODEL=true to .env to enable real inference.
     env_file: .env

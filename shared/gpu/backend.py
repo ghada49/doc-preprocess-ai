@@ -83,8 +83,6 @@ class GPUBackend(abc.ABC):
         self,
         endpoint: str,
         payload: dict[str, Any],
-        *,
-        execution_timeout_seconds: float | None = None,
     ) -> dict[str, Any]:
         """
         POST *payload* (JSON) to *endpoint* and return the parsed JSON response.
@@ -188,13 +186,7 @@ class LocalHTTPBackend(GPUBackend):
 
             await asyncio.sleep(_COLD_START_POLL_INTERVAL_SECONDS)
 
-    async def call(
-        self,
-        endpoint: str,
-        payload: dict[str, Any],
-        *,
-        execution_timeout_seconds: float | None = None,
-    ) -> dict[str, Any]:
+    async def call(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
         """
         POST *payload* to *endpoint*, returning the parsed JSON response.
 
@@ -206,23 +198,21 @@ class LocalHTTPBackend(GPUBackend):
         await self._wait_for_warm(endpoint)
 
         client = self._get_client()
-        timeout = (
-            self.execution_timeout_seconds
-            if execution_timeout_seconds is None
-            else execution_timeout_seconds
+        logger.debug(
+            "LocalHTTPBackend POST %s timeout=%.1fs", endpoint, self.execution_timeout_seconds
         )
-        logger.debug("LocalHTTPBackend POST %s timeout=%.1fs", endpoint, timeout)
 
         try:
             response = await client.post(
                 endpoint,
                 json=payload,
-                timeout=timeout,
+                timeout=self.execution_timeout_seconds,
             )
         except httpx.TimeoutException as exc:
             raise BackendError(
                 BackendErrorKind.WARM_INFERENCE_TIMEOUT,
-                f"Inference did not complete within {timeout}s " f"(endpoint: {endpoint}): {exc}",
+                f"Inference did not complete within {self.execution_timeout_seconds}s "
+                f"(endpoint: {endpoint}): {exc}",
             ) from exc
         except httpx.RequestError as exc:
             raise BackendError(
@@ -277,13 +267,7 @@ class RunpodBackend(GPUBackend):
     # Base URL for the Runpod serverless API; overridable for testing.
     runpod_api_base: str = "https://api.runpod.io/v2"
 
-    async def call(
-        self,
-        endpoint: str,
-        payload: dict[str, Any],
-        *,
-        execution_timeout_seconds: float | None = None,
-    ) -> dict[str, Any]:
+    async def call(self, endpoint: str, payload: dict[str, Any]) -> dict[str, Any]:
         """
         Submit an inference job to Runpod and poll for the result.
 

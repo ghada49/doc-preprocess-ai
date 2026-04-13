@@ -1,27 +1,23 @@
 """
 services/eep_worker/app/main.py
 --------------------------------
-EEP Worker - page-processing background worker.
+EEP Worker — page-processing background worker.
+Phase 0 skeleton: health/ready/metrics are live.
 
-Packet 4.1-4.6: worker pipeline modules implemented.
-Packet 4.7: in-process watchdog is owned by run_worker_loop().
-P2.2: Google Document AI config loaded and validated during lifespan startup.
+Packet 4.1–4.6: worker pipeline modules implemented.
+Packet 4.7: in-process watchdog started via FastAPI lifespan.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from services.eep.app.redis_client import get_redis
-from services.eep_worker.app.google_config import get_google_worker_state, initialize_google
-from services.eep_worker.app.watchdog import TaskWatchdog, WatchdogConfig
-from services.eep_worker.app.worker_loop import build_worker_config, run_worker_loop
+from services.eep_worker.app.watchdog import StaleTaskReport, TaskWatchdog
 from shared.logging_config import setup_logging
 from shared.middleware import configure_observability
 
@@ -29,61 +25,40 @@ setup_logging(service_name="eep_worker")
 
 logger = logging.getLogger(__name__)
 
-
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        logger.warning("eep_worker: invalid %s=%r; using %.1f", name, raw, default)
-        return default
+# Module-level watchdog instance — imported by the task runner (intake.py et al.)
+# to call watchdog.register() and watchdog.deregister() around each task.
+watchdog: TaskWatchdog = TaskWatchdog()
 
 
-def _build_watchdog() -> TaskWatchdog:
-    return TaskWatchdog(
-        WatchdogConfig(
-            task_timeout_seconds=_env_float("WORKER_TASK_TIMEOUT_SECONDS", 900.0),
-            check_interval_seconds=_env_float("WORKER_TASK_CHECK_INTERVAL_SECONDS", 30.0),
-        )
+def _on_stale(report: StaleTaskReport) -> None:
+    """
+    Default stale-task callback: log a warning for each stale task.
+
+    The recovery service (eep_recovery) handles the actual re-queue action
+    by scanning the processing list against DB state.  This callback is
+    informational only — it does not mutate Redis or DB.
+    """
+    logger.warning(
+        "watchdog: %d stale task(s) detected; recovery service will reconcile: %s",
+        len(report.stale_task_ids),
+        report.stale_task_ids,
     )
-
-
-# Module-level watchdog instance imported by the task runner.
-watchdog: TaskWatchdog = _build_watchdog()
 
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
-    """Start the worker runtime loop and Google config."""
-    initialize_google()
-    logger.info(
-        "eep_worker: Google Document AI availability: %s",
-        "ENABLED" if get_google_worker_state().enabled else "DISABLED",
-    )
-
-    redis_client = get_redis()
-    worker_config = build_worker_config()
-
-    worker_bg = asyncio.create_task(
-        run_worker_loop(
-            redis_client,
-            worker_config,
-            watchdog=watchdog,
-        )
-    )
-    logger.info("eep_worker: worker runtime loop started as %s", worker_config.worker_id)
+    """Start the in-process watchdog loop and shut it down cleanly on exit."""
+    bg = asyncio.create_task(watchdog.run_watch_loop(on_stale=_on_stale))
+    logger.info("eep_worker: watchdog background task started")
     try:
         yield
     finally:
-        worker_bg.cancel()
+        bg.cancel()
         try:
-            await worker_bg
+            await bg
         except asyncio.CancelledError:
             pass
-        await worker_config.backend.close()
-        logger.info("eep_worker: worker runtime loop stopped")
+        logger.info("eep_worker: watchdog background task stopped")
 
 
 app = FastAPI(

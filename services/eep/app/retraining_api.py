@@ -22,7 +22,7 @@ Exported:
 from __future__ import annotations
 
 import logging
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
@@ -194,7 +194,7 @@ def _build_trigger_cooldowns(db: Session, now: datetime) -> list[TriggerCooldown
         in_cooldown = (
             cooldown_until is not None
             and (
-                cooldown_until.replace(tzinfo=timezone.utc)
+                cooldown_until.replace(tzinfo=UTC)
                 if cooldown_until.tzinfo is None
                 else cooldown_until
             )
@@ -238,7 +238,7 @@ def get_retraining_status(
 
     **Auth:** admin role required.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     recent_threshold = now - timedelta(hours=_RECENT_COMPLETED_HOURS)
 
     # Active jobs

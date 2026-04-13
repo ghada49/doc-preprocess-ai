@@ -14,6 +14,5 @@
 paddlepaddle>=3.0.0
 paddleocr[doc-parser]>=3.0.0
 huggingface_hub>=0.23
-boto3>=1.34
 opencv-python-headless>=4.8.0
 numpy>=1.24.0,<2.0

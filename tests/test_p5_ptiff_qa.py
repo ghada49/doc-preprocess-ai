@@ -31,10 +31,7 @@ from services.eep.app.correction.ptiff_qa import _check_and_release_ptiff_qa, _i
 from services.eep.app.db.session import get_session
 from services.eep.app.main import app
 
-pytestmark = [
-    pytest.mark.skip(reason="ptiff_qa endpoint removed in automation-first refactor"),
-    pytest.mark.usefixtures("_bypass_require_user"),
-]
+pytestmark = pytest.mark.usefixtures("_bypass_require_user")
 
 # ── Factories ──────────────────────────────────────────────────────────────────
 

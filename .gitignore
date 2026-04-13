@@ -59,10 +59,6 @@ Thumbs.db
 *.ckpt
 *.safetensors
 *.bin
-*.pkl
-*.pkl.version
-models/iep1d/*
-!models/iep1d/README.txt
 models/iep2a/*
 !models/iep2a/README.txt
 models/iep2b/*
@@ -91,17 +87,3 @@ next
 .terraform/
 
 test_data/
-
-# Patch files
-*.patch
-
-# Temporary test output
-test_tmp/
-
-# Root-level one-off debug / inspection scripts (not part of the test suite)
-/inspect_*.py
-/test_iep1d_*.py
-/test_real_runtime_demo.py
-/test_remapping.py
-
-.tmp/

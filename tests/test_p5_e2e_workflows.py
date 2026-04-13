@@ -38,10 +38,7 @@ from services.eep.app.db.session import get_session
 from services.eep.app.main import app
 from services.eep.app.redis_client import get_redis
 
-pytestmark = [
-    pytest.mark.skip(reason="ptiff_qa workflow removed in automation-first refactor"),
-    pytest.mark.usefixtures("_bypass_require_user"),
-]
+pytestmark = pytest.mark.usefixtures("_bypass_require_user")
 
 # ── Shared factories ───────────────────────────────────────────────────────────
 

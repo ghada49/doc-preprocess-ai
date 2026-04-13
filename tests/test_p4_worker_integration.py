@@ -68,9 +68,9 @@ Test IDs map to the roadmap simulation / contract registry:
     42. _decide_route: geometry_route_decision="accepted" + validation passed → "accept_now"
     43. _decide_route: geometry_route_decision="rectification" → "rescue_required"
     44. _decide_route: validation failed → "rescue_required" regardless of geometry trust
-    45. decide_next_route: preprocess → accepted
-    46. decide_next_route: layout → layout_detection
-    47. decide_next_route: unknown pipeline_mode → ValueError
+    45. decide_ptiff_qa_route: manual → ptiff_qa_pending
+    46. decide_ptiff_qa_route: auto_continue + preprocess → accepted
+    47. decide_ptiff_qa_route: auto_continue + layout → layout_detection
 
   Integration — Rescue path:
     48. run_rescue_flow: IEP1D success + second pass accepted → route="accept_now"
@@ -83,7 +83,7 @@ Test IDs map to the roadmap simulation / contract registry:
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any, Literal, cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -114,8 +114,7 @@ from services.eep_worker.app.geometry_invocation import (
 from services.eep_worker.app.intake import OtiffHashMismatchError, check_hash_consistency
 from services.eep_worker.app.normalization_step import _decide_route
 from services.eep_worker.app.rescue_step import RescueOutcome, _call_iep1d, run_rescue_flow
-from services.eep_worker.app.split_step import decide_next_route, run_split_normalization
-from services.eep_worker.app.worker_loop import build_worker_config
+from services.eep_worker.app.split_step import decide_ptiff_qa_route, run_split_normalization
 from shared.gpu.backend import BackendError, BackendErrorKind
 from shared.schemas.geometry import GeometryResponse, PageRegion
 from shared.schemas.iep1d import RectifyRequest, RectifyResponse
@@ -250,8 +249,8 @@ def _make_session_with_status(status: str) -> MagicMock:
     """Return a mocked SQLAlchemy Session returning a JobPage with given status."""
     page = MagicMock(spec=JobPage)
     page.status = status
-    page.status_updated_at = datetime.now(tz=timezone.utc)
-    page.created_at = datetime.now(tz=timezone.utc)
+    page.status_updated_at = datetime.now(tz=UTC)
+    page.created_at = datetime.now(tz=UTC)
     session = MagicMock()
     session.get = MagicMock(return_value=page)
     session.add = MagicMock()
@@ -273,7 +272,6 @@ async def _call_iep1d_helper(
     backend_side_effect: Any = None,
     backend_return: dict[str, Any] | None = None,
     cb: CircuitBreaker | None = None,
-    execution_timeout_seconds: float | None = None,
 ) -> tuple[RectifyResponse | None, dict[str, Any] | None, MagicMock, CircuitBreaker]:
     """Run _call_iep1d with a configurable backend. Returns (response, error, session, cb)."""
     backend = AsyncMock()
@@ -295,7 +293,6 @@ async def _call_iep1d_helper(
         material_type="book",
         endpoint=_IEP1D_EP,
         backend=backend,
-        execution_timeout_seconds=execution_timeout_seconds,
         cb=cb,
         lineage_id=_LINEAGE_ID,
         session=session,
@@ -438,29 +435,6 @@ class TestCallIep1d:
         assert cb.state == CircuitState.CLOSED
 
     @pytest.mark.asyncio
-    async def test_iep1d_timeout_override_forwarded_to_backend(self) -> None:
-        backend = AsyncMock()
-        backend.call = AsyncMock(return_value=_valid_rectify_response_dict())
-        session = MagicMock()
-        session.add = MagicMock()
-        cb = CircuitBreaker("iep1d", CircuitBreakerConfig(failure_threshold=5))
-
-        await _call_iep1d(
-            artifact_uri=_ARTIFACT_URI,
-            job_id=_JOB_ID,
-            page_number=_PAGE_NUMBER,
-            material_type="book",
-            endpoint=_IEP1D_EP,
-            backend=backend,
-            execution_timeout_seconds=180.0,
-            cb=cb,
-            lineage_id=_LINEAGE_ID,
-            session=session,
-        )
-
-        assert backend.call.await_args.kwargs["execution_timeout_seconds"] == 180.0
-
-    @pytest.mark.asyncio
     async def test_iep1d_service_error(self) -> None:
         """Test 9: BackendError(SERVICE_ERROR) → (None, error_dict), status "error"."""
         exc = BackendError(BackendErrorKind.SERVICE_ERROR, "svc error")
@@ -540,32 +514,6 @@ class TestCallIep1d:
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-class TestWorkerConfig:
-    def test_iep1d_timeout_defaults_above_global_timeout(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("GPU_BACKEND", "local")
-        monkeypatch.setenv("EXECUTION_TIMEOUT_SECONDS", "30")
-        monkeypatch.delenv("IEP1D_EXECUTION_TIMEOUT_SECONDS", raising=False)
-
-        config = build_worker_config(worker_id="worker-test")
-
-        assert config.iep1d_execution_timeout_seconds == 180.0
-
-    def test_iep1d_timeout_respects_env_override(
-        self,
-        monkeypatch: pytest.MonkeyPatch,
-    ) -> None:
-        monkeypatch.setenv("GPU_BACKEND", "local")
-        monkeypatch.setenv("EXECUTION_TIMEOUT_SECONDS", "30")
-        monkeypatch.setenv("IEP1D_EXECUTION_TIMEOUT_SECONDS", "240")
-
-        config = build_worker_config(worker_id="worker-test")
-
-        assert config.iep1d_execution_timeout_seconds == 240.0
-
-
 # CT-WKR-01-b  Queue Worker Contract
 # ══════════════════════════════════════════════════════════════════════════════
 
@@ -1012,8 +960,8 @@ class TestSim06WorkerCrash:
 
         page = MagicMock(spec=JobPage)
         page.status = "preprocessing"
-        page.status_updated_at = datetime.now(tz=timezone.utc) - timedelta(seconds=2000)
-        page.created_at = datetime.now(tz=timezone.utc) - timedelta(seconds=2000)
+        page.status_updated_at = datetime.now(tz=UTC) - timedelta(seconds=2000)
+        page.created_at = datetime.now(tz=UTC) - timedelta(seconds=2000)
         session = MagicMock()
         session.get = MagicMock(return_value=page)
 
@@ -1033,8 +981,8 @@ class TestSim06WorkerCrash:
 
         page = MagicMock(spec=JobPage)
         page.status = "preprocessing"
-        page.status_updated_at = datetime.now(tz=timezone.utc) - timedelta(seconds=2000)
-        page.created_at = datetime.now(tz=timezone.utc) - timedelta(seconds=2000)
+        page.status_updated_at = datetime.now(tz=UTC) - timedelta(seconds=2000)
+        page.created_at = datetime.now(tz=UTC) - timedelta(seconds=2000)
         session = MagicMock()
         session.get = MagicMock(return_value=page)
         session.add = MagicMock()
@@ -1280,22 +1228,23 @@ class TestIntegrationHappyPath:
         )
         assert _decide_route("accepted", val) == "rescue_required"
 
-    def test_decide_next_route_preprocess(self) -> None:
-        """Test 45: preprocess → accepted, routing_path='preprocessing_only'."""
-        route = decide_next_route("preprocess")
+    def test_ptiff_qa_manual_mode(self) -> None:
+        """Test 45: manual ptiff_qa_mode → ptiff_qa_pending."""
+        route = decide_ptiff_qa_route("preprocess", "manual")
+        assert route.next_status == "ptiff_qa_pending"
+        assert route.routing_path is None
+
+    def test_ptiff_qa_auto_continue_preprocess(self) -> None:
+        """Test 46: auto_continue + preprocess → accepted, routing_path='preprocessing_only'."""
+        route = decide_ptiff_qa_route("preprocess", "auto_continue")
         assert route.next_status == "accepted"
         assert route.routing_path == "preprocessing_only"
 
-    def test_decide_next_route_layout(self) -> None:
-        """Test 46: layout → layout_detection."""
-        route = decide_next_route("layout")
+    def test_ptiff_qa_auto_continue_layout(self) -> None:
+        """Test 47: auto_continue + layout → layout_detection."""
+        route = decide_ptiff_qa_route("layout", "auto_continue")
         assert route.next_status == "layout_detection"
         assert route.routing_path is None
-
-    def test_decide_next_route_unknown_raises(self) -> None:
-        """Test 47: unknown pipeline_mode → ValueError."""
-        with pytest.raises(ValueError, match="pipeline_mode"):
-            decide_next_route("bad_mode")
 
 
 # ══════════════════════════════════════════════════════════════════════════════

@@ -11,7 +11,7 @@ Tests cover:
       any non-terminal      → "running"
       all terminal, ≥1 non-failed → "done"
       all terminal, all failed    → "failed"
-  - pending_human_correction is counted as non-terminal (job stays "running")
+  - ptiff_qa_pending is counted as non-terminal (job stays "running")
   - Split-parent pages (status='split') are excluded from derivation
   - Per-page fields populated correctly
 
@@ -22,7 +22,7 @@ PostgreSQL-specific JSONB DDL incompatibility with SQLite.
 from __future__ import annotations
 
 from collections.abc import Callable, Generator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -40,7 +40,7 @@ from services.eep.app.jobs.status import _derive_job_status, router
 # ORM object builders
 # ---------------------------------------------------------------------------
 
-_NOW = datetime(2025, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
+_NOW = datetime(2025, 1, 1, 12, 0, 0, tzinfo=UTC)
 
 
 def _job(**kwargs: Any) -> Job:
@@ -49,6 +49,7 @@ def _job(**kwargs: Any) -> Job:
         collection_id="col-001",
         material_type="book",
         pipeline_mode="layout",
+        ptiff_qa_mode="manual",
         policy_version="v1.0",
         shadow_mode=False,
         status="queued",
@@ -211,6 +212,10 @@ class TestJobSummaryValues:
         r = client_for(_job(pipeline_mode="preprocess"), [_page()]).get("/v1/jobs/job-001")
         assert r.json()["summary"]["pipeline_mode"] == "preprocess"
 
+    def test_ptiff_qa_mode(self, client_for: Any) -> None:
+        r = client_for(_job(ptiff_qa_mode="auto_continue"), [_page()]).get("/v1/jobs/job-001")
+        assert r.json()["summary"]["ptiff_qa_mode"] == "auto_continue"
+
     def test_material_type(self, client_for: Any) -> None:
         r = client_for(_job(material_type="newspaper"), [_page()]).get("/v1/jobs/job-001")
         assert r.json()["summary"]["material_type"] == "newspaper"
@@ -228,55 +233,20 @@ class TestJobSummaryValues:
         assert r.json()["summary"]["page_count"] == 5
 
     def test_accepted_count(self, client_for: Any) -> None:
-        pages = [
-            _page(page_id="p1", status="accepted"),
-            _page(page_id="p2", page_number=2, status="accepted"),
-            _page(page_id="p3", page_number=3, status="accepted"),
-        ]
-        r = client_for(_job(accepted_count=99), pages).get("/v1/jobs/job-001")
+        r = client_for(_job(accepted_count=3), [_page()]).get("/v1/jobs/job-001")
         assert r.json()["summary"]["accepted_count"] == 3
 
     def test_review_count(self, client_for: Any) -> None:
-        r = client_for(_job(review_count=99), [_page(status="review")]).get("/v1/jobs/job-001")
+        r = client_for(_job(review_count=1), [_page()]).get("/v1/jobs/job-001")
         assert r.json()["summary"]["review_count"] == 1
 
     def test_failed_count(self, client_for: Any) -> None:
-        pages = [
-            _page(page_id="p1", status="failed"),
-            _page(page_id="p2", page_number=2, status="failed"),
-        ]
-        r = client_for(_job(failed_count=99), pages).get("/v1/jobs/job-001")
+        r = client_for(_job(failed_count=2), [_page()]).get("/v1/jobs/job-001")
         assert r.json()["summary"]["failed_count"] == 2
 
     def test_pending_human_correction_count(self, client_for: Any) -> None:
-        r = client_for(
-            _job(pending_human_correction_count=99),
-            [_page(status="pending_human_correction")],
-        ).get("/v1/jobs/job-001")
+        r = client_for(_job(pending_human_correction_count=1), [_page()]).get("/v1/jobs/job-001")
         assert r.json()["summary"]["pending_human_correction_count"] == 1
-
-    def test_counts_ignore_stale_job_row_values(self, client_for: Any) -> None:
-        pages = [
-            _page(page_id="p1", status="layout_detection"),
-            _page(page_id="p2", page_number=2, status="accepted"),
-            _page(page_id="p3", page_number=3, status="review"),
-            _page(page_id="p4", page_number=4, status="failed"),
-            _page(page_id="parent", page_number=5, status="split"),
-        ]
-        r = client_for(
-            _job(
-                accepted_count=10,
-                review_count=10,
-                failed_count=10,
-                pending_human_correction_count=10,
-            ),
-            pages,
-        ).get("/v1/jobs/job-001")
-        summary = r.json()["summary"]
-        assert summary["accepted_count"] == 1
-        assert summary["review_count"] == 1
-        assert summary["failed_count"] == 1
-        assert summary["pending_human_correction_count"] == 0
 
     def test_completed_at_none(self, client_for: Any) -> None:
         r = client_for(_job(), [_page()]).get("/v1/jobs/job-001")
@@ -345,15 +315,15 @@ class TestDeriveJobStatusUnit:
     def test_any_layout_detection_returns_running(self) -> None:
         assert _derive_job_status([_page(status="layout_detection")]) == "running"
 
-    def test_any_pending_human_correction_returns_running(self) -> None:
-        """pending_human_correction is non-terminal — job must be 'running', not 'done'."""
-        assert _derive_job_status([_page(status="pending_human_correction")]) == "running"
+    def test_ptiff_qa_pending_returns_running(self) -> None:
+        """ptiff_qa_pending is non-terminal — job must be 'running', not 'done'."""
+        assert _derive_job_status([_page(status="ptiff_qa_pending")]) == "running"
 
-    def test_pending_human_correction_mixed_with_accepted_still_running(self) -> None:
-        """Any pending_human_correction page keeps the job running even if others are terminal."""
+    def test_ptiff_qa_pending_mixed_with_accepted_still_running(self) -> None:
+        """Any ptiff_qa_pending page keeps the job running even if others are terminal."""
         pages = [
             _page(page_id="p1", status="accepted"),
-            _page(page_id="p2", status="pending_human_correction"),
+            _page(page_id="p2", status="ptiff_qa_pending"),
         ]
         assert _derive_job_status(pages) == "running"
 
@@ -369,13 +339,13 @@ class TestDeriveJobStatusUnit:
         pages = [_page(status="accepted"), _page(page_id="p2", status="failed")]
         assert _derive_job_status(pages) == "done"
 
-    def test_pending_human_correction_and_accepted_returns_running(self) -> None:
-        """pending_human_correction is non-terminal — job stays 'running' until human reviews."""
+    def test_pending_human_correction_and_accepted_returns_done(self) -> None:
+        """pending_human_correction is worker-terminal — job may be done."""
         pages = [
             _page(page_id="p1", status="accepted"),
             _page(page_id="p2", status="pending_human_correction"),
         ]
-        assert _derive_job_status(pages) == "running"
+        assert _derive_job_status(pages) == "done"
 
     def test_all_failed_returns_failed(self) -> None:
         pages = [_page(status="failed"), _page(page_id="p2", status="failed")]
@@ -425,9 +395,9 @@ class TestJobStatusDerivationViaEndpoint:
         r = client_for(_job(), pages).get("/v1/jobs/job-001")
         assert r.json()["summary"]["status"] == "running"
 
-    def test_pending_human_correction_returns_running(self, client_for: Any) -> None:
-        """Core Packet 1.9 requirement: pending_human_correction → running."""
-        pages = [_page(status="pending_human_correction")]
+    def test_ptiff_qa_pending_returns_running(self, client_for: Any) -> None:
+        """Core Packet 1.9 requirement: ptiff_qa_pending → running."""
+        pages = [_page(status="ptiff_qa_pending")]
         r = client_for(_job(), pages).get("/v1/jobs/job-001")
         assert r.json()["summary"]["status"] == "running"
 

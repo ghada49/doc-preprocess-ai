@@ -23,18 +23,14 @@ from shared.schemas.eep import TERMINAL_PAGE_STATES
 # ── Transition map ─────────────────────────────────────────────────────────────
 #
 # Source: spec Section 8 (process_page algorithm), Section 9.1 (terminal states),
-# Section 9.11 (pending_human_correction), Section 5 (human correction workflow).
+# Section 3.1 (PTIFF QA checkpoint), Section 9.11 (pending_human_correction),
+# Section 5 (human correction workflow).
 #
 # Every valid (from_state → to_state) pair is listed here.
 # States not present as source keys have no outgoing transitions (leaf-final /
 # routing-terminal).  The presence of both "accepted" and "split" as keys with
 # empty frozensets is intentional: it allows `allowed_next` callers to query any
 # state without a KeyError while the empty set encodes finality.
-#
-# Automation-first model: pages flow directly from preprocessing/rectification
-# to layout_detection (layout mode) or accepted (preprocess-only mode) without
-# any manual gate. Human review is an explicit opt-in transition; after correction
-# pages resume automatically via layout_detection.
 
 ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     # ── Non-terminal active states ────────────────────────────────────────────
@@ -47,8 +43,7 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "preprocessing": frozenset(
         {
             "rectification",  # artifact invalid → IEP1D fallback (Step 6)
-            "layout_detection",  # preprocessing succeeded, pipeline_mode=layout (Step 8.5)
-            "accepted",  # preprocessing succeeded, pipeline_mode=preprocess (Step 8.5)
+            "ptiff_qa_pending",  # preprocessing artifact resolved (Step 8.5)
             "pending_human_correction",  # geometry / selection / normalization failures
             "split",  # spread parent: children created and enqueued (Step 8)
             "failed",  # infrastructure failure; retries exhausted
@@ -56,25 +51,29 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     ),
     "rectification": frozenset(
         {
-            "layout_detection",  # IEP1D + second-pass succeeded, pipeline_mode=layout (Step 8.5)
-            "accepted",  # IEP1D + second-pass succeeded, pipeline_mode=preprocess (Step 8.5)
+            "ptiff_qa_pending",  # IEP1D + second-pass succeeded (Step 8.5)
             "pending_human_correction",  # IEP1D / second-pass / final validation failure
             "split",  # spread parent: both child artifacts validated (Step 8)
             "failed",  # infrastructure failure; retries exhausted
         }
     ),
+    "ptiff_qa_pending": frozenset(
+        {
+            "accepted",  # auto_continue + preprocess, or gate-release + preprocess
+            "layout_detection",  # auto_continue + layout, or gate-release + layout (Step 9)
+            "pending_human_correction",  # reviewer "edit" action in PTIFF QA screen
+        }
+    ),
     "layout_detection": frozenset(
         {
             "accepted",  # layout consensus passes (Step 14)
-            "review",  # layout adjudication flags for review
+            "review",  # layout disagreement or IEP2A failure (Step 13)
             "failed",  # infrastructure failure; retries exhausted
-            "pending_human_correction",  # explicit user send-to-review action
         }
     ),
     "pending_human_correction": frozenset(
         {
-            "layout_detection",  # correction submitted, pipeline_mode=layout → resume IEP2
-            "accepted",  # correction submitted, pipeline_mode=preprocess → direct accept
+            "ptiff_qa_pending",  # correction submitted (single-page or split child)
             "review",  # correction rejected
             "split",  # human split: parent → split after children reach terminal
         }
@@ -93,6 +92,7 @@ _ALL_PAGE_STATES: frozenset[str] = frozenset(
         "queued",
         "preprocessing",
         "rectification",
+        "ptiff_qa_pending",
         "layout_detection",
         "pending_human_correction",
         "accepted",
@@ -108,9 +108,6 @@ assert (
 # Leaf-final states: once reached, no further transitions are possible.
 # These are permanent outcomes (spec Section 9.1).
 _LEAF_FINAL_STATES: frozenset[str] = frozenset({"accepted", "review", "failed"})
-_WORKER_STOP_STATES: frozenset[str] = frozenset(
-    {"accepted", "pending_human_correction", "review", "failed", "split"}
-)
 
 
 # ── Exception ──────────────────────────────────────────────────────────────────
@@ -159,11 +156,11 @@ def is_worker_terminal(state: str) -> bool:
     """
     Return True when automated worker processing must stop for this state.
 
-    Worker-stop states are intentionally broader than job-completion states:
-    pending_human_correction still stops automated processing even though the
-    job remains active until review is resolved.
+    Delegates to TERMINAL_PAGE_STATES (imported from shared.schemas.eep) so
+    that the definition is never duplicated.  All five terminal states stop
+    automated processing; `ptiff_qa_pending` does NOT.
     """
-    return state in _WORKER_STOP_STATES
+    return state in TERMINAL_PAGE_STATES
 
 
 def is_leaf_final(state: str) -> bool:

@@ -29,7 +29,7 @@ from __future__ import annotations
 
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Any, cast
 
 import bcrypt
@@ -84,7 +84,7 @@ def create_access_token(
     Returns:
         Encoded JWT string.
     """
-    expire = datetime.now(timezone.utc) + (
+    expire = datetime.now(tz=UTC) + (
         expires_delta
         if expires_delta is not None
         else timedelta(minutes=_ACCESS_TOKEN_EXPIRE_MINUTES)

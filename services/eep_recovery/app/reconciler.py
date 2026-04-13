@@ -12,7 +12,8 @@ Implements the reconciliation loop described in spec Sections 8.1, 8.4, and 9.13
 Reconciliation logic (reconcile_once):
   For each task in QUEUE_PAGE_TASKS_PROCESSING:
 
-  Complete states (accepted, review, failed, pending_human_correction, split):
+  Complete states (accepted, review, failed, pending_human_correction, split,
+  ptiff_qa_pending):
     → Remove from processing list (worker finished but crashed before ack).
       Counted as acked_terminal.
 
@@ -56,9 +57,8 @@ import dataclasses
 import logging
 import time
 from collections.abc import Callable
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import cast
-from uuid import uuid4
 
 import redis as redis_lib
 from sqlalchemy.orm import Session
@@ -92,6 +92,7 @@ _COMPLETE_STATES: frozenset[str] = frozenset(
         "failed",
         "pending_human_correction",
         "split",
+        "ptiff_qa_pending",
     }
 )
 
@@ -108,18 +109,14 @@ class ReconcilerConfig:
     """
     Configuration for the recovery reconciler.
 
-    Defaults match the libraryai-policy ConfigMap (spec Section 8.4), with
-    a shorter timeout for layout tasks so a hung IEP2 step is recovered
-    faster than a long-running preprocessing task:
-        task_timeout_seconds:          900.0
-        layout_task_timeout_seconds:   180.0
-        check_interval_seconds:         30.0
-        max_task_retries:                3
+    Defaults match the libraryai-policy ConfigMap (spec Section 8.4):
+        task_timeout_seconds:         900.0
+        check_interval_seconds:        30.0
+        max_task_retries:               3
         dead_letter_warning_threshold: 100
     """
 
     task_timeout_seconds: float = 900.0
-    layout_task_timeout_seconds: float = 180.0
     check_interval_seconds: float = 30.0
     max_task_retries: int = MAX_TASK_RETRIES
     dead_letter_warning_threshold: int = 100
@@ -140,8 +137,6 @@ class ReconciliationResult:
                                or terminal state.
         requeued_stale:        Stale active tasks re-enqueued with
                                retry_count + 1.
-        requeued_orphaned:     DB-active pages that had no Redis task and were
-                               re-enqueued with a fresh task_id.
         dead_lettered:         Stale active tasks moved to QUEUE_DEAD_LETTER
                                because retry_count >= max_task_retries.
         skipped_active:        Active tasks within timeout window — left alone.
@@ -155,7 +150,6 @@ class ReconciliationResult:
     processing_list_size: int
     acked_terminal: int
     requeued_stale: int
-    requeued_orphaned: int
     dead_lettered: int
     skipped_active: int
     not_found: int
@@ -252,79 +246,15 @@ def _is_stale(page: JobPage, task_timeout_seconds: float) -> bool:
     created_at.  Both are expected to be timezone-aware (UTC) per the DB
     schema.  Naive datetimes are treated as UTC.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(tz=UTC)
     ref: datetime | None = page.status_updated_at or page.created_at
     if ref is None:
         # No timestamp at all — conservatively treat as stale.
         return True
     if ref.tzinfo is None:
-        ref = ref.replace(tzinfo=timezone.utc)
+        ref = ref.replace(tzinfo=UTC)
     age_seconds = (now - ref).total_seconds()
     return age_seconds > task_timeout_seconds
-
-
-def _timeout_seconds_for_page(page: JobPage, cfg: ReconcilerConfig) -> float:
-    """Return the staleness timeout appropriate for the page's current state."""
-    if page.status == "layout_detection":
-        return cfg.layout_task_timeout_seconds
-    return cfg.task_timeout_seconds
-
-
-def _collect_redis_page_ids(r: redis_lib.Redis) -> set[str]:
-    """Return page_ids present in Redis queues relevant to recovery."""
-    page_ids: set[str] = set()
-    for queue_key in (QUEUE_PAGE_TASKS, QUEUE_PAGE_TASKS_PROCESSING, QUEUE_DEAD_LETTER):
-        raw_items: list[str] = cast(list[str], r.lrange(queue_key, 0, -1))
-        for raw in raw_items:
-            try:
-                page_ids.add(PageTask.model_validate_json(raw).page_id)
-            except Exception:
-                logger.warning(
-                    "reconciler: unparseable entry in %s while collecting Redis page ids: %r",
-                    queue_key,
-                    raw,
-                )
-    return page_ids
-
-
-def _recover_db_orphaned_pages(
-    r: redis_lib.Redis,
-    session: Session,
-    existing_page_ids: set[str],
-) -> int:
-    """
-    Re-enqueue DB-authoritative recoverable pages missing from all Redis queues.
-
-    This covers the failure mode where a page remains active in the database
-    but its task has vanished from both the main queue and the processing list.
-    """
-    recoverable_states = ("queued", "preprocessing", "rectification", "layout_detection")
-    pages = session.query(JobPage).filter(JobPage.status.in_(recoverable_states)).all()
-
-    requeued = 0
-    for page in pages:
-        if page.page_id in existing_page_ids:
-            continue
-        task = PageTask(
-            task_id=str(uuid4()),
-            job_id=page.job_id,
-            page_id=page.page_id,
-            page_number=page.page_number,
-            sub_page_index=page.sub_page_index,
-            retry_count=0,
-        )
-        r.lpush(QUEUE_PAGE_TASKS, task.model_dump_json())
-        existing_page_ids.add(page.page_id)
-        requeued += 1
-        logger.warning(
-            "reconciler: re-enqueued orphaned DB page %s (status=%s, page_number=%s, sub_page_index=%s)",
-            page.page_id,
-            page.status,
-            page.page_number,
-            page.sub_page_index,
-        )
-
-    return requeued
 
 
 # ── Main reconciliation pass ───────────────────────────────────────────────────
@@ -358,7 +288,6 @@ def reconcile_once(
 
     acked = 0
     requeued = 0
-    requeued_orphaned = 0
     dead_lettered = 0
     skipped_active = 0
     not_found = 0
@@ -409,14 +338,12 @@ def reconcile_once(
 
         # ── Active states — stale detection ───────────────────────────────────
         elif page.status in _ACTIVE_STATES:
-            timeout_seconds = _timeout_seconds_for_page(page, cfg)
-            if _is_stale(page, timeout_seconds):
+            if _is_stale(page, cfg.task_timeout_seconds):
                 logger.warning(
-                    "reconciler: page %s is stale (status=%s, task=%s, timeout=%.0fs); requeuing",
+                    "reconciler: page %s is stale (status=%s, task=%s); requeuing",
                     task.page_id,
                     page.status,
                     task.task_id,
-                    timeout_seconds,
                 )
                 action = _requeue_or_dead_letter(r, raw_json, task, cfg.max_task_retries)
                 if action == "requeued":
@@ -438,9 +365,6 @@ def reconcile_once(
             acked += 1
 
     # ── Dead-letter queue size check ──────────────────────────────────────────
-    existing_page_ids = _collect_redis_page_ids(r)
-    requeued_orphaned = _recover_db_orphaned_pages(r, session, existing_page_ids)
-
     dlq_size: int = r.llen(QUEUE_DEAD_LETTER)  # type: ignore[assignment]
     if dlq_size >= cfg.dead_letter_warning_threshold:
         logger.warning(
@@ -453,7 +377,6 @@ def reconcile_once(
         processing_list_size=len(items),
         acked_terminal=acked,
         requeued_stale=requeued,
-        requeued_orphaned=requeued_orphaned,
         dead_lettered=dead_lettered,
         skipped_active=skipped_active,
         not_found=not_found,
@@ -499,12 +422,11 @@ async def run_reconciliation_loop(
             result = reconcile_once(r, session, cfg)
             logger.info(
                 "reconciler: pass complete — "
-                "proc_list=%d acked=%d requeued=%d orphaned=%d dead_lettered=%d "
+                "proc_list=%d acked=%d requeued=%d dead_lettered=%d "
                 "skipped=%d not_found=%d dlq=%d (%.1f ms)",
                 result.processing_list_size,
                 result.acked_terminal,
                 result.requeued_stale,
-                result.requeued_orphaned,
                 result.dead_lettered,
                 result.skipped_active,
                 result.not_found,

@@ -24,7 +24,7 @@ for 401 cases. Auth-bypassed cases use dependency_overrides directly.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -41,8 +41,8 @@ from services.eep.app.jobs.list import JobListResponse, router
 # Helpers
 # ---------------------------------------------------------------------------
 
-_TS_OLD = datetime(2024, 1, 1, 0, 0, 0, tzinfo=timezone.utc)
-_TS_NEW = datetime(2025, 6, 1, 0, 0, 0, tzinfo=timezone.utc)
+_TS_OLD = datetime(2024, 1, 1, 0, 0, 0, tzinfo=UTC)
+_TS_NEW = datetime(2025, 6, 1, 0, 0, 0, tzinfo=UTC)
 
 
 def _make_job(

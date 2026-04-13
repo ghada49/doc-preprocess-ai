@@ -24,7 +24,7 @@ the module singleton is never touched.
 from __future__ import annotations
 
 import uuid as uuid_mod
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from unittest.mock import MagicMock, call, patch
 
 import pytest
@@ -38,7 +38,7 @@ from monitoring.drift_observer import (
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_NOW = datetime(2026, 3, 28, 12, 0, 0, tzinfo=timezone.utc)
+_NOW = datetime(2026, 3, 28, 12, 0, 0, tzinfo=UTC)
 
 # A baseline where std=0.05, threshold_std=3.0 → tolerance = 0.15
 # mean=0.85 → drift fires when window_mean < 0.70 or > 1.00

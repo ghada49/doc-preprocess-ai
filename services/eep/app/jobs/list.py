@@ -195,6 +195,7 @@ def list_jobs(
             collection_id=job.collection_id,
             material_type=job.material_type,  # type: ignore[arg-type]
             pipeline_mode=job.pipeline_mode,  # type: ignore[arg-type]
+            ptiff_qa_mode=job.ptiff_qa_mode,  # type: ignore[arg-type]
             policy_version=job.policy_version,
             shadow_mode=job.shadow_mode,
             created_by=job.created_by,

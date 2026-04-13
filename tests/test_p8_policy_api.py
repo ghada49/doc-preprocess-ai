@@ -29,7 +29,7 @@ get_session.
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock, call, patch
 
@@ -44,7 +44,7 @@ from services.eep.app.policy_api import router
 
 # ── Constants / helpers ────────────────────────────────────────────────────────
 
-_TS = datetime(2026, 3, 28, 12, 0, 0, tzinfo=timezone.utc)
+_TS = datetime(2026, 3, 28, 12, 0, 0, tzinfo=UTC)
 _ADMIN_USER = CurrentUser(user_id="admin-001", role="admin")
 
 _VALID_YAML = """\
@@ -197,7 +197,7 @@ class TestGetPolicy:
     def test_returns_latest_record_by_applied_at(self, inject_admin) -> None:
         # The query is ordered by applied_at DESC; most recent is returned first.
         # We verify the endpoint uses order_by and takes first().
-        pv_latest = _make_policy_orm(version="v2", applied_at=datetime(2026, 4, 1, tzinfo=timezone.utc))
+        pv_latest = _make_policy_orm(version="v2", applied_at=datetime(2026, 4, 1, tzinfo=UTC))
         session = MagicMock()
         session.query.return_value.order_by.return_value.first.return_value = pv_latest
         client = inject_admin(session)

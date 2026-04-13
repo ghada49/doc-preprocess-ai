@@ -16,22 +16,19 @@ Single-page path (child correction or parent kept as a single page)
   - The correction is authoritative; processing is not re-run.
   - The existing artifact is copied to a derived corrected URI via the
     storage backend and the URI is recorded in lineage.
-  - State: pending_human_correction → layout_detection (layout mode) or
-           pending_human_correction → accepted (preprocess-only mode).
-  - In layout mode the page is enqueued to Redis for async IEP2 processing.
-  - IEP2 is NEVER run inline while the page is still in human review.
+  - State: pending_human_correction → ptiff_qa_pending.
+  - If ptiff_qa_mode == 'auto_continue', _check_and_release_ptiff_qa is
+    called immediately after the transition.
 
 ──────────────────────────────────────────────────────────────────────────
 Split path (reviewer selects a two-page spread or supplies an explicit split_x fallback)
 ──────────────────────────────────────────────────────────────────────────
   - Two child sub-pages (sub_page_index 0 and 1) are created or reused
     idempotently.
-  - Each child stores its own independent parent-space selection geometry
-    while previewing the shared parent artifact.
-  - The real child artifact is written to a child-specific corrected URI only
-    when that child page is later submitted.
+  - Child artifacts are written to child-specific corrected URIs using the
+    actual left and right image regions from the parent artifact.
   - Each child remains in pending_human_correction so the reviewer can correct
-    Page 0 and Page 1 separately.
+    Page 0 and Page 1 separately before PTIFF QA.
   - Parent lineage is NOT modified; it remains the retained lineage record
     for the original OTIFF.
   - The parent may transition to "split" in the same request once the child
@@ -65,7 +62,6 @@ Exported:
 from __future__ import annotations
 
 import logging
-import math
 import uuid
 from datetime import UTC, datetime
 from typing import Any, Literal
@@ -75,28 +71,24 @@ import cv2
 import numpy as np
 import redis
 from fastapi import APIRouter, Depends, HTTPException, Query, status
-from pydantic import BaseModel, field_validator, model_validator
+from pydantic import BaseModel, field_validator
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from services.eep.app.auth import CurrentUser, assert_job_ownership, require_user
-from services.eep.app.correction.workspace_assembly import _fetch_iep1d_rectified_uri
-from services.eep.app.db.lineage import confirm_preprocessed_artifact, update_lineage_completion
+from services.eep.app.correction.ptiff_qa import (
+    _WORKER_TERMINAL_STATES,
+    _check_and_release_ptiff_qa,
+)
 from services.eep.app.db.models import Job, JobPage, PageLineage, QualityGateLog
 from services.eep.app.db.page_state import advance_page_state
 from services.eep.app.db.session import get_session
-from services.eep.app.queue import enqueue_page_task
 from services.eep.app.redis_client import get_redis
 from shared.io.storage import get_backend
-from shared.normalization.deskew import apply_affine_deskew
-from shared.normalization.perspective import four_point_transform
-from shared.schemas.queue import PageTask
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 PageStructure = Literal["single", "spread"]
-SelectionMode = Literal["rect", "quad"]
-QuadPoint = tuple[float, float]
 _GEOMETRY_GATE_TYPES = frozenset(
     {
         "geometry_selection",
@@ -122,10 +114,6 @@ class CorrectionApplyRequest(BaseModel):
                        Normal reviewer UX should prefer page_structure over
                        direct split_x entry. Ignored when correcting a child
                        sub-page (split already occurred).
-        source_artifact_uri — optional explicit source artifact chosen by the
-                       reviewer. When provided, the correction is derived from
-                       this displayed source rather than implicitly from the
-                       page's current artifact.
         notes        — optional reviewer notes; stored in lineage.reviewer_notes.
     """
 
@@ -133,12 +121,6 @@ class CorrectionApplyRequest(BaseModel):
     deskew_angle: float | None = None
     page_structure: PageStructure | None = None
     split_x: int | None = None
-    # When provided, split_x is in preview-image pixel space and will be scaled
-    # to source-image pixel space using (split_x * source_width / split_x_natural_width).
-    split_x_natural_width: int | None = None
-    selection_mode: SelectionMode | None = None
-    quad_points: list[QuadPoint] | None = None
-    source_artifact_uri: str | None = None
     notes: str | None = None
 
     @field_validator("crop_box")
@@ -156,33 +138,6 @@ class CorrectionApplyRequest(BaseModel):
         if y_min >= y_max:
             raise ValueError("crop_box y_min must be less than y_max")
         return v
-
-    @field_validator("quad_points")
-    @classmethod
-    def validate_quad_points(cls, v: list[QuadPoint] | None) -> list[QuadPoint] | None:
-        if v is None:
-            return None
-        if len(v) != 4:
-            raise ValueError(f"quad_points must have exactly 4 points; got {len(v)}")
-        normalized: list[QuadPoint] = []
-        for idx, point in enumerate(v):
-            if len(point) != 2:
-                raise ValueError(f"quad_points[{idx}] must contain exactly 2 coordinates")
-            x, y = float(point[0]), float(point[1])
-            if not math.isfinite(x) or not math.isfinite(y):
-                raise ValueError("quad_points values must be finite numbers")
-            if x < 0 or y < 0:
-                raise ValueError("quad_points values must be non-negative")
-            normalized.append((x, y))
-        return normalized
-
-    @model_validator(mode="after")
-    def validate_selection(self) -> CorrectionApplyRequest:
-        if self.selection_mode == "quad" and self.quad_points is None:
-            raise ValueError("quad_points are required when selection_mode='quad'")
-        if self.quad_points is not None and self.selection_mode is None:
-            self.selection_mode = "quad"
-        return self
 
 
 # ── Response schema ─────────────────────────────────────────────────────────────
@@ -248,12 +203,9 @@ def _derive_child_corrected_uri(
     return f"file://jobs/{job_id}/corrected/{page_number}_{sub_page_index}.tiff"
 
 
-def _prior_correction_source_uri(lineage: PageLineage | None) -> str | None:
-    """Return the previously selected source artifact when available."""
-    if lineage is None or not isinstance(lineage.human_correction_fields, dict):
-        return None
-    prior_source_uri = lineage.human_correction_fields.get("source_artifact_uri")
-    return prior_source_uri if isinstance(prior_source_uri, str) and prior_source_uri else None
+def _leaf_pages(db: Session, job_id: str) -> list[JobPage]:
+    """Return all non-split leaf pages for the job."""
+    return db.query(JobPage).filter(JobPage.job_id == job_id, JobPage.status != "split").all()
 
 
 def _fetch_latest_geometry_gate(
@@ -274,80 +226,24 @@ def _fetch_latest_geometry_gate(
     )
 
 
-def _candidate_correction_source_uris(
-    db: Session,
-    page: JobPage,
-    lineage: PageLineage | None,
-) -> list[str]:
-    """Return the concrete workspace artifact URIs allowed as edit bases."""
-    candidates: list[str] = []
-
-    def add(uri: str | None) -> None:
-        if isinstance(uri, str) and uri and uri not in candidates:
-            candidates.append(uri)
-
-    add(page.output_image_uri)
-    add(lineage.output_image_uri if lineage is not None else None)
-    add(lineage.otiff_uri if lineage is not None else None)
-    add(page.input_image_uri)
-
-    add(_prior_correction_source_uri(lineage))
-
-    if lineage is not None and getattr(lineage, "iep1d_used", False) is True:
-        add(_fetch_iep1d_rectified_uri(db, lineage.lineage_id))
-
-    return candidates
-
-
-def _resolve_correction_source_uri(
-    db: Session,
-    page: JobPage,
-    lineage: PageLineage | None,
-    requested_source_uri: str | None,
-) -> str:
-    """
-    Resolve the artifact URI correction should read from.
-
-    Default behavior preserves the legacy "current output first, then input"
-    fallback. When the UI submits an explicit source artifact URI, it must match
-    one of the real workspace sources for that page.
-    """
-    default_source_uri = (
-        page.output_image_uri
-        or (lineage.output_image_uri if lineage is not None else None)
-        or _prior_correction_source_uri(lineage)
-        or (lineage.otiff_uri if lineage is not None else None)
-        or page.input_image_uri
-    )
-    if requested_source_uri is None:
-        if default_source_uri is None:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=(
-                    f"Data-integrity failure: page {page.page_number} of job {page.job_id!r} "
-                    "has no source artifact URI. Cannot create corrected artifact."
-                ),
-            )
-        return default_source_uri
-
-    allowed_uris = _candidate_correction_source_uris(db, page, lineage)
-    if requested_source_uri not in allowed_uris:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_CONTENT,
-            detail="source_artifact_uri is not a valid editable source for this page.",
-        )
-    return requested_source_uri
-
-
 def _split_x_from_gate(gate: QualityGateLog | None) -> int | None:
-    """
-    The geometry gate stores model responses in proxy-image pixel space.
-    The proxy dimensions required to scale split_x to full-resolution are not
-    recorded in the gate log, so the value cannot be used safely as a full-res
-    coordinate.  Always returns None; _resolve_split_x falls through to the
-    correct image_width // 2 default.
-    """
-    return None
+    """Extract the selected split_x from the latest geometry gate when available."""
+    if gate is None:
+        return None
+
+    geo_jsonb: dict[str, Any] | None = None
+    if gate.selected_model == "iep1a":
+        geo_jsonb = gate.iep1a_geometry
+    elif gate.selected_model == "iep1b":
+        geo_jsonb = gate.iep1b_geometry
+
+    if geo_jsonb is None:
+        geo_jsonb = gate.iep1a_geometry or gate.iep1b_geometry
+    if geo_jsonb is None:
+        return None
+
+    raw_split_x = geo_jsonb.get("split_x")
+    return int(raw_split_x) if raw_split_x is not None else None
 
 
 def _resolve_split_x(
@@ -382,214 +278,63 @@ def _decode_split_source_image(source_uri: str, data: bytes) -> np.ndarray:
     """
     Decode the parent artifact into an in-memory image array for child splitting.
 
-    Tries cv2.imdecode first (fast path). Falls back to Pillow for formats that
-    cv2 cannot decode: pyramidal TIFFs (PTIFF), CCITT G3/G4 compressed TIFFs,
-    and other non-standard encodings.
-
     Raises HTTP 500 on decode failure because the stored parent artifact is
     expected to be a readable TIFF/PTIFF at correction time.
     """
-    import io as _io  # noqa: PLC0415
-
-    # cv2 fast path — handles most standard TIFF/JPEG encodings
-    image: np.ndarray | None = None
     try:
         buf = np.frombuffer(data, dtype=np.uint8)
-        image = cv2.imdecode(buf, cv2.IMREAD_UNCHANGED)
-    except cv2.error:
-        image = None
-
-    if image is not None and image.ndim >= 2:
-        return image
-
-    # Pillow fallback for PTIFF, CCITT G4, and other formats cv2 cannot handle
-    try:
-        from PIL import Image as _Image  # noqa: PLC0415
-
-        pil_img = _Image.open(_io.BytesIO(data))
-        pil_img.seek(0)  # ensure first frame/page
-        if pil_img.mode not in ("RGB", "RGBA", "L"):
-            pil_img = pil_img.convert("RGB")
-        image = np.array(pil_img)
-        if image.ndim >= 2:
-            return image
-    except Exception as exc:
+        image: np.ndarray | None = cv2.imdecode(buf, cv2.IMREAD_UNCHANGED)
+    except cv2.error as exc:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=f"Data-integrity failure: cannot decode parent artifact {source_uri!r}: {exc}",
         ) from exc
+    if image is None or image.ndim < 2:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Data-integrity failure: cannot decode parent artifact {source_uri!r}.",
+        )
+    return image
 
-    raise HTTPException(
-        status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-        detail=f"Data-integrity failure: cannot decode parent artifact {source_uri!r}.",
-    )
 
-
-def _encode_tiff_image(image: np.ndarray, *, source_uri: str, context: str) -> bytes:
-    """Encode a raster artifact to TIFF bytes."""
+def _encode_tiff_bytes(image: np.ndarray, *, source_uri: str, sub_page_index: int) -> bytes:
+    """Encode a split child image to TIFF bytes without writing to disk."""
     ok, encoded = cv2.imencode(".tiff", image)
     if not ok:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Data-integrity failure: could not encode TIFF for {context} from {source_uri!r}.",
+            detail=(
+                "Data-integrity failure: could not encode split child artifact "
+                f"for {source_uri!r} sub_page_index {sub_page_index}."
+            ),
         )
-    return encoded.tobytes()
+    encoded_bytes: bytes = encoded.tobytes()
+    return encoded_bytes
 
 
-def _normalize_selection_mode(
-    selection_mode: SelectionMode | None,
-    quad_points: list[QuadPoint] | None,
-) -> SelectionMode:
-    """Resolve the effective reviewer geometry mode."""
-    if quad_points is not None or selection_mode == "quad":
-        return "quad"
-    return "rect"
+def _build_split_child_artifacts(
+    source_uri: str, image: np.ndarray, split_x: int
+) -> dict[int, bytes]:
+    """
+    Build left/right TIFF artifacts for a split correction from the parent image.
 
-
-def _quad_points_from_crop_box(crop_box: list[int] | None) -> list[QuadPoint] | None:
-    """Return a rectangular quad matching an axis-aligned crop box."""
-    if crop_box is None:
-        return None
-    x1, y1, x2, y2 = crop_box
-    return [
-        (float(x1), float(y1)),
-        (float(x2), float(y1)),
-        (float(x2), float(y2)),
-        (float(x1), float(y2)),
-    ]
-
-
-def _crop_box_from_quad_points(quad_points: list[QuadPoint] | None) -> list[int] | None:
-    """Return the integer bounding box enclosing a quad."""
-    if quad_points is None:
-        return None
-    xs = [point[0] for point in quad_points]
-    ys = [point[1] for point in quad_points]
-    x1 = int(math.floor(min(xs)))
-    y1 = int(math.floor(min(ys)))
-    x2 = int(math.ceil(max(xs)))
-    y2 = int(math.ceil(max(ys)))
-    return [x1, y1, x2, y2]
-
-
-def _json_quad_points(quad_points: list[QuadPoint] | None) -> list[list[float]] | None:
-    """Convert quad points to a JSON-serializable nested list."""
-    if quad_points is None:
-        return None
-    return [[float(x), float(y)] for x, y in quad_points]
-
-
-def _clamp_quad_points(
-    quad_points: list[QuadPoint],
-    *,
-    width: int,
-    height: int,
-) -> list[QuadPoint]:
-    """Clamp quad points to valid image coordinates."""
-    max_x = max(0, width)
-    max_y = max(0, height)
-    return [
-        (float(min(max(point[0], 0.0), max_x)), float(min(max(point[1], 0.0), max_y)))
-        for point in quad_points
-    ]
-
-
-def _normalize_human_correction_image(
-    *,
-    source_uri: str,
-    image: np.ndarray,
-    crop_box: list[int] | None,
-    deskew_angle: float | None,
-    selection_mode: SelectionMode | None = None,
-    quad_points: list[QuadPoint] | None = None,
-) -> np.ndarray:
-    """Apply the reviewer crop/deskew selection to image pixels."""
-    height, width = image.shape[:2]
-    effective_mode = _normalize_selection_mode(selection_mode, quad_points)
-    if effective_mode == "quad":
-        resolved_quad = quad_points or _quad_points_from_crop_box(crop_box)
-        if resolved_quad is None:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Quadrilateral selection is required for {source_uri!r}.",
-            )
-        clipped_quad = _clamp_quad_points(resolved_quad, width=width, height=height)
-        corrected, _, _ = four_point_transform(image, clipped_quad)
-        if corrected.size == 0:
-            raise HTTPException(
-                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-                detail=f"Correction quad produced an empty image for {source_uri!r}.",
-            )
-        return np.ascontiguousarray(corrected)
-    bbox = crop_box or [0, 0, width, height]
-    if deskew_angle is not None and abs(deskew_angle) > 1e-6:
-        corrected, _ = apply_affine_deskew(
-            image,
-            float(deskew_angle),
-            (bbox[0], bbox[1], bbox[2], bbox[3]),
-        )
-        return corrected
-
-    x_min = max(0, min(width - 1, int(round(bbox[0]))))
-    y_min = max(0, min(height - 1, int(round(bbox[1]))))
-    x_max = max(x_min + 1, min(width, int(round(bbox[2]))))
-    y_max = max(y_min + 1, min(height, int(round(bbox[3]))))
-    corrected = np.ascontiguousarray(image[y_min:y_max, x_min:x_max])
-    if corrected.size == 0:
+    Child 0 receives the left half ``[:, :split_x]`` and child 1 receives the
+    right half ``[:, split_x:]``.
+    """
+    width = int(image.shape[1])
+    if split_x <= 0 or split_x >= width:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"Correction crop produced an empty image for {source_uri!r}.",
+            detail=f"split_x must be within the image width (got {split_x}, width={width}).",
         )
-    return corrected
 
+    left = np.ascontiguousarray(image[:, :split_x])
+    right = np.ascontiguousarray(image[:, split_x:])
 
-def _invalidate_layout_state(page: JobPage, lineage: PageLineage) -> None:
-    """Clear stale layout outputs before writing a new authoritative page artifact."""
-    page.output_layout_uri = None
-    page.layout_consensus_result = None
-    gate_results = dict(lineage.gate_results or {})
-    gate_results.pop("downsample", None)
-    gate_results.pop("layout_input", None)
-    gate_results.pop("layout_adjudication", None)
-    lineage.gate_results = gate_results or None
-    lineage.layout_artifact_state = "pending"
-
-
-def _default_child_crop_box(
-    *,
-    split_x: int,
-    image_width: int,
-    image_height: int,
-    sub_page_index: int,
-) -> list[int]:
-    """Return the initial child crop box in parent-image coordinates."""
-    if split_x <= 0 or split_x >= image_width:
-        raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
-            detail=f"split_x must be within the image width (got {split_x}, width={image_width}).",
-        )
-    if sub_page_index == 0:
-        return [0, 0, split_x, image_height]
-    return [split_x, 0, image_width, image_height]
-
-
-def _default_child_quad_points(
-    *,
-    split_x: int,
-    image_width: int,
-    image_height: int,
-    sub_page_index: int,
-) -> list[QuadPoint]:
-    """Return the initial child quad in parent-image coordinates."""
-    crop_box = _default_child_crop_box(
-        split_x=split_x,
-        image_width=image_width,
-        image_height=image_height,
-        sub_page_index=sub_page_index,
-    )
-    quad_points = _quad_points_from_crop_box(crop_box)
-    assert quad_points is not None
-    return quad_points
+    return {
+        0: _encode_tiff_bytes(left, source_uri=source_uri, sub_page_index=0),
+        1: _encode_tiff_bytes(right, source_uri=source_uri, sub_page_index=1),
+    }
 
 
 # ── Split correction path (Packet 5.3) ──────────────────────────────────────────
@@ -605,17 +350,17 @@ def _apply_split_correction(
     """
     Execute the reviewer-driven split path for a parent page.
 
-    Creates two child sub-pages (left: sub_page_index=0, right: sub_page_index=1)
-    and records child lineage plus parent-space crop defaults. The reviewer then
-    corrects each child page separately. No child artifact is written here; each
-    child preview uses the shared parent source image until submit time.
+    Creates two child sub-pages (left: sub_page_index=0, right: sub_page_index=1),
+    writes corrected artifacts for each child via the storage backend, and records
+    child lineage. The reviewer then corrects each child page separately; this
+    request does not send the children directly into PTIFF QA.
 
     The parent page may transition to "split" within the same request once the
     child review units satisfy the worker-terminal closure rule.
 
     The caller is responsible for db.commit() after this function returns.
     """
-    now = datetime.now(UTC)
+    now = datetime.now(tz=UTC)
 
     # Step A — Fetch parent lineage row
     # Data-integrity requirement: parent lineage must exist.
@@ -637,15 +382,9 @@ def _apply_split_correction(
             ),
         )
 
-    # Step B — Resolve the reviewer-selected source URI. When the workspace sends
-    # an explicit source_artifact_uri, split the exact displayed artifact.
-    source_uri = _resolve_correction_source_uri(
-        db,
-        parent,
-        parent_lineage,
-        body.source_artifact_uri,
-    )
-    if source_uri is None:
+    # Step B — Validate source URI
+    # Data-integrity requirement: parent must have a source artifact URI.
+    if parent.output_image_uri is None:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail=(
@@ -655,48 +394,38 @@ def _apply_split_correction(
             ),
         )
 
-    parent_backend = get_backend(source_uri)
-    parent_image_bytes = parent_backend.get_bytes(source_uri)
-    parent_image = _decode_split_source_image(source_uri, parent_image_bytes)
-    parent_image_height = int(parent_image.shape[0])
-    parent_image_width = int(parent_image.shape[1])
+    parent_backend = get_backend(parent.output_image_uri)
+    parent_image_bytes = parent_backend.get_bytes(parent.output_image_uri)
+    parent_image = _decode_split_source_image(parent.output_image_uri, parent_image_bytes)
     gate = _fetch_latest_geometry_gate(db, parent.job_id, parent.page_number)
-    # Scale split_x from preview-image space to source-image space when the
-    # frontend provides the preview width. This corrects for the mismatch
-    # between page_image_width (original scan) and the actual correction source
-    # (normalized artifact), which can have different dimensions.
-    submitted_split_x = body.split_x
-    if (
-        submitted_split_x is not None
-        and body.split_x_natural_width is not None
-        and body.split_x_natural_width > 0
-    ):
-        submitted_split_x = round(submitted_split_x * parent_image_width / body.split_x_natural_width)
     resolved_split_x = _resolve_split_x(
-        requested_split_x=submitted_split_x,
+        requested_split_x=body.split_x,
         parent_lineage=parent_lineage,
         gate=gate,
-        image_width=parent_image_width,
+        image_width=int(parent_image.shape[1]),
     )
     correction_fields: dict[str, Any] = {
         "crop_box": body.crop_box,
         "deskew_angle": body.deskew_angle,
         "page_structure": "spread",
         "split_x": resolved_split_x,
-        "source_artifact_uri": source_uri,
-        "image_width": parent_image_width,
-        "image_height": parent_image_height,
     }
-    _invalidate_layout_state(parent, parent_lineage)
-    parent_lineage.human_correction_fields = correction_fields
-    parent_lineage.reviewer_notes = body.notes
+    child_artifacts = _build_split_child_artifacts(
+        parent.output_image_uri,
+        parent_image,
+        resolved_split_x,
+    )
 
     children: list[JobPage] = []
 
-    # Step C — For each side: create/reuse child page + lineage. Children stay
-    # in pending_human_correction so the reviewer can continue in Page 0 / Page 1
-    # workspaces. No pre-split child artifact is written here.
+    # Step C — For each side: create/reuse child page + lineage and write the
+    # child artifact. Children stay in pending_human_correction so the reviewer
+    # can continue in Page 0 / Page 1 workspaces.
     for sub_idx in (0, 1):
+        child_uri = _derive_child_corrected_uri(
+            parent.output_image_uri, parent.job_id, parent.page_number, sub_idx
+        )
+
         # Create or reuse child JobPage (idempotent).
         child: JobPage | None = (
             db.query(JobPage)
@@ -716,33 +445,17 @@ def _apply_split_correction(
                 status="pending_human_correction",
                 input_image_uri=parent.input_image_uri,
                 output_image_uri=None,
+                ptiff_qa_approved=False,
             )
             db.add(child)
 
-        child_quad_points = _default_child_quad_points(
-            split_x=resolved_split_x,
-            image_width=parent_image_width,
-            image_height=parent_image_height,
-            sub_page_index=sub_idx,
-        )
-        child_correction_fields = {
-            **correction_fields,
-            "page_structure": "single",
-            "selection_mode": "quad",
-            "quad_points": _json_quad_points(child_quad_points),
-            "crop_box": _crop_box_from_quad_points(child_quad_points),
-            "deskew_angle": None,
-            "source_artifact_uri": source_uri,
-            "sub_page_index": sub_idx,
-            "image_width": parent_image_width,
-            "image_height": parent_image_height,
-        }
+        # Write the actual split child artifact bytes to the child-specific URI.
+        get_backend(child_uri).put_bytes(child_uri, child_artifacts[sub_idx])
 
-        # Child pages preview the shared parent source until the reviewer submits
-        # a child-specific correction.
-        child.output_layout_uri = None
-        child.layout_consensus_result = None
-        child.output_image_uri = None
+        # Mirror corrected URI onto the child page row for fast lookups.
+        # page_lineage remains authoritative; job_pages.output_image_uri is a convenience copy.
+        child.output_image_uri = child_uri
+        child.ptiff_qa_approved = False
 
         # Create or update child lineage row (idempotent).
         child_lineage: PageLineage | None = (
@@ -771,19 +484,17 @@ def _apply_split_correction(
                 split_source=True,
                 human_corrected=True,
                 human_correction_timestamp=now,
-                human_correction_fields=child_correction_fields,
-                output_image_uri=None,
+                human_correction_fields=correction_fields,
+                output_image_uri=child_uri,
                 reviewer_notes=body.notes,
             )
             db.add(child_lineage)
         else:
             # Idempotent update for repeated calls.
-            _invalidate_layout_state(child, child_lineage)
-            child_lineage.preprocessed_artifact_state = "pending"
             child_lineage.human_corrected = True
             child_lineage.human_correction_timestamp = now
-            child_lineage.human_correction_fields = child_correction_fields
-            child_lineage.output_image_uri = None
+            child_lineage.human_correction_fields = correction_fields
+            child_lineage.output_image_uri = child_uri
             if body.notes is not None:
                 child_lineage.reviewer_notes = body.notes
 
@@ -792,24 +503,30 @@ def _apply_split_correction(
 
     db.flush()
 
-    advanced = advance_page_state(
-        db,
-        parent.page_id,
-        from_state="pending_human_correction",
-        to_state="split",
-    )
-    if not advanced:
-        logger.warning(
-            "Split correction parent-to-split CAS miss: job=%s page_id=%s",
-            parent.job_id,
+    # Step D — Transition the parent to "split" when the child review units
+    # satisfy the shared worker-terminal closure rule. In the current
+    # reviewer-driven flow, newly created children remain
+    # pending_human_correction and therefore already satisfy that rule.
+    if all(c.status in _WORKER_TERMINAL_STATES for c in children):
+        advanced = advance_page_state(
+            db,
             parent.page_id,
+            from_state="pending_human_correction",
+            to_state="split",
         )
+        if not advanced:
+            logger.warning(
+                "Split correction parent-to-split CAS miss: job=%s page_id=%s",
+                parent.job_id,
+                parent.page_id,
+            )
 
     logger.info(
-        "Split correction applied: job=%s page=%d split_x=%d pipeline_mode=%s",
+        "Split correction applied: job=%s page=%d split_x=%d " "ptiff_qa_mode=%s pipeline_mode=%s",
         parent.job_id,
         parent.page_number,
         resolved_split_x,
+        job.ptiff_qa_mode,
         job.pipeline_mode,
     )
 
@@ -853,56 +570,24 @@ def _apply_single_page_correction(
             ),
         )
 
-    # Use the selected workspace source when the UI provides one; otherwise
-    # preserve the legacy current-output-first fallback behavior.
-    source_uri = _resolve_correction_source_uri(
-        db,
-        page,
-        lineage,
-        body.source_artifact_uri,
-    )
-
-    if page.sub_page_index is None:
-        corrected_uri = _derive_corrected_uri(source_uri)
-        assert corrected_uri is not None  # guaranteed: source_uri is non-None above
-    else:
-        corrected_uri = _derive_child_corrected_uri(
-            source_uri,
-            page.job_id,
-            page.page_number,
-            page.sub_page_index,
+    if page.output_image_uri is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                f"Data-integrity failure: page {page.page_number} of job {page.job_id!r} "
+                "has no source artifact URI. Cannot create corrected artifact."
+            ),
         )
-    src_data = get_backend(source_uri).get_bytes(source_uri)
-    source_image = _decode_split_source_image(source_uri, src_data)
-    corrected_image = _normalize_human_correction_image(
-        source_uri=source_uri,
-        image=source_image,
-        crop_box=body.crop_box,
-        deskew_angle=body.deskew_angle,
-        selection_mode=body.selection_mode,
-        quad_points=body.quad_points,
-    )
-    corrected_bytes = _encode_tiff_image(
-        corrected_image,
-        source_uri=source_uri,
-        context="single-page correction",
-    )
-    _invalidate_layout_state(page, lineage)
-    get_backend(corrected_uri).put_bytes(corrected_uri, corrected_bytes)
 
-    now = datetime.now(UTC)
-    effective_selection_mode = _normalize_selection_mode(body.selection_mode, body.quad_points)
-    stored_quad_points = body.quad_points
-    stored_crop_box = body.crop_box
-    if effective_selection_mode == "quad":
-        stored_quad_points = body.quad_points or _quad_points_from_crop_box(body.crop_box)
-        stored_crop_box = _crop_box_from_quad_points(stored_quad_points)
+    corrected_uri = _derive_corrected_uri(page.output_image_uri)
+    assert corrected_uri is not None  # guaranteed: output_image_uri is non-None above
+    src_data = get_backend(page.output_image_uri).get_bytes(page.output_image_uri)
+    get_backend(corrected_uri).put_bytes(corrected_uri, src_data)
+
+    now = datetime.now(tz=UTC)
     correction_fields: dict[str, Any] = {
-        "selection_mode": effective_selection_mode,
-        "quad_points": _json_quad_points(stored_quad_points),
-        "crop_box": stored_crop_box,
-        "deskew_angle": body.deskew_angle if effective_selection_mode == "rect" else None,
-        "source_artifact_uri": source_uri,
+        "crop_box": body.crop_box,
+        "deskew_angle": body.deskew_angle,
     }
 
     lineage.human_corrected = True
@@ -913,17 +598,13 @@ def _apply_single_page_correction(
         lineage.reviewer_notes = body.notes
 
     page.output_image_uri = corrected_uri
-    confirm_preprocessed_artifact(db, lineage.lineage_id)
-
-    # Automation-first: route directly to layout_detection (layout mode) or
-    # accepted (preprocess-only mode). IEP2 is never run inline here.
-    to_state = "layout_detection" if job.pipeline_mode == "layout" else "accepted"
+    page.ptiff_qa_approved = False
 
     advanced = advance_page_state(
         db,
         page.page_id,
         from_state="pending_human_correction",
-        to_state=to_state,
+        to_state="ptiff_qa_pending",
     )
     if not advanced:
         logger.warning(
@@ -933,42 +614,19 @@ def _apply_single_page_correction(
             page.page_id,
             page.page_number,
         )
-        return
-
-    page.status = to_state
 
     db.flush()
 
-    if job.pipeline_mode == "layout":
-        enqueue_page_task(
-            r,
-            PageTask(
-                task_id=str(uuid.uuid4()),
-                job_id=page.job_id,
-                page_id=page.page_id,
-                page_number=page.page_number,
-                sub_page_index=page.sub_page_index,
-            ),
-        )
-    else:
-        page.acceptance_decision = "accepted"
-        page.routing_path = "preprocessing_only"
-        update_lineage_completion(
-            db,
-            lineage.lineage_id,
-            acceptance_decision="accepted",
-            acceptance_reason="preprocessing accepted after human correction",
-            routing_path="preprocessing_only",
-            total_processing_ms=page.processing_time_ms,
-            output_image_uri=corrected_uri,
-        )
+    if job.ptiff_qa_mode == "auto_continue":
+        all_pages = _leaf_pages(db, page.job_id)
+        _check_and_release_ptiff_qa(db, job, all_pages)
 
     logger.info(
-        "Correction applied: job=%s page=%d sub_page_index=%s → %s",
+        "Correction applied: job=%s page=%d sub_page_index=%s ptiff_qa_mode=%s",
         page.job_id,
         page.page_number,
         page.sub_page_index,
-        to_state,
+        job.ptiff_qa_mode,
     )
 
 
@@ -1002,16 +660,14 @@ def apply_correction(
       Used for child-page corrections and for parent pages whose structure is
       kept as a single page. Processing is not re-run. The existing artifact is
       copied to a derived corrected URI and recorded in lineage. The page then
-      transitions to layout_detection (layout mode) or accepted (preprocess mode)
-      and is enqueued for async IEP2 processing in layout mode.
+      transitions to ptiff_qa_pending.
 
     **Split path**
       Used for parent pages when the reviewer selects ``page_structure="spread"``
       or an explicit ``split_x`` fallback is provided. Two child sub-pages are
-      created or reused idempotently. Each child stores its own parent-space
-      crop defaults and remains in pending_human_correction so the reviewer can
-      correct Page 0 and Page 1 separately. The real cropped child artifact is
-      generated only when that child is submitted. The parent may transition to
+      created or reused idempotently. Child artifacts are written for each
+      child, and each child remains in pending_human_correction so the reviewer
+      can correct Page 0 and Page 1 separately. The parent may transition to
       "split" once the child workspaces exist.
 
     **Error responses**

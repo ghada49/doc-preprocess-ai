@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from pydantic import ValidationError
@@ -222,7 +222,7 @@ async def _invoke_one(
     """
     # ── Circuit breaker open → skip without calling backend ──────────────────
     if not cb.allow_call():
-        now = datetime.now(timezone.utc)
+        now = datetime.now(tz=UTC)
         _log_invocation(
             session,
             lineage_id,
@@ -242,14 +242,14 @@ async def _invoke_one(
             status="skipped",
         )
 
-    invoked_at = datetime.now(timezone.utc)
+    invoked_at = datetime.now(tz=UTC)
 
     # ── Backend call ──────────────────────────────────────────────────────────
     try:
         raw: dict[str, Any] = await backend.call(endpoint, payload)
         response = GeometryResponse.model_validate(raw)
         cb.record_success()
-        completed_at = datetime.now(timezone.utc)
+        completed_at = datetime.now(tz=UTC)
         duration_ms = (completed_at - invoked_at).total_seconds() * 1000
         _log_invocation(
             session,
@@ -272,7 +272,7 @@ async def _invoke_one(
 
     except BackendError as exc:
         cb.record_failure(exc.kind)
-        completed_at = datetime.now(timezone.utc)
+        completed_at = datetime.now(tz=UTC)
         duration_ms = (completed_at - invoked_at).total_seconds() * 1000
         is_timeout = exc.kind in (
             BackendErrorKind.COLD_START_TIMEOUT,
@@ -302,7 +302,7 @@ async def _invoke_one(
         # Malformed response — schema does not match GeometryResponse.
         # Treated as a service failure; circuit breaker records it.
         cb.record_failure(None)
-        completed_at = datetime.now(timezone.utc)
+        completed_at = datetime.now(tz=UTC)
         duration_ms = (completed_at - invoked_at).total_seconds() * 1000
         msg = f"Malformed geometry response from {service_name!r}: {exc}"
         _log_invocation(
@@ -326,7 +326,7 @@ async def _invoke_one(
 
     except Exception as exc:  # unexpected — still must not propagate
         cb.record_failure(None)
-        completed_at = datetime.now(timezone.utc)
+        completed_at = datetime.now(tz=UTC)
         duration_ms = (completed_at - invoked_at).total_seconds() * 1000
         msg = f"Unexpected error from {service_name!r}: {exc}"
         _log_invocation(
@@ -374,16 +374,12 @@ def _observe_geometry_metrics(
     """
     if iep1a is not None:
         observe_and_check("iep1a.geometry_confidence", iep1a.geometry_confidence, session)
-        observe_and_check(
-            "iep1a.tta_structural_agreement_rate", iep1a.tta_structural_agreement_rate, session
-        )
+        observe_and_check("iep1a.tta_structural_agreement_rate", iep1a.tta_structural_agreement_rate, session)
         observe_and_check("iep1a.tta_prediction_variance", iep1a.tta_prediction_variance, session)
         observe_and_check("iep1a.split_detection_rate", float(iep1a.split_required), session)
     if iep1b is not None:
         observe_and_check("iep1b.geometry_confidence", iep1b.geometry_confidence, session)
-        observe_and_check(
-            "iep1b.tta_structural_agreement_rate", iep1b.tta_structural_agreement_rate, session
-        )
+        observe_and_check("iep1b.tta_structural_agreement_rate", iep1b.tta_structural_agreement_rate, session)
         observe_and_check("iep1b.tta_prediction_variance", iep1b.tta_prediction_variance, session)
         observe_and_check("iep1b.split_detection_rate", float(iep1b.split_required), session)
     observe_and_check(

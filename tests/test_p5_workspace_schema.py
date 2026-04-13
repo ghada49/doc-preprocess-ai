@@ -156,8 +156,6 @@ class TestCorrectionWorkspaceResponseSchema:
         assert ws.review_reasons == ["structural_disagreement_post_rectification"]
         assert ws.original_otiff_uri is None
         assert ws.best_output_uri is None
-        assert ws.current_selection_mode == "rect"
-        assert ws.current_quad_points is None
         assert ws.current_crop_box is None
         assert ws.current_deskew_angle is None
         assert ws.current_split_x is None
@@ -226,21 +224,6 @@ class TestCorrectionWorkspaceResponseSchema:
     def test_current_crop_box_none_valid(self) -> None:
         ws = _minimal_workspace(current_crop_box=None)
         assert ws.current_crop_box is None
-
-    def test_current_quad_points_valid(self) -> None:
-        ws = _minimal_workspace(
-            current_selection_mode="quad",
-            current_quad_points=[(0.0, 0.0), (1200.0, 0.0), (1180.0, 3200.0), (20.0, 3200.0)],
-        )
-        assert ws.current_selection_mode == "quad"
-        assert ws.current_quad_points == [(0.0, 0.0), (1200.0, 0.0), (1180.0, 3200.0), (20.0, 3200.0)]
-
-    def test_current_quad_points_wrong_length_rejected(self) -> None:
-        with pytest.raises(ValidationError):
-            _minimal_workspace(
-                current_selection_mode="quad",
-                current_quad_points=[(0.0, 0.0), (1200.0, 0.0), (1180.0, 3200.0)],
-            )
 
     # ── Scenario: original-only (no derived artifacts) ────────────────────────
 
@@ -363,7 +346,7 @@ class TestCorrectionWorkspaceResponseSchema:
                 ),
                 ChildPageSummary(
                     sub_page_index=1,
-                    status="layout_detection",
+                    status="ptiff_qa_pending",
                     output_image_uri="s3://bucket/jobs/job-001/corrected/1_1.tiff",
                 ),
             ]

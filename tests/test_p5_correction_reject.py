@@ -313,7 +313,7 @@ class TestRejectCorrectionEndpoint:
     def test_409_when_page_not_in_pending_human_correction(self) -> None:
         """Page in wrong state → 409 with state name in detail."""
         job = _make_job()
-        page = _make_page(status="layout_detection")
+        page = _make_page(status="ptiff_qa_pending")
 
         session = _make_session(job=job, first_results=[page])
         self._inject(session)
@@ -324,7 +324,7 @@ class TestRejectCorrectionEndpoint:
 
     @pytest.mark.parametrize(
         "state",
-        ["accepted", "review", "failed", "layout_detection", "preprocessing"],
+        ["accepted", "review", "failed", "layout_detection", "ptiff_qa_pending"],
     )
     def test_409_for_various_non_pending_states(self, state: str) -> None:
         """Any state other than pending_human_correction returns 409."""

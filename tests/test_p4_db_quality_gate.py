@@ -6,7 +6,6 @@ Packet 4.2 — quality gate log helper tests.
 Covers:
   - VALID_GATE_TYPES contains exactly the 5 spec-defined values
   - VALID_ROUTE_DECISIONS contains exactly the 4 spec-defined values
-  - VALID_REVIEW_REASONS contains all 6 recognised reason strings (2 legacy + 4 adjudication)
   - log_gate creates a QualityGateLog with correct required fields
   - log_gate sets all optional fields when provided
   - log_gate leaves optional fields as None when not provided
@@ -27,12 +26,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from services.eep.app.db.models import QualityGateLog
-from services.eep.app.db.quality_gate import (
-    VALID_GATE_TYPES,
-    VALID_REVIEW_REASONS,
-    VALID_ROUTE_DECISIONS,
-    log_gate,
-)
+from services.eep.app.db.quality_gate import VALID_GATE_TYPES, VALID_ROUTE_DECISIONS, log_gate
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
@@ -99,34 +93,6 @@ class TestValidRouteDecisions:
 
     def test_is_frozenset(self) -> None:
         assert isinstance(VALID_ROUTE_DECISIONS, frozenset)
-
-
-class TestValidReviewReasons:
-    # ── Legacy local-consensus reasons ─────────────────────────────────────
-    def test_contains_layout_consensus_failed(self) -> None:
-        assert "layout_consensus_failed" in VALID_REVIEW_REASONS
-
-    def test_contains_layout_consensus_low_confidence(self) -> None:
-        assert "layout_consensus_low_confidence" in VALID_REVIEW_REASONS
-
-    # ── Adjudication reasons (P3.3 / P4.1) ────────────────────────────────
-    def test_contains_layout_adjudication_google_failed(self) -> None:
-        assert "layout_adjudication_google_failed" in VALID_REVIEW_REASONS
-
-    def test_contains_layout_adjudication_google_implausible(self) -> None:
-        assert "layout_adjudication_google_implausible" in VALID_REVIEW_REASONS
-
-    def test_contains_layout_adjudication_failed(self) -> None:
-        assert "layout_adjudication_failed" in VALID_REVIEW_REASONS
-
-    def test_contains_layout_single_model_mode(self) -> None:
-        assert "layout_single_model_mode" in VALID_REVIEW_REASONS
-
-    def test_exactly_six_values(self) -> None:
-        assert len(VALID_REVIEW_REASONS) == 6
-
-    def test_is_frozenset(self) -> None:
-        assert isinstance(VALID_REVIEW_REASONS, frozenset)
 
 
 # ── log_gate — required fields ────────────────────────────────────────────────

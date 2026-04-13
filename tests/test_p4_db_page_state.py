@@ -4,7 +4,8 @@ tests/test_p4_db_page_state.py
 Packet 4.2 — page state transition helper tests.
 
 Covers:
-  - VALID_TRANSITIONS structure: all 9 states present (ptiff_qa_pending removed)
+  - VALID_TRANSITIONS structure: all 10 states present
+  - ptiff_qa_pending is NOT in TERMINAL_PAGE_STATES
   - Terminal states map to empty frozensets
   - advance_page_state returns True on success (rows_affected=1)
   - advance_page_state returns False when CAS guard fails (rows_affected=0)
@@ -60,6 +61,9 @@ class TestTerminalPageStates:
     def test_re_exports_from_shared(self) -> None:
         assert TERMINAL_PAGE_STATES is _SHARED_TERMINAL
 
+    def test_ptiff_qa_pending_not_terminal(self) -> None:
+        assert "ptiff_qa_pending" not in TERMINAL_PAGE_STATES
+
     def test_accepted_is_terminal(self) -> None:
         assert "accepted" in TERMINAL_PAGE_STATES
 
@@ -80,11 +84,12 @@ class TestTerminalPageStates:
 
 
 class TestValidTransitions:
-    def test_all_9_states_present_as_source(self) -> None:
+    def test_all_10_states_present_as_source(self) -> None:
         expected = {
             "queued",
             "preprocessing",
             "rectification",
+            "ptiff_qa_pending",
             "layout_detection",
             "pending_human_correction",
             "accepted",
@@ -115,38 +120,30 @@ class TestValidTransitions:
 
     def test_preprocessing_targets(self) -> None:
         assert VALID_TRANSITIONS["preprocessing"] == frozenset(
-            {
-                "rectification",
-                "layout_detection",
-                "accepted",
-                "pending_human_correction",
-                "split",
-                "failed",
-            }
+            {"rectification", "ptiff_qa_pending", "pending_human_correction", "split", "failed"}
         )
 
     def test_rectification_targets(self) -> None:
         assert VALID_TRANSITIONS["rectification"] == frozenset(
-            {
-                "layout_detection",
-                "accepted",
-                "pending_human_correction",
-                "split",
-                "failed",
-            }
+            {"ptiff_qa_pending", "pending_human_correction", "split", "failed"}
+        )
+
+    def test_ptiff_qa_pending_targets(self) -> None:
+        assert VALID_TRANSITIONS["ptiff_qa_pending"] == frozenset(
+            {"accepted", "layout_detection", "pending_human_correction"}
         )
 
     def test_pending_human_correction_targets(self) -> None:
-        # Automation-first: correction → layout_detection (layout) or accepted (preprocess).
-        # review = correction-reject. split = human split.
+        # After human correction, the page returns to ptiff_qa_pending (spec Section 1.6).
+        # Direct transitions to layout_detection or accepted are not valid —
+        # they would bypass the mandatory PTIFF QA gate.
+        # split is valid when the human decides to split the corrected page.
         assert VALID_TRANSITIONS["pending_human_correction"] == frozenset(
-            {"layout_detection", "accepted", "review", "split"}
+            {"ptiff_qa_pending", "review", "split"}
         )
 
     def test_layout_detection_targets(self) -> None:
-        assert VALID_TRANSITIONS["layout_detection"] == frozenset(
-            {"accepted", "review", "failed", "pending_human_correction"}
-        )
+        assert VALID_TRANSITIONS["layout_detection"] == frozenset({"accepted", "review", "failed"})
 
     def test_all_values_are_frozensets(self) -> None:
         for state, targets in VALID_TRANSITIONS.items():
@@ -172,7 +169,7 @@ class TestAdvancePageStateReturnValue:
     def test_returns_false_for_concurrent_update(self, session: MagicMock) -> None:
         """CAS guard: row was already advanced by another worker."""
         session.query.return_value.filter.return_value.update.return_value = 0
-        result = advance_page_state(session, "pg-1", "preprocessing", "layout_detection")
+        result = advance_page_state(session, "pg-1", "preprocessing", "ptiff_qa_pending")
         assert result is False
 
 
@@ -288,6 +285,11 @@ class TestAdvancePageStateUpdateContents:
     def test_completed_at_set_for_failed(self, session: MagicMock) -> None:
         advance_page_state(session, "pg-1", "preprocessing", "failed")
         assert "completed_at" in _updates_passed(session)
+
+    def test_completed_at_not_set_for_ptiff_qa_pending(self, session: MagicMock) -> None:
+        """ptiff_qa_pending is NOT terminal — no completed_at."""
+        advance_page_state(session, "pg-1", "preprocessing", "ptiff_qa_pending")
+        assert "completed_at" not in _updates_passed(session)
 
     def test_acceptance_decision_included_when_provided(self, session: MagicMock) -> None:
         advance_page_state(

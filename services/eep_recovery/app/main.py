@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -32,41 +31,6 @@ setup_logging(service_name="eep_recovery")
 logger = logging.getLogger(__name__)
 
 
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        logger.warning("eep_recovery: invalid %s=%r; using %.1f", name, raw, default)
-        return default
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None:
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        logger.warning("eep_recovery: invalid %s=%r; using %d", name, raw, default)
-        return default
-
-
-def _build_reconciler_config() -> ReconcilerConfig:
-    return ReconcilerConfig(
-        task_timeout_seconds=_env_float("RECOVERY_TASK_TIMEOUT_SECONDS", 900.0),
-        layout_task_timeout_seconds=_env_float("RECOVERY_LAYOUT_TASK_TIMEOUT_SECONDS", 180.0),
-        check_interval_seconds=_env_float("RECOVERY_CHECK_INTERVAL_SECONDS", 30.0),
-        max_task_retries=_env_int("MAX_TASK_RETRIES", ReconcilerConfig().max_task_retries),
-        dead_letter_warning_threshold=_env_int(
-            "RECOVERY_DEAD_LETTER_WARNING_THRESHOLD",
-            ReconcilerConfig().dead_letter_warning_threshold,
-        ),
-    )
-
-
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """
@@ -78,14 +42,12 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     (default 30 s) and uses a fresh DB session per cycle.
     """
     r = get_redis()
-    config = _build_reconciler_config()
+    config = ReconcilerConfig()
     bg = asyncio.create_task(run_reconciliation_loop(r, SessionLocal, config))
     logger.info(
-        "eep_recovery: reconciliation loop started "
-        "(interval=%.0fs, task_timeout=%.0fs, layout_timeout=%.0fs)",
+        "eep_recovery: reconciliation loop started " "(interval=%.0fs, task_timeout=%.0fs)",
         config.check_interval_seconds,
         config.task_timeout_seconds,
-        config.layout_task_timeout_seconds,
     )
     try:
         yield
