@@ -144,6 +144,34 @@ services:
     depends_on:
       - prometheus
 
+  # ── Frontend (Next.js) ───────────────────────────────────────────────────────
+  # Dev mode: source is volume-mounted; hot-reload is provided by `next dev`.
+  # The `dev` build target installs node_modules from the deps stage so the
+  # container starts without a local node_modules folder on the host.
+  #
+  # To switch to a production build locally:
+  #   docker compose build --build-arg NEXT_PUBLIC_API_BASE_URL=http://localhost:8000 frontend
+  #   (then change `target: dev` to `target: runner` below and remove the volume mount)
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      target: dev
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules          # keep container node_modules, don't overwrite with host
+    environment:
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+      NEXT_TELEMETRY_DISABLED: "1"
+    ports:
+      - "3000:3000"
+    networks:
+      - libraryai-net
+    restart: unless-stopped
+    depends_on:
+      - eep
+
   # ── EEP API ──────────────────────────────────────────────────────────────────
 
   eep:
@@ -170,8 +198,16 @@ services:
       minio:
         condition: service_started
     command: >
-      sh -c "cd /app/services/eep && alembic upgrade head && cd /app &&
-             uvicorn services.eep.app.main:app --host 0.0.0.0 --port 8000 --reload"
+      sh -c "
+        cd /app/services/eep && alembic upgrade head && cd /app &&
+        if [ -n \"$$BOOTSTRAP_ADMIN_PASSWORD\" ]; then
+          python -m scripts.create_admin
+            --username \"$$BOOTSTRAP_ADMIN_USERNAME\"
+            --password \"$$BOOTSTRAP_ADMIN_PASSWORD\"
+            --skip-if-exists;
+        fi &&
+        uvicorn services.eep.app.main:app --host 0.0.0.0 --port 8000 --reload
+      "
 
   # ── EEP worker ───────────────────────────────────────────────────────────────
   #
