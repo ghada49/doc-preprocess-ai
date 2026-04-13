@@ -207,8 +207,11 @@ services:
       dockerfile: services/eep_worker/Dockerfile
     volumes:
       - .:/app
-      # Mount stub Google credentials for cleanup validation
-      - ./google-credentials-stub.json:/var/secrets/google/key.json:ro
+      # Mount the local Google service-account JSON into the container.
+      - type: bind
+        source: ${GOOGLE_CREDENTIALS_HOST_PATH:-./google-credentials-stub.json}
+        target: /var/secrets/google/key.json
+        read_only: true
     environment:
       PYTHONPATH: /app
       PYTHONDONTWRITEBYTECODE: "1"
@@ -227,7 +230,22 @@ services:
         condition: service_started
       minio:
         condition: service_started
-    command: ["uvicorn", "services.eep_worker.app.main:app", "--host", "0.0.0.0", "--port", "9100", "--reload"]
+    command:
+      [
+        "uvicorn",
+        "services.eep_worker.app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "9100",
+        "--reload",
+        "--reload-dir",
+        "/app/services/eep_worker",
+        "--reload-dir",
+        "/app/services/eep/app",
+        "--reload-dir",
+        "/app/shared",
+      ]
 
   # ── EEP recovery ─────────────────────────────────────────────────────────────
 
@@ -479,6 +497,9 @@ services:
       PYTHONPATH: /app
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
       # IEP2A_USE_REAL_MODEL is intentionally NOT set here.
       # Add IEP2A_USE_REAL_MODEL=true to .env to enable real inference.
     env_file: .env
@@ -527,6 +548,9 @@ services:
       PYTHONPATH: /app
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
+      S3_ENDPOINT_URL: ${S3_ENDPOINT_URL}
+      S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY_ID}
+      S3_SECRET_ACCESS_KEY: ${S3_SECRET_ACCESS_KEY}
       # IEP2B_USE_REAL_MODEL is intentionally NOT set here.
       # Add IEP2B_USE_REAL_MODEL=true to .env to enable real inference.
     env_file: .env

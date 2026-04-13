@@ -34,12 +34,15 @@ from __future__ import annotations
 from typing import Any
 from unittest.mock import MagicMock, patch
 
+import cv2
+import numpy as np
 import pytest
 from fastapi.testclient import TestClient
 
 from services.eep.app.correction.apply import CorrectionApplyRequest, _derive_corrected_uri
 from services.eep.app.db.session import get_session
 from services.eep.app.main import app
+from shared.normalization.perspective import four_point_transform
 
 pytestmark = pytest.mark.usefixtures("_bypass_require_user")
 
@@ -63,6 +66,7 @@ def _make_page(
     sub_page_index: int | None = None,
     status: str = "pending_human_correction",
     output_image_uri: str | None = "s3://bucket/norm.tiff",
+    input_image_uri: str | None = "s3://bucket/raw.tiff",
 ) -> MagicMock:
     page = MagicMock()
     page.page_id = page_id
@@ -71,6 +75,7 @@ def _make_page(
     page.sub_page_index = sub_page_index
     page.status = status
     page.output_image_uri = output_image_uri
+    page.input_image_uri = input_image_uri
     return page
 
 
@@ -78,16 +83,22 @@ def _make_lineage(
     lineage_id: str = "lin-001",
     job_id: str = "job-001",
     page_number: int = 1,
+    sub_page_index: int | None = None,
     output_image_uri: str | None = "s3://bucket/norm.tiff",
+    otiff_uri: str | None = "s3://bucket/raw.tiff",
+    human_correction_fields: dict[str, Any] | None = None,
 ) -> MagicMock:
     lineage = MagicMock()
     lineage.lineage_id = lineage_id
     lineage.job_id = job_id
     lineage.page_number = page_number
+    lineage.sub_page_index = sub_page_index
     lineage.output_image_uri = output_image_uri
+    lineage.otiff_uri = otiff_uri
+    lineage.iep1d_used = False
     lineage.human_corrected = False
     lineage.human_correction_timestamp = None
-    lineage.human_correction_fields = None
+    lineage.human_correction_fields = human_correction_fields
     lineage.reviewer_notes = None
     return lineage
 
@@ -185,10 +196,12 @@ class TestCorrectionApplyRequestValidation:
             deskew_angle=-1.5,
             page_structure="spread",
             split_x=300,
+            source_artifact_uri="s3://bucket/raw.tiff",
             notes="looks good",
         )
         assert req.page_structure == "spread"
         assert req.split_x == 300
+        assert req.source_artifact_uri == "s3://bucket/raw.tiff"
         assert req.notes == "looks good"
 
     def test_null_deskew_angle_accepted(self) -> None:
@@ -199,6 +212,20 @@ class TestCorrectionApplyRequestValidation:
         req = CorrectionApplyRequest(crop_box=None, deskew_angle=None, page_structure="single")
         assert req.crop_box is None
         assert req.page_structure == "single"
+
+    def test_quad_selection_requires_four_points(self) -> None:
+        with pytest.raises(Exception):
+            CorrectionApplyRequest(
+                selection_mode="quad",
+                quad_points=[(0, 0), (100, 0), (100, 200)],
+            )
+
+    def test_quad_points_infer_quad_selection_mode(self) -> None:
+        req = CorrectionApplyRequest(
+            quad_points=[(10, 20), (110, 20), (120, 220), (0, 220)],
+        )
+        assert req.selection_mode == "quad"
+        assert req.quad_points == [(10.0, 20.0), (110.0, 20.0), (120.0, 220.0), (0.0, 220.0)]
 
 
 # ── HTTP endpoint tests ────────────────────────────────────────────────────────
@@ -211,8 +238,11 @@ class TestApplyCorrectionEndpoint:
     def setup_method(self) -> None:
         self.client = TestClient(app)
         # Prevent real storage I/O in all endpoint tests.
+        image = np.full((32, 32, 3), 255, dtype=np.uint8)
+        ok, encoded = cv2.imencode(".tiff", image)
+        assert ok
         self.mock_backend = MagicMock()
-        self.mock_backend.get_bytes.return_value = b"artifact"
+        self.mock_backend.get_bytes.return_value = encoded.tobytes()
         self._storage_patcher = patch(
             "services.eep.app.correction.apply.get_backend",
             return_value=self.mock_backend,
@@ -296,15 +326,22 @@ class TestApplyCorrectionEndpoint:
 
     def test_child_correction_targets_requested_sub_page_only(self) -> None:
         job = _make_job(pipeline_mode="layout")
+        parent_image = np.arange(32 * 32 * 3, dtype=np.uint8).reshape(32, 32, 3)
+        ok, encoded = cv2.imencode(".tiff", parent_image)
+        assert ok
+        self.mock_backend.get_bytes.return_value = encoded.tobytes()
         child = _make_page(
             page_id="child-p1",
             sub_page_index=1,
             status="pending_human_correction",
-            output_image_uri="s3://bucket/child-1.tiff",
+            output_image_uri=None,
         )
         child_lineage = _make_lineage(
             lineage_id="lin-child-1",
-            output_image_uri="s3://bucket/child-1.tiff",
+            sub_page_index=1,
+            output_image_uri=None,
+            otiff_uri="s3://bucket/raw-parent.tiff",
+            human_correction_fields={"source_artifact_uri": "s3://bucket/norm-parent.tiff"},
         )
 
         session = _make_session(job=job, first_results=[child, child_lineage])
@@ -316,7 +353,11 @@ class TestApplyCorrectionEndpoint:
         ) as mock_advance:
             r = self.client.post(
                 "/v1/jobs/job-001/pages/1/correction?sub_page_index=1",
-                json=_DEFAULT_BODY,
+                json={
+                    "selection_mode": "quad",
+                    "quad_points": [[8, 6], [20, 4], [22, 22], [6, 24]],
+                    "deskew_angle": None,
+                },
             )
 
         assert r.status_code == 200
@@ -326,8 +367,66 @@ class TestApplyCorrectionEndpoint:
             from_state="pending_human_correction",
             to_state="layout_detection",
         )
-        assert child.output_image_uri == "s3://bucket/child-1_corrected.tiff"
-        assert child_lineage.output_image_uri == "s3://bucket/child-1_corrected.tiff"
+        self.mock_backend.get_bytes.assert_called_with("s3://bucket/norm-parent.tiff")
+        assert child.output_image_uri == "s3://bucket/jobs/job-001/corrected/1_1.tiff"
+        assert child_lineage.output_image_uri == "s3://bucket/jobs/job-001/corrected/1_1.tiff"
+        written_uri, written_bytes = self.mock_backend.put_bytes.call_args.args
+        assert written_uri == "s3://bucket/jobs/job-001/corrected/1_1.tiff"
+        decoded = cv2.imdecode(np.frombuffer(written_bytes, dtype=np.uint8), cv2.IMREAD_UNCHANGED)
+        assert decoded is not None
+        expected, _, _ = four_point_transform(
+            parent_image,
+            [(8.0, 6.0), (20.0, 4.0), (22.0, 22.0), (6.0, 24.0)],
+        )
+        assert np.array_equal(decoded, expected)
+        assert child_lineage.human_correction_fields["selection_mode"] == "quad"
+        assert child_lineage.human_correction_fields["quad_points"] == [
+            [8, 6],
+            [20, 4],
+            [22, 22],
+            [6, 24],
+        ]
+
+    def test_apply_correction_uses_requested_source_artifact_uri(self) -> None:
+        job = _make_job(pipeline_mode="layout")
+        page = _make_page(
+            status="pending_human_correction",
+            output_image_uri="s3://bucket/norm.tiff",
+            input_image_uri="s3://bucket/input.tiff",
+        )
+        lineage = _make_lineage(
+            output_image_uri="s3://bucket/norm.tiff",
+            otiff_uri="s3://bucket/original.tiff",
+        )
+        session = _make_session(job=job, first_results=[page, lineage])
+        self._inject(session)
+
+        with patch("services.eep.app.correction.apply.advance_page_state", return_value=True):
+            r = self.client.post(
+                "/v1/jobs/job-001/pages/1/correction",
+                json={**_DEFAULT_BODY, "source_artifact_uri": "s3://bucket/original.tiff"},
+            )
+
+        assert r.status_code == 200
+        self.mock_backend.get_bytes.assert_called_with("s3://bucket/original.tiff")
+        assert page.output_image_uri == "s3://bucket/original_corrected.tiff"
+        assert lineage.output_image_uri == "s3://bucket/original_corrected.tiff"
+        assert lineage.human_correction_fields["source_artifact_uri"] == "s3://bucket/original.tiff"
+
+    def test_invalid_requested_source_artifact_uri_returns_422(self) -> None:
+        job = _make_job(pipeline_mode="layout")
+        page = _make_page(status="pending_human_correction")
+        lineage = _make_lineage()
+        session = _make_session(job=job, first_results=[page, lineage])
+        self._inject(session)
+
+        r = self.client.post(
+            "/v1/jobs/job-001/pages/1/correction",
+            json={**_DEFAULT_BODY, "source_artifact_uri": "s3://bucket/not-allowed.tiff"},
+        )
+
+        assert r.status_code == 422
+        assert "source_artifact_uri" in r.json()["detail"]
 
     # ── Error cases ───────────────────────────────────────────────────────────
 
@@ -416,8 +515,12 @@ class TestApplyCorrectionEndpoint:
     def test_missing_source_uri_returns_error(self) -> None:
         """Page with no output_image_uri cannot have artifact copied; returns 500."""
         job = _make_job()
-        page = _make_page(status="pending_human_correction", output_image_uri=None)
-        lineage = _make_lineage(output_image_uri=None)
+        page = _make_page(
+            status="pending_human_correction",
+            output_image_uri=None,
+            input_image_uri=None,
+        )
+        lineage = _make_lineage(output_image_uri=None, otiff_uri=None)
 
         session = _make_session(job=job, first_results=[page, lineage])
         self._inject(session)
@@ -445,7 +548,11 @@ class TestApplyCorrectionEndpoint:
 
         assert r.status_code == 200
         self.mock_backend.get_bytes.assert_called_once_with("s3://b/p.tiff")
-        self.mock_backend.put_bytes.assert_called_once_with("s3://b/p_corrected.tiff", b"artifact")
+        self.mock_backend.put_bytes.assert_called_once()
+        put_uri, put_bytes = self.mock_backend.put_bytes.call_args.args
+        assert put_uri == "s3://b/p_corrected.tiff"
+        assert isinstance(put_bytes, bytes)
+        assert put_bytes
 
     # ── Persistence checks ────────────────────────────────────────────────────
 

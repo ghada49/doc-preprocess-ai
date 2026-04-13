@@ -71,6 +71,7 @@ export function LayoutOverlay({
   );
   const [imageError, setImageError] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
+  const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
 
   const imageQuery = useArtifactPreview(imageUri);
   const layoutQuery = useArtifactJson<LayoutAdjudicationResult>(layoutUri);
@@ -266,19 +267,27 @@ export function LayoutOverlay({
                         if (!box) return null;
 
                         const config = REGION_STYLES[region.type];
+                        const isSelected = selectedRegionId === region.id;
                         return (
                           <div
                             key={region.id}
-                            className="absolute overflow-hidden rounded-sm border-2"
+                            className="pointer-events-auto absolute overflow-hidden rounded-sm border-2 cursor-pointer transition-shadow"
                             style={{
                               left: box.left,
                               top: box.top,
                               width: box.width,
                               height: box.height,
                               borderColor: config.color,
-                              backgroundColor: hexToRgba(config.color, 0.12),
-                              boxShadow: `0 0 0 1px ${hexToRgba(config.color, 0.25)}`,
+                              backgroundColor: hexToRgba(config.color, isSelected ? 0.28 : 0.12),
+                              boxShadow: isSelected
+                                ? `0 0 0 2px ${config.color}, 0 0 0 4px ${hexToRgba(config.color, 0.35)}`
+                                : `0 0 0 1px ${hexToRgba(config.color, 0.25)}`,
                             }}
+                            onClick={() =>
+                              setSelectedRegionId((prev) =>
+                                prev === region.id ? null : region.id
+                              )
+                            }
                           >
                             <div
                               className="absolute left-0 top-0 max-w-full truncate rounded-br-md px-1.5 py-0.5 text-[10px] font-semibold leading-4 text-white shadow-sm"
@@ -315,6 +324,12 @@ export function LayoutOverlay({
             </div>
 
             <div className="space-y-4">
+              <RegionTextPanel
+                regions={regions}
+                selectedRegionId={selectedRegionId}
+                onSelectRegion={setSelectedRegionId}
+              />
+
               <Panel title="Decision Panel">
                 <Metric label="Decision source" value={sourceLabel(source)} />
                 {layoutInput && (
@@ -440,6 +455,74 @@ export function LayoutOverlay({
         )}
       </CardContent>
     </Card>
+  );
+}
+
+function RegionTextPanel({
+  regions,
+  selectedRegionId,
+  onSelectRegion,
+}: {
+  regions: LayoutRegion[];
+  selectedRegionId: string | null;
+  onSelectRegion: (id: string | null) => void;
+}) {
+  const textRegions = regions.filter((r) => r.text);
+  const scrollRefs = useRef<Map<string, HTMLDivElement>>(new Map());
+
+  useEffect(() => {
+    if (!selectedRegionId) return;
+    const el = scrollRefs.current.get(selectedRegionId);
+    el?.scrollIntoView({ block: "nearest", behavior: "smooth" });
+  }, [selectedRegionId]);
+
+  return (
+    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+      <p className="mb-3 text-sm font-semibold text-slate-900">Extracted Text</p>
+      {textRegions.length === 0 ? (
+        <p className="text-xs text-slate-400">No text regions in this layout.</p>
+      ) : (
+        <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
+          {textRegions.map((region) => {
+            const config = REGION_STYLES[region.type];
+            const isSelected = selectedRegionId === region.id;
+            return (
+              <div
+                key={region.id}
+                ref={(el) => {
+                  if (el) scrollRefs.current.set(region.id, el);
+                  else scrollRefs.current.delete(region.id);
+                }}
+                className="cursor-pointer rounded-lg border-2 bg-white px-3 py-2 transition-colors"
+                style={{
+                  borderColor: isSelected ? config.color : "transparent",
+                  outline: isSelected ? `1px solid ${hexToRgba(config.color, 0.35)}` : "none",
+                  backgroundColor: isSelected ? hexToRgba(config.color, 0.06) : "white",
+                  boxShadow: isSelected ? `0 0 0 3px ${hexToRgba(config.color, 0.15)}` : "none",
+                }}
+                onClick={() => onSelectRegion(isSelected ? null : region.id)}
+              >
+                <div className="mb-1 flex items-center gap-1.5">
+                  <span
+                    className="h-2 w-2 shrink-0 rounded-full"
+                    style={{ backgroundColor: config.color }}
+                  />
+                  <span className="text-[11px] font-semibold text-slate-500">
+                    {config.label}
+                  </span>
+                  <span className="text-[11px] text-slate-400">
+                    {formatScore(region.confidence, 2)}
+                  </span>
+                </div>
+                <p className="select-text whitespace-pre-wrap break-words text-xs text-slate-800">
+                  {region.text}
+                </p>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
   );
 }
 

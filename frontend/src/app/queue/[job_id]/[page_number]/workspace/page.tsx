@@ -24,6 +24,7 @@ export default function UserWorkspacePage() {
     >
       <div className="h-full">
         <CorrectionWorkspace
+          key={`${job_id}:${page_number}:${subPageIndex ?? "root"}`}
           jobId={job_id}
           pageNumber={parseInt(page_number, 10)}
           subPageIndex={Number.isNaN(subPageIndex) ? undefined : subPageIndex}

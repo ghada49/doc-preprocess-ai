@@ -293,6 +293,8 @@ export interface BranchOutputs {
 }
 
 export type PageStructure = "single" | "spread";
+export type SelectionMode = "rect" | "quad";
+export type QuadPoint = [number, number];
 
 export interface CorrectionWorkspaceChildPage {
   sub_page_index: number;
@@ -315,9 +317,13 @@ export interface CorrectionWorkspaceDetail {
   branch_outputs: BranchOutputs;
   suggested_page_structure: PageStructure;
   child_pages: CorrectionWorkspaceChildPage[];
+  current_selection_mode: SelectionMode;
+  current_quad_points: QuadPoint[] | null;
   current_crop_box: [number, number, number, number] | null;
   current_deskew_angle: number | null;
   current_split_x: number | null;
+  page_image_width: number | null;
+  page_image_height: number | null;
 }
 
 export interface SubmitCorrectionRequest {
@@ -325,6 +331,10 @@ export interface SubmitCorrectionRequest {
   deskew_angle: number | null;
   page_structure?: PageStructure | null;
   split_x: number | null;
+  split_x_natural_width?: number | null;
+  selection_mode?: SelectionMode | null;
+  quad_points?: QuadPoint[] | null;
+  source_artifact_uri?: string | null;
   notes?: string | null;
 }
 

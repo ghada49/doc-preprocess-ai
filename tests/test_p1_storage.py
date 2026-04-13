@@ -16,6 +16,7 @@ import os
 import sys
 from builtins import __import__ as builtin_import
 from collections.abc import Iterator, Mapping
+from unittest.mock import MagicMock
 
 import boto3
 import pytest
@@ -140,6 +141,31 @@ class TestS3Backend:
     def test_missing_key_raises(self) -> None:
         with pytest.raises(ValueError, match="Missing object key"):
             S3Backend._parse_uri("s3://bucket-only")
+
+    def test_client_uses_explicit_timeout_config(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_client(service_name: str, **kwargs: object) -> MagicMock:
+            captured["service_name"] = service_name
+            captured.update(kwargs)
+            return MagicMock()
+
+        monkeypatch.setenv("S3_CONNECT_TIMEOUT_SECONDS", "7")
+        monkeypatch.setenv("S3_READ_TIMEOUT_SECONDS", "33")
+        monkeypatch.setenv("S3_MAX_RETRIES", "4")
+        monkeypatch.setenv("S3_MAX_POOL_CONNECTIONS", "22")
+        monkeypatch.setattr("boto3.client", fake_client)
+
+        backend = S3Backend()
+
+        assert backend._client is not None
+        assert captured["service_name"] == "s3"
+        cfg = captured["config"]
+        assert getattr(cfg, "connect_timeout") == 7
+        assert getattr(cfg, "read_timeout") == 33
+        assert getattr(cfg, "retries").get("mode") == "standard"
+        assert getattr(cfg, "retries").get("max_attempts") == 4
+        assert getattr(cfg, "max_pool_connections") == 22
 
 
 # ── S3Backend._parse_uri (static; no mock needed) ─────────────────────────────

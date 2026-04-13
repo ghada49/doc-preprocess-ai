@@ -7,13 +7,12 @@ import {
   fetchArtifactPreviewBlobUrl,
   fetchArtifactJson,
 } from "@/lib/api/artifacts";
+import {
+  artifactPreviewQueryKey,
+  artifactReadQueryKey,
+} from "./artifact-query-key";
 
-export function artifactReadQueryKey(
-  uri: string | null,
-  expiresIn = 300
-) {
-  return ["artifact-read", uri, expiresIn] as const;
-}
+export { artifactPreviewQueryKey, artifactReadQueryKey };
 
 export function useArtifactRead(
   uri: string | null,
@@ -49,16 +48,21 @@ export function useArtifactJson<T>(
  */
 export function useArtifactPreview(
   uri: string | null,
-  options: { pageIndex?: number; maxWidth?: number } = {}
+  options: { pageIndex?: number; maxWidth?: number } = {},
+  queryOptions: {
+    scopeKey?: unknown;
+    staleTimeMs?: number;
+    gcTimeMs?: number;
+    refetchOnMount?: boolean | "always";
+  } = {}
 ) {
-  const optionsKey = JSON.stringify(options);
-
   const result = useQuery({
-    queryKey: ["artifact-preview", uri, optionsKey] as const,
+    queryKey: artifactPreviewQueryKey(uri, options, queryOptions.scopeKey),
     queryFn: () => fetchArtifactPreviewBlobUrl(uri!, options),
     enabled: Boolean(uri),
-    staleTime: 5 * 60 * 1000,
-    gcTime: 10 * 60 * 1000,
+    staleTime: queryOptions.staleTimeMs ?? 5 * 60 * 1000,
+    gcTime: queryOptions.gcTimeMs ?? 10 * 60 * 1000,
+    refetchOnMount: queryOptions.refetchOnMount,
   });
 
   // Revoke the blob URL when it changes or the component unmounts.

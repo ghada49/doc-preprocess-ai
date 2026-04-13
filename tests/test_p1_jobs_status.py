@@ -228,20 +228,55 @@ class TestJobSummaryValues:
         assert r.json()["summary"]["page_count"] == 5
 
     def test_accepted_count(self, client_for: Any) -> None:
-        r = client_for(_job(accepted_count=3), [_page()]).get("/v1/jobs/job-001")
+        pages = [
+            _page(page_id="p1", status="accepted"),
+            _page(page_id="p2", page_number=2, status="accepted"),
+            _page(page_id="p3", page_number=3, status="accepted"),
+        ]
+        r = client_for(_job(accepted_count=99), pages).get("/v1/jobs/job-001")
         assert r.json()["summary"]["accepted_count"] == 3
 
     def test_review_count(self, client_for: Any) -> None:
-        r = client_for(_job(review_count=1), [_page()]).get("/v1/jobs/job-001")
+        r = client_for(_job(review_count=99), [_page(status="review")]).get("/v1/jobs/job-001")
         assert r.json()["summary"]["review_count"] == 1
 
     def test_failed_count(self, client_for: Any) -> None:
-        r = client_for(_job(failed_count=2), [_page()]).get("/v1/jobs/job-001")
+        pages = [
+            _page(page_id="p1", status="failed"),
+            _page(page_id="p2", page_number=2, status="failed"),
+        ]
+        r = client_for(_job(failed_count=99), pages).get("/v1/jobs/job-001")
         assert r.json()["summary"]["failed_count"] == 2
 
     def test_pending_human_correction_count(self, client_for: Any) -> None:
-        r = client_for(_job(pending_human_correction_count=1), [_page()]).get("/v1/jobs/job-001")
+        r = client_for(
+            _job(pending_human_correction_count=99),
+            [_page(status="pending_human_correction")],
+        ).get("/v1/jobs/job-001")
         assert r.json()["summary"]["pending_human_correction_count"] == 1
+
+    def test_counts_ignore_stale_job_row_values(self, client_for: Any) -> None:
+        pages = [
+            _page(page_id="p1", status="layout_detection"),
+            _page(page_id="p2", page_number=2, status="accepted"),
+            _page(page_id="p3", page_number=3, status="review"),
+            _page(page_id="p4", page_number=4, status="failed"),
+            _page(page_id="parent", page_number=5, status="split"),
+        ]
+        r = client_for(
+            _job(
+                accepted_count=10,
+                review_count=10,
+                failed_count=10,
+                pending_human_correction_count=10,
+            ),
+            pages,
+        ).get("/v1/jobs/job-001")
+        summary = r.json()["summary"]
+        assert summary["accepted_count"] == 1
+        assert summary["review_count"] == 1
+        assert summary["failed_count"] == 1
+        assert summary["pending_human_correction_count"] == 0
 
     def test_completed_at_none(self, client_for: Any) -> None:
         r = client_for(_job(), [_page()]).get("/v1/jobs/job-001")

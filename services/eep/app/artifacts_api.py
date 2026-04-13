@@ -383,10 +383,19 @@ def artifact_preview(
     uri = body.uri
 
     # ── Validate URI ──────────────────────────────────────────────────────────
-    try:
-        _uri_to_s3_key(uri, _BUCKET)
-    except ValueError as exc:
-        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    # s3:// URIs are validated for bucket correctness; file:// URIs are allowed
+    # for local development and CI where artifacts live on the local filesystem.
+    _parsed_uri = urlparse(uri)
+    if _parsed_uri.scheme == "s3":
+        try:
+            _uri_to_s3_key(uri, _BUCKET)
+        except ValueError as exc:
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    elif _parsed_uri.scheme not in ("file",):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Unsupported URI scheme {_parsed_uri.scheme!r}; expected s3:// or file://.",
+        )
 
     # ── Authorize ─────────────────────────────────────────────────────────────
     _assert_uri_access(db, uri, user)

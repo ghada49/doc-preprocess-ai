@@ -38,9 +38,10 @@ Exported:
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
-from collections.abc import Sequence
+from collections.abc import Awaitable, Callable, Sequence
 from dataclasses import dataclass
 from typing import Any
 
@@ -337,7 +338,9 @@ async def evaluate_layout_adjudication(
     mime_type: str,
     material_type: str,
     image_uri: str,
+    image_bytes_loader: Callable[[], Awaitable[bytes | None]] | None = None,
     config: LayoutGateConfig | None = None,
+    google_call_timeout_seconds: float = 120.0,
 ) -> LayoutAdjudicationResult:
     """
     Run the full layout adjudication gate (P3.2 / spec Section 7.4–7.5).
@@ -358,7 +361,8 @@ async def evaluate_layout_adjudication(
         iep2a_result   — LayoutDetectResponse from IEP2A, or None if it failed.
         iep2b_result   — LayoutDetectResponse from IEP2B, or None if it failed.
         google_client  — initialized CallGoogleDocumentAI instance, or None.
-        image_bytes    — raw page image bytes passed to Google (if available).
+        image_bytes    — raw page image bytes passed to Google (if already loaded).
+        image_bytes_loader — lazy async loader used only when Google fallback is needed.
         mime_type      — MIME type of image_bytes (e.g. "image/tiff").
         material_type  — document material type hint ("book" / "newspaper" / …).
         image_uri      — URI of the page image (used as fallback / for logging).
@@ -444,13 +448,44 @@ async def evaluate_layout_adjudication(
         )
 
     # Call Google Document AI.
+    google_image_bytes = image_bytes
+    if google_image_bytes is None and image_bytes_loader is not None:
+        google_image_bytes = await image_bytes_loader()
+        if google_image_bytes is None and not image_uri.startswith("gs://"):
+            raise RuntimeError(
+                f"Google fallback requires image bytes for non-GCS artifact {image_uri!r}, "
+                "but no bytes were loaded."
+            )
+
     t_google_start = time.monotonic()
     try:
-        google_response = await google_client.process_layout(
-            image_uri=image_uri,
-            material_type=material_type,
-            image_bytes=image_bytes,
-            mime_type=mime_type,
+        google_response = await asyncio.wait_for(
+            google_client.process_layout(
+                image_uri=image_uri,
+                material_type=material_type,
+                image_bytes=google_image_bytes,
+                mime_type=mime_type,
+            ),
+            timeout=google_call_timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        google_elapsed = (time.monotonic() - t_google_start) * 1000.0
+        logger.warning(
+            "layout_adjudication: Google call timed out after %.1fs — using local fallback, "
+            "image_uri=%s",
+            google_call_timeout_seconds,
+            image_uri,
+        )
+        return _build_local_fallback_result(
+            iep2a_result=iep2a_result,
+            iep2b_result=iep2b_result,
+            iep2a_region_count=iep2a_region_count,
+            iep2b_region_count=iep2b_region_count,
+            google_attempted=True,
+            google_error=f"Google call timeout after {google_call_timeout_seconds:.1f}s",
+            google_response_time_ms=google_elapsed,
+            google_metadata={"google_available": True},
+            t_start=t_start,
         )
     except Exception as exc:  # noqa: BLE001
         google_elapsed = (time.monotonic() - t_google_start) * 1000.0
@@ -474,8 +509,13 @@ async def evaluate_layout_adjudication(
     google_elapsed = (time.monotonic() - t_google_start) * 1000.0
 
     if not google_response:
+        # Surface the real reason: SDK missing, permanent error, or retries
+        # exhausted each produce a distinct _last_process_error string.
+        last_err = getattr(google_client, "_last_process_error", None)
+        google_error_msg = last_err if last_err else "Google Document AI returned no response"
         logger.warning(
-            "layout_adjudication: Google returned no response — using local fallback, image_uri=%s",
+            "layout_adjudication: Google returned no response — %s, image_uri=%s",
+            google_error_msg,
             image_uri,
         )
         return _build_local_fallback_result(
@@ -484,7 +524,7 @@ async def evaluate_layout_adjudication(
             iep2a_region_count=iep2a_region_count,
             iep2b_region_count=iep2b_region_count,
             google_attempted=True,
-            google_error="Google Document AI returned no response",
+            google_error=google_error_msg,
             google_response_time_ms=google_elapsed,
             google_metadata={"google_available": True},
             t_start=t_start,
