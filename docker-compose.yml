@@ -230,7 +230,22 @@ services:
         condition: service_started
       minio:
         condition: service_started
-    command: ["uvicorn", "services.eep_worker.app.main:app", "--host", "0.0.0.0", "--port", "9100", "--reload"]
+    command:
+      [
+        "uvicorn",
+        "services.eep_worker.app.main:app",
+        "--host",
+        "0.0.0.0",
+        "--port",
+        "9100",
+        "--reload",
+        "--reload-dir",
+        "/app/services/eep_worker",
+        "--reload-dir",
+        "/app/services/eep/app",
+        "--reload-dir",
+        "/app/shared",
+      ]
 
   # ── EEP recovery ─────────────────────────────────────────────────────────────
 

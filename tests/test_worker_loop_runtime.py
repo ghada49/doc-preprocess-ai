@@ -12,10 +12,15 @@ Each test verifies state transitions and routing logic.
 
 from __future__ import annotations
 
+import threading
+import time
 import uuid
 from dataclasses import dataclass, field
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+import numpy as np
 
 # ── Mock Objects ─────────────────────────────────────────────────────────────
 
@@ -215,6 +220,170 @@ class TestRetryLogic:
 
         for state in terminal_states:
             assert state in ack_only_states
+
+
+class TestLayoutArtifactIoReliability:
+    @pytest.mark.asyncio
+    async def test_read_artifact_bytes_retries_and_succeeds(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from services.eep_worker.app import worker_loop
+
+        class _Backend:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            def get_bytes(self, uri: str) -> bytes:
+                self.calls += 1
+                if self.calls == 1:
+                    raise OSError(f"temporary read failure for {uri}")
+                return b"layout-bytes"
+
+        backend = _Backend()
+        monkeypatch.setattr(worker_loop, "get_backend", lambda uri: backend)
+
+        data = await worker_loop._read_artifact_bytes_with_retry(
+            uri="s3://bucket/jobs/j1/downsampled/1.tiff",
+            timeout_seconds=1.0,
+            attempts=2,
+            backoff_seconds=0.0,
+            job_id="job-123",
+            page_number=1,
+            context="layout_google_fallback",
+        )
+
+        assert data == b"layout-bytes"
+        assert backend.calls == 2
+
+    @pytest.mark.asyncio
+    async def test_read_artifact_bytes_times_out(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from services.eep_worker.app import worker_loop
+
+        class _Backend:
+            def get_bytes(self, uri: str) -> bytes:
+                time.sleep(0.05)
+                return b"late"
+
+        monkeypatch.setattr(worker_loop, "get_backend", lambda uri: _Backend())
+
+        with pytest.raises(RuntimeError, match="could not read artifact bytes"):
+            await worker_loop._read_artifact_bytes_with_retry(
+                uri="s3://bucket/jobs/j1/downsampled/1.tiff",
+                timeout_seconds=0.01,
+                attempts=1,
+                backoff_seconds=0.0,
+                job_id="job-123",
+                page_number=1,
+                context="layout_google_fallback",
+            )
+
+    @pytest.mark.asyncio
+    async def test_prepare_layout_input_artifact_reuses_cached_downsample_without_source_read(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from services.eep_worker.app import worker_loop
+
+        page = MockJobPage(
+            status="layout_detection",
+            input_image_uri="s3://bucket/input.tiff",
+            output_image_uri="s3://bucket/output.tiff",
+        )
+        job = MockJob(job_id="job-123")
+        lineage = SimpleNamespace(
+            gate_results={
+                "downsample": {
+                    "source_artifact_uri": "s3://bucket/output.tiff",
+                    "downsampled_artifact_uri": "s3://bucket/jobs/job-123/downsampled/1.tiff",
+                    "original_width": 1000,
+                    "original_height": 2000,
+                    "downsampled_width": 500,
+                    "downsampled_height": 1000,
+                }
+            },
+            human_corrected=False,
+            split_source=False,
+        )
+        config = SimpleNamespace(
+            layout_artifact_io_timeout_seconds=1.0,
+            layout_artifact_io_attempts=1,
+            layout_artifact_io_backoff_seconds=0.0,
+        )
+
+        monkeypatch.setattr(worker_loop, "get_backend", lambda uri: pytest.fail("unexpected storage read"))
+        monkeypatch.setattr(worker_loop, "_commit", lambda session: pytest.fail("unexpected commit"))
+
+        layout_image_uri, layout_input = await worker_loop._prepare_layout_input_artifact(
+            session=object(),
+            page=page,
+            job=job,
+            lineage=lineage,
+            source_page_artifact_uri="s3://bucket/output.tiff",
+            config=config,
+        )
+
+        assert layout_image_uri == "s3://bucket/jobs/job-123/downsampled/1.tiff"
+        assert layout_input.input_source == "downsampled"
+        assert layout_input.layout_input_width == 500
+        assert layout_input.layout_input_height == 1000
+
+    @pytest.mark.asyncio
+    async def test_prepare_layout_input_artifact_commits_on_main_thread(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from services.eep_worker.app import worker_loop
+        from services.eep_worker.app.downsample_step import DownsampleResult
+
+        page = MockJobPage(
+            status="layout_detection",
+            input_image_uri="s3://bucket/input.tiff",
+            output_image_uri="s3://bucket/output.tiff",
+        )
+        job = MockJob(job_id="job-123")
+        lineage = SimpleNamespace(gate_results={}, human_corrected=False, split_source=False)
+        config = SimpleNamespace(
+            layout_artifact_io_timeout_seconds=1.0,
+            layout_artifact_io_attempts=1,
+            layout_artifact_io_backoff_seconds=0.0,
+        )
+        commit_threads: list[int] = []
+
+        monkeypatch.setattr(
+            worker_loop,
+            "_read_artifact_bytes_with_retry",
+            AsyncMock(return_value=b"source-bytes"),
+        )
+        monkeypatch.setattr(
+            worker_loop,
+            "_decode_image_array",
+            lambda image_bytes, *, uri: np.zeros((20, 10, 3), dtype=np.uint8),
+        )
+        monkeypatch.setattr(worker_loop, "get_backend", lambda uri: MagicMock())
+        monkeypatch.setattr(
+            worker_loop,
+            "run_downsample_step",
+            lambda **kwargs: DownsampleResult(
+                source_artifact_uri="s3://bucket/output.tiff",
+                downsampled_artifact_uri="s3://bucket/jobs/job-123/downsampled/1.tiff",
+                original_width=10,
+                original_height=20,
+                downsampled_width=10,
+                downsampled_height=20,
+                scale_factor=1.0,
+                processing_time_ms=1.0,
+            ),
+        )
+        monkeypatch.setattr(worker_loop, "_commit", lambda session: commit_threads.append(threading.get_ident()))
+
+        await worker_loop._prepare_layout_input_artifact(
+            session=object(),
+            page=page,
+            job=job,
+            lineage=lineage,
+            source_page_artifact_uri="s3://bucket/output.tiff",
+            config=config,
+        )
+
+        assert commit_threads == [threading.get_ident()]
 
 
 # ── Layout No-Review Path ──────────────────────────────────────────────────

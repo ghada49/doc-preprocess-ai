@@ -112,6 +112,9 @@ class WorkerConfig:
     poll_timeout_seconds: float
     max_concurrent_pages: int
     max_task_retries: int
+    layout_artifact_io_timeout_seconds: float
+    layout_artifact_io_attempts: int
+    layout_artifact_io_backoff_seconds: float
     iep1a_endpoint: str
     iep1b_endpoint: str
     iep1d_endpoint: str
@@ -119,6 +122,7 @@ class WorkerConfig:
     iep2b_endpoint: str
     backend: GPUBackend
     iep1d_execution_timeout_seconds: float
+    iep2_call_timeout_seconds: float
     iep1a_circuit_breaker: CircuitBreaker
     iep1b_circuit_breaker: CircuitBreaker
     iep1d_circuit_breaker: CircuitBreaker
@@ -186,6 +190,15 @@ def build_worker_config(worker_id: str | None = None) -> WorkerConfig:
         poll_timeout_seconds=_env_float("WORKER_POLL_TIMEOUT_SECONDS", 5.0),
         max_concurrent_pages=_env_int("MAX_CONCURRENT_PAGES", 20),
         max_task_retries=_env_int("MAX_TASK_RETRIES", MAX_TASK_RETRIES),
+        layout_artifact_io_timeout_seconds=_env_float(
+            "LAYOUT_ARTIFACT_IO_TIMEOUT_SECONDS",
+            45.0,
+        ),
+        layout_artifact_io_attempts=max(1, _env_int("LAYOUT_ARTIFACT_IO_ATTEMPTS", 3)),
+        layout_artifact_io_backoff_seconds=_env_float(
+            "LAYOUT_ARTIFACT_IO_BACKOFF_SECONDS",
+            1.0,
+        ),
         iep1a_endpoint=_service_endpoint("IEP1A_URL", "http://iep1a:8001", "/v1/geometry"),
         iep1b_endpoint=_service_endpoint("IEP1B_URL", "http://iep1b:8002", "/v1/geometry"),
         iep1d_endpoint=_service_endpoint("IEP1D_URL", "http://iep1d:8003", "/v1/rectify"),
@@ -193,6 +206,10 @@ def build_worker_config(worker_id: str | None = None) -> WorkerConfig:
         iep2b_endpoint=_service_endpoint("IEP2B_URL", "http://iep2b:8005", "/v1/layout-detect"),
         backend=backend,
         iep1d_execution_timeout_seconds=iep1d_execution_timeout,
+        iep2_call_timeout_seconds=_env_float(
+            "IEP2_CALL_TIMEOUT_SECONDS",
+            cold_start_timeout + execution_timeout,
+        ),
         iep1a_circuit_breaker=CircuitBreaker("iep1a", cb_cfg),
         iep1b_circuit_breaker=CircuitBreaker("iep1b", cb_cfg),
         iep1d_circuit_breaker=CircuitBreaker("iep1d", cb_cfg),
@@ -227,6 +244,78 @@ def _artifact_uri(
     stem = _page_artifact_stem(page_number, sub_page_index)
     root = _job_artifact_root(input_uri, job_id)
     return f"{root}/{section}/{stem}{filename_suffix}"
+
+
+async def _read_artifact_bytes_with_retry(
+    *,
+    uri: str,
+    timeout_seconds: float,
+    attempts: int,
+    backoff_seconds: float,
+    job_id: str,
+    page_number: int,
+    context: str,
+) -> bytes:
+    last_error: Exception | None = None
+    for attempt in range(1, attempts + 1):
+        try:
+            logger.info(
+                "worker_loop: reading artifact bytes job=%s page=%d context=%s attempt=%d/%d uri=%s timeout=%.1fs",
+                job_id,
+                page_number,
+                context,
+                attempt,
+                attempts,
+                uri,
+                timeout_seconds,
+            )
+            data = await asyncio.wait_for(
+                asyncio.to_thread(get_backend(uri).get_bytes, uri),
+                timeout=timeout_seconds,
+            )
+            logger.info(
+                "worker_loop: loaded artifact bytes job=%s page=%d context=%s bytes=%d uri=%s",
+                job_id,
+                page_number,
+                context,
+                len(data),
+                uri,
+            )
+            return data
+        except asyncio.TimeoutError:
+            last_error = TimeoutError(
+                f"artifact read timed out after {timeout_seconds:.1f}s for {uri}"
+            )
+            logger.warning(
+                "worker_loop: artifact read timeout job=%s page=%d context=%s attempt=%d/%d uri=%s timeout=%.1fs",
+                job_id,
+                page_number,
+                context,
+                attempt,
+                attempts,
+                uri,
+                timeout_seconds,
+            )
+        except Exception as exc:  # noqa: BLE001
+            last_error = exc
+            logger.warning(
+                "worker_loop: artifact read failed job=%s page=%d context=%s attempt=%d/%d uri=%s error=%s",
+                job_id,
+                page_number,
+                context,
+                attempt,
+                attempts,
+                uri,
+                exc,
+            )
+
+        if attempt < attempts and backoff_seconds > 0:
+            await asyncio.sleep(backoff_seconds * attempt)
+
+    assert last_error is not None
+    raise RuntimeError(
+        f"could not read artifact bytes for {context} after {attempts} attempt(s): {uri} ({last_error})"
+    ) from last_error
 
 
 def _encode_png(image: Any) -> bytes:
@@ -1051,19 +1140,16 @@ def _build_layout_input_metadata(
     )
 
 
-def _prepare_layout_input_artifact(
+async def _prepare_layout_input_artifact(
     *,
     session: Session,
     page: JobPage,
     job: Job,
     lineage: PageLineage,
     source_page_artifact_uri: str,
+    config: WorkerConfig,
 ) -> tuple[str, LayoutInputMetadata]:
     """Return the analyzed artifact URI plus persisted metadata for this layout run."""
-    source_bytes = get_backend(source_page_artifact_uri).get_bytes(source_page_artifact_uri)
-    source_image = _decode_image_array(source_bytes, uri=source_page_artifact_uri)
-    source_height, source_width = source_image.shape[:2]
-
     downsample_gate = _extract_downsample_gate(lineage)
     if (
         downsample_gate is not None
@@ -1085,6 +1171,26 @@ def _prepare_layout_input_artifact(
             ),
         )
 
+    source_bytes = await _read_artifact_bytes_with_retry(
+        uri=source_page_artifact_uri,
+        timeout_seconds=config.layout_artifact_io_timeout_seconds,
+        attempts=config.layout_artifact_io_attempts,
+        backoff_seconds=config.layout_artifact_io_backoff_seconds,
+        job_id=job.job_id,
+        page_number=page.page_number,
+        context="layout_source_artifact",
+    )
+    try:
+        source_image = await asyncio.wait_for(
+            asyncio.to_thread(_decode_image_array, source_bytes, uri=source_page_artifact_uri),
+            timeout=config.layout_artifact_io_timeout_seconds,
+        )
+    except asyncio.TimeoutError as exc:
+        raise RetryableTaskError(
+            "layout source decode timed out "
+            f"after {config.layout_artifact_io_timeout_seconds:.1f}s for {source_page_artifact_uri}"
+        ) from exc
+
     downsample_uri = _artifact_uri(
         page.input_image_uri,
         job.job_id,
@@ -1093,12 +1199,22 @@ def _prepare_layout_input_artifact(
         page.sub_page_index,
         ".tiff",
     )
-    downsample_result = run_downsample_step(
-        full_res_image=source_image,
-        source_artifact_uri=source_page_artifact_uri,
-        output_uri=downsample_uri,
-        storage=get_backend(downsample_uri),
-    )
+    try:
+        downsample_result = await asyncio.wait_for(
+            asyncio.to_thread(
+                run_downsample_step,
+                full_res_image=source_image,
+                source_artifact_uri=source_page_artifact_uri,
+                output_uri=downsample_uri,
+                storage=get_backend(downsample_uri),
+            ),
+            timeout=config.layout_artifact_io_timeout_seconds,
+        )
+    except asyncio.TimeoutError as exc:
+        raise RetryableTaskError(
+            "layout downsample timed out "
+            f"after {config.layout_artifact_io_timeout_seconds:.1f}s for {source_page_artifact_uri}"
+        ) from exc
     existing_gate = lineage.gate_results or {}
     lineage.gate_results = {**existing_gate, "downsample": asdict(downsample_result)}
     _commit(session)
@@ -1270,13 +1386,20 @@ async def _run_layout(
         )
         return "ack"
 
-    layout_image_uri, layout_input = _prepare_layout_input_artifact(
-        session=session,
-        page=page,
-        job=job,
-        lineage=lineage,
-        source_page_artifact_uri=image_uri,
-    )
+    try:
+        layout_image_uri, layout_input = await _prepare_layout_input_artifact(
+            session=session,
+            page=page,
+            job=job,
+            lineage=lineage,
+            source_page_artifact_uri=image_uri,
+            config=config,
+        )
+    except RetryableTaskError:
+        raise
+    except Exception as exc:
+        raise RetryableTaskError(f"layout input preparation failed: {exc}") from exc
+
     downsample_gate = _extract_downsample_gate(lineage)
     if layout_input.input_source == "downsampled":
         logger.info(
@@ -1287,39 +1410,66 @@ async def _run_layout(
             image_uri,
         )
 
-    image_bytes: bytes | None = None
-    try:
-        image_bytes = get_backend(layout_image_uri).get_bytes(layout_image_uri)
-    except Exception:
-        logger.warning(
-            "worker_loop: could not load image bytes for Google fallback job=%s page=%d uri=%s",
-            job.job_id,
-            page.page_number,
-            layout_image_uri,
+    async def _load_google_fallback_bytes() -> bytes:
+        return await _read_artifact_bytes_with_retry(
+            uri=layout_image_uri,
+            timeout_seconds=config.layout_artifact_io_timeout_seconds,
+            attempts=config.layout_artifact_io_attempts,
+            backoff_seconds=config.layout_artifact_io_backoff_seconds,
+            job_id=job.job_id,
+            page_number=page.page_number,
+            context="layout_google_fallback",
         )
 
-    iep2a_result = await _call_layout_service(
-        service_name="iep2a",
-        endpoint=config.iep2a_endpoint,
-        job_id=job.job_id,
-        page_number=page.page_number,
-        sub_page_index=page.sub_page_index,
-        image_uri=layout_image_uri,
-        material_type=material_type,
-        backend=config.backend,
-        circuit_breaker=config.iep2a_circuit_breaker,
-    )
-    iep2b_result = await _call_layout_service(
-        service_name="iep2b",
-        endpoint=config.iep2b_endpoint,
-        job_id=job.job_id,
-        page_number=page.page_number,
-        sub_page_index=page.sub_page_index,
-        image_uri=layout_image_uri,
-        material_type=material_type,
-        backend=config.backend,
-        circuit_breaker=config.iep2b_circuit_breaker,
-    )
+    try:
+        iep2a_result = await asyncio.wait_for(
+            _call_layout_service(
+                service_name="iep2a",
+                endpoint=config.iep2a_endpoint,
+                job_id=job.job_id,
+                page_number=page.page_number,
+                sub_page_index=page.sub_page_index,
+                image_uri=layout_image_uri,
+                material_type=material_type,
+                backend=config.backend,
+                circuit_breaker=config.iep2a_circuit_breaker,
+            ),
+            timeout=config.iep2_call_timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "worker_loop: iep2a timed out after %.1fs job=%s page=%d",
+            config.iep2_call_timeout_seconds,
+            job.job_id,
+            page.page_number,
+        )
+        config.iep2a_circuit_breaker.record_failure(None)
+        iep2a_result = None
+
+    try:
+        iep2b_result = await asyncio.wait_for(
+            _call_layout_service(
+                service_name="iep2b",
+                endpoint=config.iep2b_endpoint,
+                job_id=job.job_id,
+                page_number=page.page_number,
+                sub_page_index=page.sub_page_index,
+                image_uri=layout_image_uri,
+                material_type=material_type,
+                backend=config.backend,
+                circuit_breaker=config.iep2b_circuit_breaker,
+            ),
+            timeout=config.iep2_call_timeout_seconds,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "worker_loop: iep2b timed out after %.1fs job=%s page=%d",
+            config.iep2_call_timeout_seconds,
+            job.job_id,
+            page.page_number,
+        )
+        config.iep2b_circuit_breaker.record_failure(None)
+        iep2b_result = None
 
     # Rescale IEP2A and IEP2B outputs back to canonical (original-resolution) coordinates.
     if layout_input.coordinate_rescaled and downsample_gate is not None:
@@ -1337,7 +1487,8 @@ async def _run_layout(
             image_uri=layout_image_uri,
             iep2a_result=iep2a_result,
             iep2b_result=iep2b_result,
-            image_bytes=image_bytes,
+            image_bytes=None,
+            image_bytes_loader=_load_google_fallback_bytes,
             mime_type=_mime_type_for_uri(layout_image_uri),
             total_processing_ms=(time.monotonic() - task_started_at) * 1000.0,
             output_layout_uri=None,
@@ -1504,35 +1655,82 @@ async def run_worker_loop(
         config.poll_timeout_seconds,
     )
 
-    while True:
-        try:
-            claimed = await asyncio.to_thread(
-                claim_task,
-                redis_client,
-                config.worker_id,
-                config.poll_timeout_seconds,
+    # task_id -> ClaimedTask map so the on_stale callback can call fail_task.
+    _claimed_tasks: dict[str, ClaimedTask] = {}
+
+    def _on_stale(report: Any) -> None:
+        for task_id in report.stale_task_ids:
+            claimed_stale = _claimed_tasks.pop(task_id, None)
+            if claimed_stale is None:
+                continue
+            logger.warning(
+                "worker_loop: watchdog stale — removing from queue "
+                "task=%s page_id=%s retry_count=%d",
+                task_id,
+                claimed_stale.task.page_id,
+                claimed_stale.task.retry_count,
             )
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logger.exception("worker_loop: claim_task failed; retrying")
-            await asyncio.sleep(1.0)
-            continue
-
-        if claimed is None:
-            continue
-
-        if watchdog is not None:
-            watchdog.register(claimed.task.task_id)
-
-        try:
-            async with WorkerSlotContext(redis_client):
-                await process_page_task(
-                    claimed,
-                    config,
-                    redis_client,
-                    session_factory=session_factory,
+            try:
+                fail_task(redis_client, claimed_stale, max_retries=config.max_task_retries)
+            except redis_lib.RedisError:
+                logger.exception(
+                    "worker_loop: could not remove stale task=%s from queue", task_id
                 )
-        finally:
+                continue
+            if claimed_stale.task.retry_count >= config.max_task_retries:
+                _mark_exhausted_task_failed(
+                    session_factory,
+                    job_id=claimed_stale.task.job_id,
+                    page_id=claimed_stale.task.page_id,
+                    reason="task_watchdog_timeout",
+                )
+
+    watchdog_task: asyncio.Task[None] | None = None
+    if watchdog is not None:
+        watchdog_task = asyncio.create_task(
+            watchdog.run_watch_loop(on_stale=_on_stale),
+            name="watchdog",
+        )
+
+    try:
+        while True:
+            try:
+                claimed = await asyncio.to_thread(
+                    claim_task,
+                    redis_client,
+                    config.worker_id,
+                    config.poll_timeout_seconds,
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("worker_loop: claim_task failed; retrying")
+                await asyncio.sleep(1.0)
+                continue
+
+            if claimed is None:
+                continue
+
             if watchdog is not None:
-                watchdog.deregister(claimed.task.task_id)
+                watchdog.register(claimed.task.task_id)
+                _claimed_tasks[claimed.task.task_id] = claimed
+
+            try:
+                async with WorkerSlotContext(redis_client):
+                    await process_page_task(
+                        claimed,
+                        config,
+                        redis_client,
+                        session_factory=session_factory,
+                    )
+            finally:
+                if watchdog is not None:
+                    watchdog.deregister(claimed.task.task_id)
+                    _claimed_tasks.pop(claimed.task.task_id, None)
+    finally:
+        if watchdog_task is not None:
+            watchdog_task.cancel()
+            try:
+                await watchdog_task
+            except asyncio.CancelledError:
+                pass

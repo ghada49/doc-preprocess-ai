@@ -231,24 +231,68 @@ class TestDisagreementForcesGoogle:
         assert call_kwargs["material_type"] == "newspaper"
 
     @pytest.mark.asyncio
+    async def test_disagreement_loads_google_bytes_lazily(self) -> None:
+        iep2a = _detect_response(_DISAGREE_A)
+        iep2b = _detect_response(_DISAGREE_B, detector_type="doclayout_yolo")
+        client = _mock_google_client()
+        loader = AsyncMock(return_value=b"lazy_loaded_bytes")
+
+        await evaluate_layout_adjudication(
+            iep2a_result=iep2a,
+            iep2b_result=iep2b,
+            google_client=client,
+            image_bytes=None,
+            image_bytes_loader=loader,
+            mime_type="image/tiff",
+            material_type="book",
+            image_uri="s3://bucket/page.tiff",
+        )
+
+        loader.assert_awaited_once()
+        call_kwargs = client.process_layout.call_args.kwargs
+        assert call_kwargs["image_bytes"] == b"lazy_loaded_bytes"
+
+    @pytest.mark.asyncio
     async def test_agreement_skips_google(self) -> None:
         """When IEP2A and IEP2B agree, Google must NOT be called."""
         iep2a = _detect_response(_AGREE_A)
         iep2b = _detect_response(_AGREE_B, detector_type="doclayout_yolo")
         client = _mock_google_client()
+        loader = AsyncMock(return_value=b"should_not_be_used")
 
         result = await evaluate_layout_adjudication(
             iep2a_result=iep2a,
             iep2b_result=iep2b,
             google_client=client,
             image_bytes=None,
+            image_bytes_loader=loader,
             mime_type="image/tiff",
             material_type="book",
             image_uri="s3://bucket/page.tiff",
         )
 
         client.process_layout.assert_not_awaited()
+        loader.assert_not_awaited()
         assert result.layout_decision_source == "local_agreement"
+
+    @pytest.mark.asyncio
+    async def test_google_bytes_loader_failure_propagates(self) -> None:
+        iep2a = _detect_response(_DISAGREE_A)
+        iep2b = _detect_response(_DISAGREE_B, detector_type="doclayout_yolo")
+        client = _mock_google_client()
+        loader = AsyncMock(side_effect=RuntimeError("artifact read failed"))
+
+        with pytest.raises(RuntimeError, match="artifact read failed"):
+            await evaluate_layout_adjudication(
+                iep2a_result=iep2a,
+                iep2b_result=iep2b,
+                google_client=client,
+                image_bytes=None,
+                image_bytes_loader=loader,
+                mime_type="image/tiff",
+                material_type="book",
+                image_uri="s3://bucket/page.tiff",
+            )
 
 
 # ── SECTION 2: Google path — output correctness ───────────────────────────────

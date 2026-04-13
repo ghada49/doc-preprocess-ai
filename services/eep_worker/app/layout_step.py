@@ -17,6 +17,7 @@ this module is the concrete orchestration unit that such a runner should call.
 
 from __future__ import annotations
 
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any, cast
 
@@ -72,6 +73,7 @@ async def complete_layout_detection(
     iep2a_result: LayoutDetectResponse | None,
     iep2b_result: LayoutDetectResponse | None,
     image_bytes: bytes | None = None,
+    image_bytes_loader: Callable[[], Awaitable[bytes | None]] | None = None,
     mime_type: str = "image/tiff",
     google_client: Any | None | object = _USE_WORKER_GOOGLE,
     total_processing_ms: float | None = None,
@@ -98,6 +100,7 @@ async def complete_layout_detection(
         iep2b_result=iep2b_result,
         google_client=resolved_google_client,
         image_bytes=image_bytes,
+        image_bytes_loader=image_bytes_loader,
         mime_type=mime_type,
         material_type=material_type,
         image_uri=image_uri,
@@ -144,6 +147,7 @@ async def run_layout_adjudication_only(
     iep2a_result: LayoutDetectResponse | None,
     iep2b_result: LayoutDetectResponse | None,
     image_bytes: bytes | None = None,
+    image_bytes_loader: Callable[[], Awaitable[bytes | None]] | None = None,
     mime_type: str = "image/tiff",
     google_client: Any | None | object = _USE_WORKER_GOOGLE,
     total_processing_ms: float | None = None,
@@ -169,6 +173,7 @@ async def run_layout_adjudication_only(
         iep2b_result=iep2b_result,
         google_client=resolved_google_client,
         image_bytes=image_bytes,
+        image_bytes_loader=image_bytes_loader,
         mime_type=mime_type,
         material_type=material_type,
         image_uri=image_uri,
