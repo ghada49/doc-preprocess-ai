@@ -1,0 +1,141 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eep-worker
+  namespace: libraryai
+  labels:
+    app: eep-worker
+    app.kubernetes.io/part-of: libraryai
+spec:
+  # Workers are stateless; scale horizontally.
+  # Each Pod runs its own circuit breaker state (intentional — per spec).
+  replicas: 2
+  selector:
+    matchLabels:
+      app: eep-worker
+  template:
+    metadata:
+      labels:
+        app: eep-worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "9100"
+    spec:
+      containers:
+        - name: eep-worker
+          image: your-registry/libraryai-eep-worker:latest
+          imagePullPolicy: Always
+          command:
+            - uvicorn
+            - services.eep_worker.app.main:app
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "9100"
+          ports:
+            - containerPort: 9100
+              name: health
+          envFrom:
+            - configMapRef:
+                name: libraryai-config
+            - secretRef:
+                name: libraryai-secret
+          env:
+            - name: PYTHONPATH
+              value: /app
+            - name: HEALTH_PORT
+              value: "9100"
+          volumeMounts:
+            # Google Document AI service-account key.
+            # Create the Secret with:
+            #   kubectl create secret generic google-documentai-sa \
+            #     --from-file=key.json=/path/to/sa-key.json -n libraryai
+            - name: google-sa
+              mountPath: /var/secrets/google
+              readOnly: true
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9100
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 9100
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+      volumes:
+        - name: google-sa
+          secret:
+            secretName: google-documentai-sa
+            optional: true    # worker starts even if Secret is absent; Google stays disabled
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+
+---
+# eep-recovery follows the same pattern.
+# Shown here as a separate Deployment so it can be scaled independently.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eep-recovery
+  namespace: libraryai
+  labels:
+    app: eep-recovery
+    app.kubernetes.io/part-of: libraryai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: eep-recovery
+  template:
+    metadata:
+      labels:
+        app: eep-recovery
+    spec:
+      containers:
+        - name: eep-recovery
+          image: your-registry/libraryai-eep-recovery:latest
+          imagePullPolicy: Always
+          command:
+            - uvicorn
+            - services.eep_recovery.app.main:app
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "9101"
+          ports:
+            - containerPort: 9101
+              name: health
+          envFrom:
+            - configMapRef:
+                name: libraryai-config
+            - secretRef:
+                name: libraryai-secret
+          env:
+            - name: PYTHONPATH
+              value: /app
+            - name: HEALTH_PORT
+              value: "9101"
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000

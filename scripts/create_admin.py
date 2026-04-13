@@ -33,8 +33,17 @@ def get_password_hash(password: str) -> str:
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Create initial admin user")
-    parser.add_argument("--username", default="admin", help="Admin username (default: admin)")
-    parser.add_argument("--password", required=True, help="Plaintext password")
+    parser.add_argument(
+        "--username",
+        default=os.environ.get("BOOTSTRAP_ADMIN_USERNAME", "admin"),
+        help="Admin username (default: $BOOTSTRAP_ADMIN_USERNAME or 'admin')",
+    )
+    parser.add_argument(
+        "--password",
+        default=os.environ.get("BOOTSTRAP_ADMIN_PASSWORD"),
+        required=not os.environ.get("BOOTSTRAP_ADMIN_PASSWORD"),
+        help="Plaintext password (default: $BOOTSTRAP_ADMIN_PASSWORD)",
+    )
     parser.add_argument("--db-url", default=None, help="Override DATABASE_URL")
     parser.add_argument(
         "--force",
@@ -42,6 +51,15 @@ def main() -> None:
         help=(
             "Overwrite an existing user with the same username"
             " (updates password and sets role=admin)"
+        ),
+    )
+    parser.add_argument(
+        "--skip-if-exists",
+        action="store_true",
+        help=(
+            "Exit 0 silently if the username already exists. "
+            "Used for automated bootstrap (compose/k8s) where the script "
+            "runs on every container start."
         ),
     )
     args = parser.parse_args()
@@ -64,6 +82,9 @@ def main() -> None:
         ).fetchone()
 
         if existing:
+            if args.skip_if_exists:
+                print(f"[~] Admin user '{args.username}' already exists — skipping bootstrap.")
+                return
             if not args.force:
                 print(
                     f"[!] User '{args.username}' already exists (user_id={existing[0]}). Aborting."

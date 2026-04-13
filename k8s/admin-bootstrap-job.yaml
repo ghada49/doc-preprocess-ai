@@ -1,0 +1,68 @@
+# One-shot Job that seeds the initial admin account.
+# Run this once after the first deploy (after eep is up and migrations have run):
+#
+#   kubectl apply -f k8s/admin-bootstrap-job.yaml
+#
+# The Job completes and stays in Completed state — it will NOT re-run on
+# subsequent deploys unless you delete and re-apply it.
+#
+# Re-running against an existing username is safe (--skip-if-exists).
+#
+# Credentials come from the libraryai-secret Secret:
+#   BOOTSTRAP_ADMIN_USERNAME  — key in the Secret (default: "admin")
+#   BOOTSTRAP_ADMIN_PASSWORD  — key in the Secret (must be set before applying)
+#
+# To add these keys to your Secret:
+#   kubectl patch secret libraryai-secret -n libraryai --type merge \
+#     -p '{"stringData": {"BOOTSTRAP_ADMIN_USERNAME": "admin", "BOOTSTRAP_ADMIN_PASSWORD": "your-password"}}'
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: admin-bootstrap
+  namespace: libraryai
+  labels:
+    app.kubernetes.io/part-of: libraryai
+spec:
+  # Never retry — if it fails (e.g. DB unreachable) fix the cause and re-apply.
+  backoffLimit: 0
+  # Auto-clean up 10 minutes after completion so it doesn't clutter kubectl get jobs.
+  ttlSecondsAfterFinished: 600
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: bootstrap
+          image: your-registry/libraryai-eep:latest
+          imagePullPolicy: Always
+          command:
+            - python
+            - -m
+            - scripts.create_admin
+            - --skip-if-exists
+          env:
+            - name: PYTHONPATH
+              value: /app
+            - name: BOOTSTRAP_ADMIN_USERNAME
+              valueFrom:
+                secretKeyRef:
+                  name: libraryai-secret
+                  key: BOOTSTRAP_ADMIN_USERNAME
+                  optional: false
+            - name: BOOTSTRAP_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: libraryai-secret
+                  key: BOOTSTRAP_ADMIN_PASSWORD
+                  optional: false
+            # The script reads DATABASE_URL from env
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: libraryai-secret
+                  key: DATABASE_URL
+                  optional: true
+          envFrom:
+            - configMapRef:
+                name: libraryai-config
+            - secretRef:
+                name: libraryai-secret

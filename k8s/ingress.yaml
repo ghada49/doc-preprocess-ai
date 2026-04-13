@@ -1,0 +1,58 @@
+# Requires an ingress controller in the cluster (nginx-ingress is assumed here).
+# Install:  helm upgrade --install ingress-nginx ingress-nginx/ingress-nginx -n ingress-nginx --create-namespace
+#
+# Routing:
+#   app.libraryai.example.com        → frontend  (Next.js, port 80)
+#   api.libraryai.example.com        → eep       (FastAPI, port 8000)
+#
+# Replace hosts with your real domain.
+# For TLS, uncomment the tls block and point to a cert-manager Certificate or
+# manually created Secret.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: libraryai-ingress
+  namespace: libraryai
+  labels:
+    app.kubernetes.io/part-of: libraryai
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"          # allow image uploads
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "120"       # long-running jobs
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "120"
+    # Uncomment to enable cert-manager TLS:
+    # cert-manager.io/cluster-issuer: "letsencrypt-prod"
+spec:
+  ingressClassName: nginx
+  rules:
+    # ── Frontend ──────────────────────────────────────────────────────────────
+    - host: app.libraryai.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+
+    # ── EEP API ───────────────────────────────────────────────────────────────
+    - host: api.libraryai.example.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: eep
+                port:
+                  number: 8000
+
+  # ── TLS (uncomment and fill in after creating cert-manager ClusterIssuer) ──
+  # tls:
+  #   - hosts:
+  #       - app.libraryai.example.com
+  #     secretName: libraryai-frontend-tls
+  #   - hosts:
+  #       - api.libraryai.example.com
+  #     secretName: libraryai-api-tls

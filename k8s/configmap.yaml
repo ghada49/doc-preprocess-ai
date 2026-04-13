@@ -1,0 +1,59 @@
+# Non-secret application configuration shared across services.
+# Secrets (passwords, keys, tokens) live in secret.yaml — never here.
+#
+# Apply:  kubectl apply -f k8s/configmap.yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: libraryai-config
+  namespace: libraryai
+  labels:
+    app.kubernetes.io/part-of: libraryai
+data:
+  # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  POSTGRES_DB: "libraryai"
+  POSTGRES_USER: "libraryai"
+  POSTGRES_HOST: "postgres"          # k8s Service name
+  POSTGRES_PORT: "5432"
+
+  # ── Redis ───────────────────────────────────────────────────────────────────
+  REDIS_HOST: "redis"
+  REDIS_PORT: "6379"
+
+  # ── MinIO / S3 ──────────────────────────────────────────────────────────────
+  S3_ENDPOINT_URL: "http://minio:9000"
+  S3_BUCKET_NAME: "libraryai"
+
+  # ── Internal service URLs ────────────────────────────────────────────────────
+  IEP1A_URL: "http://iep1a:8001"
+  IEP1B_URL: "http://iep1b:8002"
+  IEP1D_URL: "http://iep1d:8003"
+  IEP2A_URL: "http://iep2a:8004"
+  IEP2B_URL: "http://iep2b:8005"
+
+  # ── MLflow ──────────────────────────────────────────────────────────────────
+  MLFLOW_TRACKING_URI: "http://mlflow:5000"
+
+  # ── Worker tuning ───────────────────────────────────────────────────────────
+  WORKER_CONCURRENCY: "4"
+  TASK_TIMEOUT_SECONDS: "900"
+
+  # ── CORS ────────────────────────────────────────────────────────────────────
+  # Set to the public frontend URL; used by the EEP API.
+  # Replace with your actual domain, e.g. https://app.libraryai.example.com
+  CORS_ALLOWED_ORIGINS: "https://app.libraryai.example.com"
+
+  # ── Observability ───────────────────────────────────────────────────────────
+  PROMETHEUS_MULTIPROC_DIR: "/tmp/prometheus_multiproc"
+
+  # ── GPU backend ─────────────────────────────────────────────────────────────
+  GPU_BACKEND: "local"               # or "runpod"
+
+  # ── Google Document AI (non-secret settings) ────────────────────────────────
+  GOOGLE_ENABLED: "false"            # set to "true" to activate
+  GOOGLE_LOCATION: "us"
+  GOOGLE_TIMEOUT_LAYOUT: "30"
+  GOOGLE_TIMEOUT_CLEANUP: "60"
+  GOOGLE_MAX_RETRIES: "3"
+  GOOGLE_FALLBACK_ON_TIMEOUT: "true"
+  GOOGLE_CREDENTIALS_PATH: "/var/secrets/google/key.json"

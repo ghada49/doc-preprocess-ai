@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: eep
+  namespace: libraryai
+  labels:
+    app: eep
+    app.kubernetes.io/part-of: libraryai
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: eep
+  template:
+    metadata:
+      labels:
+        app: eep
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8000"
+    spec:
+      initContainers:
+        # Run Alembic migrations before the API starts.
+        # Only the first Pod to reach this will actually apply migrations;
+        # Alembic's version table makes subsequent runs a no-op.
+        - name: migrate
+          image: your-registry/libraryai-eep:latest
+          imagePullPolicy: Always
+          command: ["alembic", "upgrade", "head"]
+          workingDir: /app/services/eep
+          env:
+            - name: PYTHONPATH
+              value: /app
+          envFrom:
+            - configMapRef:
+                name: libraryai-config
+            - secretRef:
+                name: libraryai-secret
+      containers:
+        - name: eep
+          image: your-registry/libraryai-eep:latest
+          imagePullPolicy: Always
+          command:
+            - uvicorn
+            - services.eep.app.main:app
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8000"
+            - --workers
+            - "2"
+          ports:
+            - containerPort: 8000
+          envFrom:
+            - configMapRef:
+                name: libraryai-config
+            - secretRef:
+                name: libraryai-secret
+          env:
+            - name: PYTHONPATH
+              value: /app
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: eep
+  namespace: libraryai
+  labels:
+    app: eep
+    app.kubernetes.io/part-of: libraryai
+spec:
+  selector:
+    app: eep
+  ports:
+    - name: http
+      port: 8000
+      targetPort: 8000
+  type: ClusterIP
