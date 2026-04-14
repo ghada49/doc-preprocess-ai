@@ -31,6 +31,7 @@ export function StatusDot({ status }: { status: string }) {
     queued: "bg-slate-400",
     preprocessing: "bg-blue-500",
     rectification: "bg-purple-500",
+    ptiff_qa_pending: "bg-indigo-500",
     layout_detection: "bg-cyan-500",
     pending_human_correction: "bg-orange-500",
     accepted: "bg-emerald-500",

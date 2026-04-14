@@ -12,8 +12,11 @@ import {
   XCircle,
   AlertTriangle,
   Clock,
+  Download,
+  Eye,
 } from "lucide-react";
 import { getJob } from "@/lib/api/jobs";
+import { downloadJobOutputZip } from "@/lib/api/download";
 import { UserShell } from "@/components/layout/user-shell";
 import { PageHeader } from "@/components/shared/page-header";
 import { StatusBadge } from "@/components/shared/status-badge";
@@ -49,6 +52,7 @@ export default function JobDetailPage() {
   const { job_id } = useParams<{ job_id: string }>();
   const router = useRouter();
   const [expandedLayoutKey, setExpandedLayoutKey] = useState<string | null>(null);
+  const [isDownloading, setIsDownloading] = useState(false);
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["job", job_id],
@@ -64,6 +68,18 @@ export default function JobDetailPage() {
       return active ? 6_000 : false;
     },
   });
+
+  async function handleDownloadZip() {
+    setIsDownloading(true);
+    try {
+      await downloadJobOutputZip(job_id);
+    } catch {
+      // toast is not imported here; use alert as fallback
+      alert("Download failed. Please try again.");
+    } finally {
+      setIsDownloading(false);
+    }
+  }
 
   if (isLoading) {
     return (
@@ -115,16 +131,37 @@ export default function JobDetailPage() {
             icon={FileSearch}
             badge={<StatusBadge status={summary.status} type="job" />}
             actions={
-              summary.pending_human_correction_count > 0 ? (
+              <div className="flex items-center gap-2 flex-wrap">
+                {summary.pending_human_correction_count > 0 && (
+                  <Button
+                    size="sm"
+                    onClick={() => router.push(`/queue?job_id=${summary.job_id}`)}
+                    className="gap-1.5"
+                  >
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    {summary.pending_human_correction_count} pages need review
+                  </Button>
+                )}
                 <Button
                   size="sm"
-                  onClick={() => router.push(`/queue?job_id=${summary.job_id}`)}
+                  variant="outline"
+                  onClick={() => router.push(`/jobs/${summary.job_id}/ptiff-qa`)}
                   className="gap-1.5"
                 >
-                  <AlertTriangle className="h-3.5 w-3.5" />
-                  {summary.pending_human_correction_count} pages need review
+                  <Eye className="h-3.5 w-3.5" />
+                  QA Viewer
                 </Button>
-              ) : undefined
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={handleDownloadZip}
+                  disabled={isDownloading}
+                  className="gap-1.5"
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  {isDownloading ? "Downloading…" : "Download ZIP"}
+                </Button>
+              </div>
             }
           />
 

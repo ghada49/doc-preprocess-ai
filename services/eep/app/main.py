@@ -24,6 +24,15 @@ Real implementations:
   GET  /v1/models/evaluation              → LIVE (frontend integration)
   POST /v1/models/evaluate                → LIVE (frontend integration)
   POST /v1/artifacts/presign-read         → LIVE (browser artifact access)
+  POST /v1/artifacts/preview              → LIVE (TIFF→PNG transcoding proxy)
+  GET  /v1/jobs/{job_id}/ptiff-qa         → LIVE (Packet 5.0a — QA status + gate)
+  POST /v1/jobs/{job_id}/ptiff-qa/approve-all            → LIVE (Packet 5.0a)
+  POST /v1/jobs/{job_id}/pages/{page_number}/ptiff-qa/approve → LIVE (Packet 5.0a)
+  POST /v1/jobs/{job_id}/pages/{page_number}/ptiff-qa/edit    → LIVE (Packet 5.0a)
+  GET  /v1/jobs/{job_id}/ptiff-qa/viewer  → LIVE (Packet 5.0b — carousel viewer)
+  POST /v1/jobs/{job_id}/pages/{page_number}/ptiff-qa/flag    → LIVE (Packet 5.0b)
+  GET  /v1/jobs/{job_id}/output/download-manifest → LIVE (Packet 5.0c — presigned manifest)
+  GET  /v1/jobs/{job_id}/output/download.zip      → LIVE (Packet 5.0c — ZIP stream)
 """
 
 import os
@@ -36,9 +45,12 @@ from services.eep.app.admin.users import router as admin_users_router
 from services.eep.app.artifacts_api import router as artifacts_router
 from services.eep.app.auth import router as auth_router
 from services.eep.app.correction.apply import router as correction_apply_router
+from services.eep.app.correction.ptiff_qa import router as ptiff_qa_router
+from services.eep.app.correction.ptiff_qa_viewer import router as ptiff_qa_viewer_router
 from services.eep.app.correction.queue import router as correction_queue_router
 from services.eep.app.correction.reject import router as correction_reject_router
 from services.eep.app.correction.send_to_review import router as send_to_review_router
+from services.eep.app.jobs.download import router as jobs_download_router
 from services.eep.app.jobs.create import router as jobs_router
 from services.eep.app.jobs.list import router as job_list_router
 from services.eep.app.jobs.status import router as job_status_router
@@ -115,3 +127,8 @@ app.include_router(correction_queue_router)
 app.include_router(correction_apply_router)
 app.include_router(correction_reject_router)
 app.include_router(send_to_review_router)
+
+# ── Packet 5.0a/b/c — PTIFF QA gate, viewer + job output download ──────────────
+app.include_router(ptiff_qa_router)
+app.include_router(ptiff_qa_viewer_router)
+app.include_router(jobs_download_router)

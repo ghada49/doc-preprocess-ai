@@ -37,6 +37,7 @@ ALL_PAGE_STATES = frozenset(
         "queued",
         "preprocessing",
         "rectification",
+        "ptiff_qa_pending",
         "layout_detection",
         "pending_human_correction",
         "accepted",
@@ -81,10 +82,10 @@ INVALID_TRANSITIONS = [
     ("layout_detection", "preprocessing"),
     ("layout_detection", "rectification"),
     ("layout_detection", "split"),
-    # Transitions out of leaf-final states
+    # Transitions out of accepted (only pending_human_correction is allowed now;
+    # all others remain invalid)
     ("accepted", "queued"),
     ("accepted", "preprocessing"),
-    ("accepted", "pending_human_correction"),
     ("accepted", "review"),
     ("accepted", "failed"),
     ("accepted", "split"),
@@ -131,10 +132,14 @@ class TestAllowedTransitionsStructure:
                 assert dest in ALL_PAGE_STATES, f"Unknown destination '{dest}' from '{state}'"
 
     def test_leaf_final_states_have_no_transitions(self) -> None:
-        for state in ("accepted", "review", "failed"):
+        # "accepted" now allows reviewer-initiated flagging to pending_human_correction.
+        # Only "review" and "failed" are truly leaf-final with no outgoing transitions.
+        for state in ("review", "failed"):
             assert (
                 ALLOWED_TRANSITIONS[state] == frozenset()
             ), f"Leaf-final state '{state}' must have no outgoing transitions"
+        # accepted has exactly one outgoing transition (user-initiated re-correction)
+        assert ALLOWED_TRANSITIONS["accepted"] == frozenset({"pending_human_correction"})
 
     def test_split_has_no_transitions(self) -> None:
         assert ALLOWED_TRANSITIONS["split"] == frozenset()
@@ -221,8 +226,11 @@ class TestInvalidTransitions:
         with pytest.raises(InvalidTransitionError):
             validate_transition(from_state, to_state)
 
-    def test_accepted_to_any_state_raises(self) -> None:
-        for state in ALL_PAGE_STATES:
+    def test_accepted_to_any_invalid_state_raises(self) -> None:
+        # accepted → pending_human_correction is now valid (reviewer flag action).
+        # All other transitions from accepted are still invalid.
+        invalid_targets = ALL_PAGE_STATES - {"pending_human_correction"}
+        for state in invalid_targets:
             with pytest.raises(InvalidTransitionError):
                 validate_transition("accepted", state)
 
@@ -297,14 +305,29 @@ class TestIsWorkerTerminal:
     def test_layout_detection_is_not_terminal(self) -> None:
         assert is_worker_terminal("layout_detection") is False
 
-    def test_delegates_to_terminal_page_states(self) -> None:
-        # Must use the same set defined in shared.schemas.eep
+    def test_delegates_to_worker_stop_states(self) -> None:
+        # is_worker_terminal checks _WORKER_STOP_STATES, which is intentionally broader
+        # than TERMINAL_PAGE_STATES (job-accounting states).
+        # Worker-stop = automated worker ceases; includes human-gate states
+        # (pending_human_correction, ptiff_qa_pending) that are not job-complete.
+        worker_stop_expected = frozenset(
+            {
+                "accepted",
+                "review",
+                "failed",
+                "split",
+                "pending_human_correction",
+                "ptiff_qa_pending",
+            }
+        )
         for state in ALL_PAGE_STATES:
-            assert is_worker_terminal(state) == (state in TERMINAL_PAGE_STATES)
+            assert is_worker_terminal(state) == (state in worker_stop_expected), (
+                f"is_worker_terminal({state!r}) mismatch"
+            )
 
     def test_all_terminal_states_covered(self) -> None:
         terminal_count = sum(1 for s in ALL_PAGE_STATES if is_worker_terminal(s))
-        assert terminal_count == 5  # accepted, pending_human_correction, review, failed, split
+        assert terminal_count == 6  # accepted, ptiff_qa_pending, pending_human_correction, review, failed, split
 
     def test_non_terminal_count(self) -> None:
         non_terminal = [s for s in ALL_PAGE_STATES if not is_worker_terminal(s)]
@@ -320,8 +343,9 @@ class TestIsWorkerTerminal:
 
 
 class TestIsLeafFinal:
-    def test_accepted_is_leaf_final(self) -> None:
-        assert is_leaf_final("accepted") is True
+    def test_accepted_is_not_leaf_final(self) -> None:
+        # accepted allows one user-initiated outgoing transition (flagging for re-correction).
+        assert is_leaf_final("accepted") is False
 
     def test_review_is_leaf_final(self) -> None:
         assert is_leaf_final("review") is True
@@ -349,9 +373,10 @@ class TestIsLeafFinal:
     def test_layout_detection_is_not_leaf_final(self) -> None:
         assert is_leaf_final("layout_detection") is False
 
-    def test_exactly_three_leaf_final_states(self) -> None:
+    def test_exactly_two_leaf_final_states(self) -> None:
+        # "accepted" was removed from leaf-final: reviewers can flag it for re-correction.
         leaf_final = [s for s in ALL_PAGE_STATES if is_leaf_final(s)]
-        assert sorted(leaf_final) == ["accepted", "failed", "review"]
+        assert sorted(leaf_final) == ["failed", "review"]
 
 
 # ── allowed_next ──────────────────────────────────────────────────────────────
@@ -369,8 +394,9 @@ class TestAllowedNext:
         result = allowed_next("layout_detection")
         assert result == frozenset({"accepted", "review", "failed", "pending_human_correction"})
 
-    def test_accepted_allowed_next_is_empty(self) -> None:
-        assert allowed_next("accepted") == frozenset()
+    def test_accepted_allowed_next_has_flag_transition(self) -> None:
+        # accepted → pending_human_correction is the reviewer flag action.
+        assert allowed_next("accepted") == frozenset({"pending_human_correction"})
 
     def test_review_allowed_next_is_empty(self) -> None:
         assert allowed_next("review") == frozenset()

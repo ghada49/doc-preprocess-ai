@@ -39,6 +39,7 @@ PageState = Literal[
     "queued",
     "preprocessing",
     "rectification",
+    "ptiff_qa_pending",        # PTIFF QA checkpoint (spec Section 3.1 / 8.5)
     "layout_detection",
     "pending_human_correction",
     "accepted",
@@ -94,6 +95,10 @@ class JobCreateRequest(BaseModel):
         material_type  — one of book, newspaper, archival_document
         pages          — 1 to 1000 PageInput entries
         pipeline_mode  — "preprocess" (preprocessing only) or "layout" (+ layout detection)
+        ptiff_qa_mode  — "auto_continue" (default): pipeline runs fully automatic;
+                         "manual": pipeline stops at ptiff_qa_pending for human
+                         review before layout detection begins. Use "manual" only
+                         when the librarian must approve each PTIFF before layout runs.
         policy_version — policy version string to pin processing rules
         shadow_mode    — True to enable async candidate model shadow evaluation
 
@@ -105,6 +110,7 @@ class JobCreateRequest(BaseModel):
     material_type: MaterialType
     pages: list[PageInput]
     pipeline_mode: PipelineMode = "layout"
+    ptiff_qa_mode: Literal["auto_continue", "manual"] = "auto_continue"
     policy_version: str
     shadow_mode: bool = False
 

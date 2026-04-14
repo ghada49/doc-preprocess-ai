@@ -1001,11 +1001,17 @@ async def _run_preprocessing(
     final_quality_summary = _quality_summary_dict(final_branch)
     from_state = page.status
 
-    if job.pipeline_mode == "layout":
-        # Automation-first: route directly to layout_detection and enqueue IEP2.
+    if job.ptiff_qa_mode == "manual":
+        # PTIFF QA checkpoint (spec Section 3.1 / 8.5):
+        # Route to ptiff_qa_pending regardless of pipeline_mode.
+        # The gate (ptiff_qa.py) will release the page to layout_detection or
+        # accepted once the reviewer approves via the QA viewer.
+        to_state = "ptiff_qa_pending"
+    elif job.pipeline_mode == "layout":
+        # auto_continue + layout: proceed directly to layout detection and enqueue IEP2.
         to_state = "layout_detection"
     else:
-        # Preprocess-only: accept immediately.
+        # auto_continue + preprocess-only: accept immediately.
         to_state = "accepted"
 
     advanced = advance_page_state(
@@ -1033,7 +1039,17 @@ async def _run_preprocessing(
     page.processing_time_ms = total_processing_ms
     page.review_reasons = None
 
-    if job.pipeline_mode == "layout":
+    if to_state == "ptiff_qa_pending":
+        # Worker stops here; the PTIFF QA gate (ptiff_qa.py) owns the next
+        # transition.  No lineage completion or layout enqueue at this point.
+        logger.info(
+            "worker_loop: ptiff_qa_pending job=%s page_id=%s page=%d sub=%s",
+            job.job_id,
+            page.page_id,
+            page.page_number,
+            page.sub_page_index,
+        )
+    elif job.pipeline_mode == "layout":
         enqueue_page_task(redis_client, _page_task_for(page))
     else:
         page.acceptance_decision = "accepted"
