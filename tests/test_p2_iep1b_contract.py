@@ -94,7 +94,8 @@ _PREPROCESS_ERROR_FIELDS = {"error_code", "error_message", "fallback_action"}
 
 @pytest.fixture(autouse=True)
 def _clean_mock_env(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Remove all IEP1B_MOCK_* env vars before each test."""
+    """Remove all IEP1B_MOCK_* env vars before each test and enable mock mode."""
+    monkeypatch.setenv("IEP1B_MOCK_MODE", "true")
     for key in (
         "IEP1B_MOCK_FAIL",
         "IEP1B_MOCK_FAIL_CODE",
@@ -149,8 +150,12 @@ class TestRequestValidation:
         body = {k: v for k, v in VALID_BODY.items() if k != "material_type"}
         assert client.post("/v1/geometry", json=body).status_code == 422
 
-    def test_invalid_material_type_microfilm_returns_422(self, client: TestClient) -> None:
+    def test_valid_material_type_microfilm_returns_200(self, client: TestClient) -> None:
         r = client.post("/v1/geometry", json={**VALID_BODY, "material_type": "microfilm"})
+        assert r.status_code == 200
+
+    def test_invalid_material_type_scroll_returns_422(self, client: TestClient) -> None:
+        r = client.post("/v1/geometry", json={**VALID_BODY, "material_type": "scroll"})
         assert r.status_code == 422
 
     def test_invalid_material_type_document_returns_422(self, client: TestClient) -> None:
@@ -349,7 +354,7 @@ class TestConfigurableTtaPasses:
 
 
 class TestMaterialTypeAcceptance:
-    @pytest.mark.parametrize("mat", ["book", "newspaper", "archival_document"])
+    @pytest.mark.parametrize("mat", ["book", "newspaper", "archival_document", "microfilm"])
     def test_valid_material_types_return_200(self, client: TestClient, mat: str) -> None:
         r = client.post("/v1/geometry", json={**VALID_BODY, "material_type": mat})
         assert r.status_code == 200

@@ -134,12 +134,12 @@ class TestGeometryRequest:
                     "job_id": "j1",
                     "page_number": 1,
                     "image_uri": "s3://bucket/proxy/1.jpg",
-                    "material_type": "microfilm",
+                    "material_type": "scroll",
                 }
             )
 
     def test_all_material_types_valid(self) -> None:
-        for mt in ["book", "newspaper", "archival_document"]:
+        for mt in ["book", "newspaper", "archival_document", "microfilm"]:
             r = GeometryRequest.model_validate(
                 {"job_id": "j1", "page_number": 1, "image_uri": "s3://x", "material_type": mt}
             )

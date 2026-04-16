@@ -137,6 +137,7 @@ class PreprocessError(BaseModel):
         "TIMEOUT",
         "INTERNAL",
         "GEOMETRY_FAILED",
+        "CLASSIFICATION_FAILED",
     ]
     error_message: str
     fallback_action: Literal["RETRY", "ESCALATE_REVIEW"]

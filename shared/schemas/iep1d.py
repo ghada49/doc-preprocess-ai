@@ -20,7 +20,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field
 
-MaterialType = Literal["book", "newspaper", "archival_document"]
+MaterialType = Literal["book", "newspaper", "archival_document", "microfilm"]
 
 
 class RectifyRequest(BaseModel):

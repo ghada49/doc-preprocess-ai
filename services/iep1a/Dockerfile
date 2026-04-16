@@ -16,12 +16,18 @@ ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1
 
-# Install minimal runtime deps needed for health/metrics endpoints
-# ML model deps (ultralytics, detectron2, etc.) are added in Phase 2/6
+ENV UV_HTTP_TIMEOUT=300
+
+# Install runtime deps: FastAPI + YOLOv8 segmentation
 RUN uv pip install --system \
     "fastapi>=0.110.0" \
     "uvicorn[standard]>=0.27.0" \
-    "prometheus-client>=0.20.0"
+    "prometheus-client>=0.20.0" \
+    "ultralytics>=8.1.0" \
+    "boto3>=1.34.0" \
+    "numpy>=1.26,<2" \
+    && pip uninstall -y opencv-python 2>/dev/null; \
+    uv pip install --system "opencv-python-headless>=4.9.0" "numpy>=1.26,<2"
 
 # Source code is volume-mounted in development (see docker-compose.yml)
 # CMD is supplied by docker-compose.yml

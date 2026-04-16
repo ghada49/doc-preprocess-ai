@@ -96,6 +96,26 @@ EEP_REQUESTS_TOTAL = Counter(
     "Total EEP processing requests",
 )
 
+# ── IEP0 metrics ──────────────────────────────────────────────────────────────
+
+IEP0_CLASSIFICATION_CONFIDENCE = Histogram(
+    "iep0_classification_confidence",
+    "IEP0 material-type classification confidence score",
+    buckets=_CONFIDENCE_BUCKETS,
+)
+
+IEP0_CLASSIFICATION_TOTAL = Counter(
+    "iep0_classification_total",
+    "IEP0 classification requests by predicted material type",
+    ["material_type"],
+)
+
+IEP0_GPU_INFERENCE_SECONDS = Histogram(
+    "iep0_gpu_inference_seconds",
+    "IEP0 classification inference latency in seconds",
+    buckets=_GPU_SECONDS_BUCKETS,
+)
+
 # ── IEP1A metrics ─────────────────────────────────────────────────────────────
 
 IEP1A_GEOMETRY_CONFIDENCE = Histogram(

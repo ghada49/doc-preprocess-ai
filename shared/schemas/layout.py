@@ -33,7 +33,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from shared.schemas.ucf import BoundingBox
 
-MaterialType = Literal["book", "newspaper", "archival_document"]
+MaterialType = Literal["book", "newspaper", "archival_document", "microfilm"]
 LayoutArtifactRole = Literal[
     "original_upload",
     "normalized_output",

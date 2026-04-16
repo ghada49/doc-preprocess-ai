@@ -76,6 +76,7 @@ from services.eep_worker.app.task import build_gate_config
 from services.eep_worker.app.watchdog import TaskWatchdog
 from shared.gpu.backend import BackendError, GPUBackend, LocalHTTPBackend, RunpodBackend
 from shared.io.storage import get_backend
+from shared.schemas.iep0 import BatchClassifyResponse, ClassifyResponse
 from shared.schemas.layout import (
     LayoutAdjudicationResult,
     LayoutArtifactRole,
@@ -115,6 +116,8 @@ class WorkerConfig:
     layout_artifact_io_timeout_seconds: float
     layout_artifact_io_attempts: int
     layout_artifact_io_backoff_seconds: float
+    iep0_endpoint: str
+    iep0_batch_endpoint: str
     iep1a_endpoint: str
     iep1b_endpoint: str
     iep1d_endpoint: str
@@ -123,6 +126,7 @@ class WorkerConfig:
     backend: GPUBackend
     iep1d_execution_timeout_seconds: float
     iep2_call_timeout_seconds: float
+    iep0_circuit_breaker: CircuitBreaker
     iep1a_circuit_breaker: CircuitBreaker
     iep1b_circuit_breaker: CircuitBreaker
     iep1d_circuit_breaker: CircuitBreaker
@@ -199,6 +203,8 @@ def build_worker_config(worker_id: str | None = None) -> WorkerConfig:
             "LAYOUT_ARTIFACT_IO_BACKOFF_SECONDS",
             1.0,
         ),
+        iep0_endpoint=_service_endpoint("IEP0_URL", "http://iep0:8006", "/v1/classify"),
+        iep0_batch_endpoint=_service_endpoint("IEP0_URL", "http://iep0:8006", "/v1/classify-batch"),
         iep1a_endpoint=_service_endpoint("IEP1A_URL", "http://iep1a:8001", "/v1/geometry"),
         iep1b_endpoint=_service_endpoint("IEP1B_URL", "http://iep1b:8002", "/v1/geometry"),
         iep1d_endpoint=_service_endpoint("IEP1D_URL", "http://iep1d:8003", "/v1/rectify"),
@@ -210,6 +216,7 @@ def build_worker_config(worker_id: str | None = None) -> WorkerConfig:
             "IEP2_CALL_TIMEOUT_SECONDS",
             cold_start_timeout + execution_timeout,
         ),
+        iep0_circuit_breaker=CircuitBreaker("iep0", cb_cfg),
         iep1a_circuit_breaker=CircuitBreaker("iep1a", cb_cfg),
         iep1b_circuit_breaker=CircuitBreaker("iep1b", cb_cfg),
         iep1d_circuit_breaker=CircuitBreaker("iep1d", cb_cfg),
@@ -383,6 +390,292 @@ def _resolve_material_type_placeholder(session: Session, job: Job, page: JobPage
     if predicted:
         return str(predicted)
     return job.material_type
+
+
+async def _invoke_iep0_classification(
+    *,
+    job_id: str,
+    page_number: int,
+    image_uri: str,
+    iep0_endpoint: str,
+    iep0_circuit_breaker: CircuitBreaker,
+    backend: GPUBackend,
+    fallback_material_type: str,
+) -> str:
+    """
+    Call IEP0 to classify the material type of a single image.
+
+    If IEP0 is unavailable (circuit breaker open, timeout, error),
+    falls back to the job-level material_type.
+
+    Returns the resolved material_type string.
+    """
+    if not iep0_circuit_breaker.allow_call():
+        logger.warning(
+            "worker_loop: iep0 skipped by open circuit breaker job=%s page=%d; "
+            "using fallback material_type=%s",
+            job_id,
+            page_number,
+            fallback_material_type,
+        )
+        return fallback_material_type
+
+    payload = {
+        "job_id": job_id,
+        "page_number": page_number,
+        "image_uri": image_uri,
+    }
+
+    try:
+        raw = await backend.call(iep0_endpoint, payload)
+        response = ClassifyResponse.model_validate(raw)
+        iep0_circuit_breaker.record_success()
+        logger.info(
+            "worker_loop: iep0 classified job=%s page=%d as %s (conf=%.3f)",
+            job_id,
+            page_number,
+            response.material_type,
+            response.confidence,
+        )
+        return response.material_type
+    except BackendError as exc:
+        iep0_circuit_breaker.record_failure(exc.kind)
+        logger.warning(
+            "worker_loop: iep0 failed job=%s page=%d kind=%s error=%s; "
+            "using fallback material_type=%s",
+            job_id,
+            page_number,
+            exc.kind.value,
+            exc,
+            fallback_material_type,
+        )
+    except ValidationError as exc:
+        iep0_circuit_breaker.record_failure(None)
+        logger.warning(
+            "worker_loop: iep0 returned malformed response job=%s page=%d error=%s; "
+            "using fallback material_type=%s",
+            job_id,
+            page_number,
+            exc,
+            fallback_material_type,
+        )
+    except Exception:
+        iep0_circuit_breaker.record_failure(None)
+        logger.exception(
+            "worker_loop: unexpected iep0 failure job=%s page=%d; "
+            "using fallback material_type=%s",
+            job_id,
+            page_number,
+            fallback_material_type,
+        )
+    return fallback_material_type
+
+
+# ── IEP0: batch classification with majority voting ─────────────────────────
+
+_IEP0_SMALL_THRESHOLD = 11  # classify all if fewer than this many pages
+_IEP0_SAMPLE_RATIO = 0.2    # sample 20% of pages when >= threshold
+_IEP0_MAX_SAMPLE = 50       # hard cap on sample size
+_IEP0_VOTE_CONFIDENCE_THRESHOLD = 0.70  # 70% vote share required
+
+
+def _compute_sample_size(total_pages: int) -> int:
+    """
+    Compute number of images to sample for IEP0 majority voting.
+
+    - < 11 pages  → classify all
+    - >= 11 pages → 20% of total, capped at 50
+    """
+    if total_pages < _IEP0_SMALL_THRESHOLD:
+        return total_pages
+    import math
+    return min(math.ceil(total_pages * _IEP0_SAMPLE_RATIO), _IEP0_MAX_SAMPLE)
+
+
+async def _invoke_iep0_batch_classification(
+    *,
+    session: Session,
+    job: Job,
+    current_proxy_uri: str,
+    iep0_batch_endpoint: str,
+    iep0_circuit_breaker: CircuitBreaker,
+    backend: GPUBackend,
+    fallback_material_type: str,
+) -> str:
+    """
+    Classify job pages via IEP0 with majority voting and a confidence retry.
+
+    Round 1: sample images and classify.  If the winner gets >= 70% of votes,
+    accept immediately.  Otherwise take a second, *different* sample and
+    classify again, then combine both rounds' votes.  The final winner is
+    used regardless of its vote share (with a warning if still < 70%).
+
+    Falls back to fallback_material_type if IEP0 is unavailable.
+    """
+    if not iep0_circuit_breaker.allow_call():
+        logger.warning(
+            "worker_loop: iep0 batch skipped by open circuit breaker job=%s; "
+            "using fallback material_type=%s",
+            job.job_id,
+            fallback_material_type,
+        )
+        return fallback_material_type
+
+    # Gather all page image URIs from the job.
+    pages = session.query(JobPage).filter_by(job_id=job.job_id).all()
+    all_uris: list[str] = [current_proxy_uri]
+    for p in pages:
+        uri = p.input_image_uri
+        if uri and uri != current_proxy_uri:
+            all_uris.append(uri)
+
+    sample_size = _compute_sample_size(len(all_uris))
+
+    # ── Round 1 ─────────────────────────────────────────────────────────────
+    round1_uris = all_uris[:sample_size]
+    round1_response = await _call_iep0_batch(
+        job_id=job.job_id,
+        image_uris=round1_uris,
+        iep0_batch_endpoint=iep0_batch_endpoint,
+        iep0_circuit_breaker=iep0_circuit_breaker,
+        backend=backend,
+    )
+    if round1_response is None:
+        return fallback_material_type
+
+    # Check if winner has >= 70% of votes.
+    total_votes = round1_response.sample_size
+    winner_votes = round1_response.vote_counts.get(round1_response.material_type, 0)
+    vote_ratio = winner_votes / total_votes if total_votes > 0 else 0.0
+
+    if vote_ratio >= _IEP0_VOTE_CONFIDENCE_THRESHOLD:
+        logger.info(
+            "worker_loop: iep0 round 1 confident job=%s type=%s "
+            "votes=%d/%d (%.0f%%)",
+            job.job_id,
+            round1_response.material_type,
+            winner_votes,
+            total_votes,
+            vote_ratio * 100,
+        )
+        return round1_response.material_type
+
+    # ── Round 2: low confidence, retry with different images ────────────────
+    remaining_uris = all_uris[sample_size:]
+    if not remaining_uris:
+        # No more images to sample — use round 1 result with a warning.
+        logger.warning(
+            "worker_loop: iep0 low confidence job=%s type=%s "
+            "votes=%d/%d (%.0f%%) but no more images to sample",
+            job.job_id,
+            round1_response.material_type,
+            winner_votes,
+            total_votes,
+            vote_ratio * 100,
+        )
+        return round1_response.material_type
+
+    round2_size = min(sample_size, len(remaining_uris))
+    round2_uris = remaining_uris[:round2_size]
+    round2_response = await _call_iep0_batch(
+        job_id=job.job_id,
+        image_uris=round2_uris,
+        iep0_batch_endpoint=iep0_batch_endpoint,
+        iep0_circuit_breaker=iep0_circuit_breaker,
+        backend=backend,
+    )
+
+    if round2_response is None:
+        # Round 2 failed — use round 1 result.
+        logger.warning(
+            "worker_loop: iep0 round 2 failed job=%s; using round 1 result %s",
+            job.job_id,
+            round1_response.material_type,
+        )
+        return round1_response.material_type
+
+    # ── Combine both rounds' votes ──────────────────────────────────────────
+    from collections import Counter
+
+    combined_votes: Counter[str] = Counter()
+    for type_name, count in round1_response.vote_counts.items():
+        combined_votes[type_name] += count
+    for type_name, count in round2_response.vote_counts.items():
+        combined_votes[type_name] += count
+
+    final_winner = combined_votes.most_common(1)[0][0]
+    final_total = sum(combined_votes.values())
+    final_winner_votes = combined_votes[final_winner]
+    final_ratio = final_winner_votes / final_total if final_total > 0 else 0.0
+
+    if final_ratio < _IEP0_VOTE_CONFIDENCE_THRESHOLD:
+        logger.warning(
+            "worker_loop: iep0 still low confidence after 2 rounds job=%s "
+            "type=%s votes=%d/%d (%.0f%%)",
+            job.job_id,
+            final_winner,
+            final_winner_votes,
+            final_total,
+            final_ratio * 100,
+        )
+    else:
+        logger.info(
+            "worker_loop: iep0 round 2 resolved job=%s type=%s "
+            "votes=%d/%d (%.0f%%)",
+            job.job_id,
+            final_winner,
+            final_winner_votes,
+            final_total,
+            final_ratio * 100,
+        )
+
+    return final_winner
+
+
+async def _call_iep0_batch(
+    *,
+    job_id: str,
+    image_uris: list[str],
+    iep0_batch_endpoint: str,
+    iep0_circuit_breaker: CircuitBreaker,
+    backend: GPUBackend,
+) -> BatchClassifyResponse | None:
+    """
+    Call the IEP0 batch endpoint.  Returns the response on success,
+    or None on any failure (circuit breaker, backend error, validation).
+    """
+    payload = {
+        "job_id": job_id,
+        "image_uris": image_uris,
+    }
+
+    try:
+        raw = await backend.call(iep0_batch_endpoint, payload)
+        response = BatchClassifyResponse.model_validate(raw)
+        iep0_circuit_breaker.record_success()
+        return response
+    except BackendError as exc:
+        iep0_circuit_breaker.record_failure(exc.kind)
+        logger.warning(
+            "worker_loop: iep0 batch failed job=%s kind=%s error=%s",
+            job_id,
+            exc.kind.value,
+            exc,
+        )
+    except ValidationError as exc:
+        iep0_circuit_breaker.record_failure(None)
+        logger.warning(
+            "worker_loop: iep0 batch malformed response job=%s error=%s",
+            job_id,
+            exc,
+        )
+    except Exception:
+        iep0_circuit_breaker.record_failure(None)
+        logger.exception(
+            "worker_loop: unexpected iep0 batch failure job=%s",
+            job_id,
+        )
+    return None
 
 
 def _page_task_for(page: JobPage) -> PageTask:
@@ -760,6 +1053,31 @@ async def _run_preprocessing(
         proxy_backend.put_bytes(proxy_uri, _encode_png(proxy_image))
     except Exception as exc:
         raise RetryableTaskError(f"proxy generation failed: {exc}") from exc
+
+    # ── IEP0: material-type classification via batch majority voting ───────
+    # Sample up to 10 page images from the job and classify them.
+    # The majority-voted result overrides the job-level material_type.
+    material_type = await _invoke_iep0_batch_classification(
+        session=session,
+        job=job,
+        current_proxy_uri=proxy_uri,
+        iep0_batch_endpoint=config.iep0_batch_endpoint,
+        iep0_circuit_breaker=config.iep0_circuit_breaker,
+        backend=config.backend,
+        fallback_material_type=material_type,
+    )
+
+    # Persist the classified material_type back to the job record so the
+    # frontend and downstream queries reflect the real classification.
+    if material_type != job.material_type:
+        logger.info(
+            "worker_loop: updating job material_type %s -> %s job=%s",
+            job.material_type,
+            material_type,
+            job.job_id,
+        )
+        job.material_type = material_type
+        session.commit()
 
     gate_config = build_gate_config(session)
     proxy_height, proxy_width = proxy_image.shape[:2]

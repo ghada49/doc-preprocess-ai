@@ -22,7 +22,7 @@ import { Progress } from "@/components/ui/progress";
 import { getApiErrorMessage } from "@/lib/api/client";
 import { uploadFile } from "@/lib/api/upload";
 import { createJob } from "@/lib/api/jobs";
-import type { MaterialType, PipelineMode } from "@/types/api";
+import type { PipelineMode } from "@/types/api";
 import { cn } from "@/lib/utils";
 
 interface FileUploadState {
@@ -37,7 +37,6 @@ export default function SubmitJobPage() {
 
   // Form state
   const [collectionId, setCollectionId] = useState("");
-  const [materialType, setMaterialType] = useState<MaterialType>("book");
   const [pipelineMode, setPipelineMode] = useState<PipelineMode>("layout");
   const [policyVersion, setPolicyVersion] = useState("v1");
   const [shadowMode, setShadowMode] = useState(false);
@@ -121,7 +120,6 @@ export default function SubmitJobPage() {
         .map((f, idx) => ({ page_number: idx + 1, input_uri: f.objectUri! }));
       return createJob({
         collection_id: collectionId,
-        material_type: materialType,
         pages,
         pipeline_mode: pipelineMode,
         policy_version: policyVersion,
@@ -168,21 +166,7 @@ export default function SubmitJobPage() {
             </div>
 
             <div className="space-y-1.5">
-              <Label>Material Type</Label>
-              <Select
-                value={materialType}
-                onValueChange={(v) => setMaterialType(v as MaterialType)}
-              >
-                <SelectTrigger>
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  <SelectItem value="book">Book</SelectItem>
-                  <SelectItem value="newspaper">Newspaper</SelectItem>
-                  <SelectItem value="archival_document">Archival Document</SelectItem>
-                  <SelectItem value="document">Document</SelectItem>
-                </SelectContent>
-              </Select>
+              <p className="text-xs text-slate-500 italic">Material type is auto-detected by IEP0</p>
             </div>
 
             <div className="space-y-1.5">

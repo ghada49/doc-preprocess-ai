@@ -30,7 +30,7 @@ from pydantic import BaseModel, Field, model_validator
 
 # ── Type aliases ───────────────────────────────────────────────────────────────
 
-MaterialType = Literal["book", "newspaper", "archival_document"]
+MaterialType = Literal["book", "newspaper", "archival_document", "microfilm"]
 PipelineMode = Literal["preprocess", "layout"]
 JobStatus = Literal["queued", "running", "done", "failed"]
 
@@ -102,7 +102,7 @@ class JobCreateRequest(BaseModel):
     """
 
     collection_id: str
-    material_type: MaterialType
+    material_type: MaterialType = "book"
     pages: list[PageInput]
     pipeline_mode: PipelineMode = "layout"
     policy_version: str

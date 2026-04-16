@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 
 from shared.schemas.geometry import GeometryResponse
 
-MaterialType = Literal["book", "newspaper", "archival_document"]
+MaterialType = Literal["book", "newspaper", "archival_document", "microfilm"]
 
 
 class NormalizeRequest(BaseModel):

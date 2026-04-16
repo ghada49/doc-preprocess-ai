@@ -293,12 +293,18 @@ class TestDeriveProxy:
     def test_raises_value_error_for_unknown_material_type(self) -> None:
         img = _make_image(100, 100)
         with pytest.raises(ValueError, match="Unknown material_type"):
-            derive_proxy(img, "microfilm")
+            derive_proxy(img, "scroll")
 
     def test_error_message_includes_material_type(self) -> None:
         img = _make_image(100, 100)
-        with pytest.raises(ValueError, match="microfilm"):
-            derive_proxy(img, "microfilm")
+        with pytest.raises(ValueError, match="scroll"):
+            derive_proxy(img, "scroll")
+
+    def test_microfilm_is_valid_material_type(self) -> None:
+        img = _make_image(600, 2000)
+        result = derive_proxy(img, "microfilm")
+        h, w = result.shape[:2]
+        assert max(h, w) <= 1024
 
     def test_uses_default_config_when_none(self) -> None:
         img = _make_image(600, 2000)

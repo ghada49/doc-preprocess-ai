@@ -55,8 +55,7 @@ export interface PresignUploadResponse {
 export type MaterialType =
   | "book"
   | "newspaper"
-  | "archival_document"
-  | "document";
+  | "microfilm";
 
 export type PipelineMode = "preprocess" | "layout";
 export type JobStatus = "queued" | "running" | "done" | "failed";
@@ -79,7 +78,7 @@ export interface PageInput {
 
 export interface CreateJobRequest {
   collection_id: string;
-  material_type: MaterialType;
+  material_type?: MaterialType;
   pages: PageInput[];
   pipeline_mode: PipelineMode;
   policy_version: string;

@@ -1,5 +1,4 @@
-# pytorch/pytorch includes CUDA 11.8 + cuDNN 8 + Python 3.10 (3.11 not available in this tag)
-# Service-specific ML model deps (ultralytics, detectron2, etc.) are installed in Phase 2/6
+# pytorch/pytorch includes CUDA 11.8 + cuDNN 8 + Python 3.10
 FROM pytorch/pytorch:2.2.2-cuda11.8-cudnn8-runtime
 
 # Install system dependencies
@@ -18,7 +17,7 @@ ENV PYTHONPATH=/app \
 
 ENV UV_HTTP_TIMEOUT=300
 
-# Install runtime deps: FastAPI + YOLOv8 pose
+# Install minimal runtime deps needed for health/metrics endpoints
 RUN uv pip install --system \
     "fastapi>=0.110.0" \
     "uvicorn[standard]>=0.27.0" \

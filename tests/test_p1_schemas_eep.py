@@ -190,7 +190,7 @@ class TestJobCreateRequest:
             assert r.pipeline_mode == mode
 
     def test_all_material_types_valid(self) -> None:
-        for mt in ["book", "newspaper", "archival_document"]:
+        for mt in ["book", "newspaper", "archival_document", "microfilm"]:
             r = JobCreateRequest.model_validate(
                 {
                     "collection_id": "c1",
@@ -247,7 +247,7 @@ class TestJobCreateRequest:
             JobCreateRequest.model_validate(
                 {
                     "collection_id": "c1",
-                    "material_type": "microfilm",
+                    "material_type": "scroll",
                     "pages": [{"page_number": 1, "input_uri": "s3://x"}],
                     "pipeline_mode": "layout",
                     "policy_version": "v1.0",

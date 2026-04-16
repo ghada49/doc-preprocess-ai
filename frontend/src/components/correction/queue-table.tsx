@@ -107,8 +107,7 @@ export function CorrectionQueueTable({
               <SelectItem value="all">All materials</SelectItem>
               <SelectItem value="book">Book</SelectItem>
               <SelectItem value="newspaper">Newspaper</SelectItem>
-              <SelectItem value="archival_document">Archival Document</SelectItem>
-              <SelectItem value="document">Document</SelectItem>
+              <SelectItem value="microfilm">Microfilm</SelectItem>
             </SelectContent>
           </Select>
 
