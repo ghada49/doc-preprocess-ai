@@ -224,8 +224,9 @@ def compute_real_tta_stats(
     else:
         agreement_rate = 0.0
 
-    # Compute prediction variance across passes
-    variance = _compute_corner_variance(all_corners)
+    # Compute prediction variance across passes (normalized by image size)
+    img_h, img_w = image.shape[:2]
+    variance = _compute_corner_variance(all_corners, img_w, img_h)
 
     return TTAStats(
         structural_agreement_rate=round(agreement_rate, 4),
@@ -235,19 +236,27 @@ def compute_real_tta_stats(
     )
 
 
-def _compute_corner_variance(all_corners: list[list[tuple[float, float]]]) -> float:
+def _compute_corner_variance(
+    all_corners: list[list[tuple[float, float]]],
+    img_w: int = 1,
+    img_h: int = 1,
+) -> float:
     """
     Compute inter-pass variance of corner coordinates.
 
-    For each pass, compute the centroid of all corners. Then compute the
+    For each pass, compute the centroid of all corners, normalize by image
+    dimensions so the result is in the [0, 1] range, then compute the
     variance of centroids across passes.
     """
+    w = max(img_w, 1)
+    h = max(img_h, 1)
+
     centroids: list[tuple[float, float]] = []
     for corners in all_corners:
         if not corners:
             continue
-        cx = sum(x for x, _ in corners) / len(corners)
-        cy = sum(y for _, y in corners) / len(corners)
+        cx = sum(x for x, _ in corners) / len(corners) / w
+        cy = sum(y for _, y in corners) / len(corners) / h
         centroids.append((cx, cy))
 
     if len(centroids) < 2:

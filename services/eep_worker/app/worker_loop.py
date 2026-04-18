@@ -52,6 +52,8 @@ from services.eep_worker.app.geometry_invocation import (
     GeometryServiceError,
     invoke_geometry_services,
 )
+from services.eep.app.db.quality_gate import log_gate
+from services.eep.app.gates.geometry_selection import build_geometry_gate_log_record
 from services.eep_worker.app.intake import (
     OtiffDecodeError,
     OtiffHashMismatchError,
@@ -71,6 +73,7 @@ from services.eep_worker.app.normalization_step import (
     NormalizationOutcome,
     run_normalization_and_first_validation,
 )
+from services.eep_worker.app.split_step import SplitOutcome, run_split_normalization
 from services.eep_worker.app.rescue_step import RescueOutcome, run_rescue_flow
 from services.eep_worker.app.task import build_gate_config
 from services.eep_worker.app.watchdog import TaskWatchdog
@@ -1103,6 +1106,19 @@ async def _run_preprocessing(
         raise RetryableTaskError(str(exc)) from exc
 
     selection = geometry_result.selection_result
+
+    # ── Write quality_gate_log row ─────────────────────────────────────────
+    gate_record = build_geometry_gate_log_record(
+        result=selection,
+        job_id=job.job_id,
+        page_number=page.page_number,
+        gate_type="geometry_selection",
+        iep1a_response=geometry_result.iep1a_result,
+        iep1b_response=geometry_result.iep1b_result,
+        processing_time_ms=(time.monotonic() - task_started_at) * 1000.0,
+    )
+    log_gate(session, **gate_record)
+
     update_geometry_result(
         session,
         lineage.lineage_id,
@@ -1129,8 +1145,154 @@ async def _run_preprocessing(
         )
         return "ack"
 
-    # split_required check is deferred until after normalization so the reviewer
-    # has a preprocessed artifact (output_image_uri) to work with.
+    # ── Split handling ────────────────────────────────────────────────────────
+    # When split_required=True the image is a book spread with two page regions.
+    # Normalize both child pages, create child JobPage + PageLineage rows, and
+    # set the parent page to "split".
+
+    if selection.selected.response.split_required:
+        left_output_uri = _artifact_uri(
+            page.input_image_uri, job.job_id, "output",
+            page.page_number, 0, ".tiff",
+        )
+        right_output_uri = _artifact_uri(
+            page.input_image_uri, job.job_id, "output",
+            page.page_number, 1, ".tiff",
+        )
+        left_rescue_output_uri = _artifact_uri(
+            page.input_image_uri, job.job_id, "output_rectified",
+            page.page_number, 0, ".tiff",
+        )
+        right_rescue_output_uri = _artifact_uri(
+            page.input_image_uri, job.job_id, "output_rectified",
+            page.page_number, 1, ".tiff",
+        )
+        left_rectified_proxy_uri = _artifact_uri(
+            page.input_image_uri, job.job_id, "proxy_rectified",
+            page.page_number, 0, ".png",
+        )
+        right_rectified_proxy_uri = _artifact_uri(
+            page.input_image_uri, job.job_id, "proxy_rectified",
+            page.page_number, 1, ".png",
+        )
+        split_storage = get_backend(left_output_uri)
+        split_loader = make_cv2_image_loader(split_storage)
+
+        try:
+            split_outcome: SplitOutcome = await run_split_normalization(
+                full_res_image=full_res_image,
+                selected_geometry=selection.selected.response,
+                selected_model=selection.selected.model,
+                proxy_width=proxy_width,
+                proxy_height=proxy_height,
+                left_output_uri=left_output_uri,
+                right_output_uri=right_output_uri,
+                left_rescue_output_uri=left_rescue_output_uri,
+                right_rescue_output_uri=right_rescue_output_uri,
+                left_rectified_proxy_uri=left_rectified_proxy_uri,
+                right_rectified_proxy_uri=right_rectified_proxy_uri,
+                storage=split_storage,
+                image_loader=split_loader,
+                job_id=job.job_id,
+                page_number=page.page_number,
+                lineage_id=lineage.lineage_id,
+                material_type=material_type,
+                iep1d_endpoint=config.iep1d_endpoint,
+                iep1a_endpoint=config.iep1a_endpoint,
+                iep1b_endpoint=config.iep1b_endpoint,
+                iep1d_circuit_breaker=config.iep1d_circuit_breaker,
+                iep1a_circuit_breaker=config.iep1a_circuit_breaker,
+                iep1b_circuit_breaker=config.iep1b_circuit_breaker,
+                backend=config.backend,
+                session=session,
+                iep1d_execution_timeout_seconds=config.iep1d_execution_timeout_seconds,
+                gate_config=gate_config,
+            )
+        except Exception as exc:
+            raise RetryableTaskError(f"split normalization failed: {exc}") from exc
+
+        # Set parent page to "split" status
+        advanced = advance_page_state(
+            session,
+            page.page_id,
+            from_state=current_state,
+            to_state="split",
+            processing_time_ms=(time.monotonic() - task_started_at) * 1000.0,
+        )
+        if not advanced:
+            logger.warning(
+                "worker_loop: split CAS miss job=%s page_id=%s",
+                job.job_id, page.page_id,
+            )
+            return "ack"
+        page.status = "split"
+        lineage.split_source = True
+        _commit(session)
+
+        # Create child rows for each split half
+        for child_outcome, child_uri in [
+            (split_outcome.left, left_output_uri),
+            (split_outcome.right, right_output_uri),
+        ]:
+            sub_idx = child_outcome.sub_page_index
+            child_status = (
+                "accepted" if child_outcome.route == "accept_now"
+                else "pending_human_correction"
+            )
+            child_page = JobPage(
+                page_id=str(uuid.uuid4()),
+                job_id=job.job_id,
+                page_number=page.page_number,
+                sub_page_index=sub_idx,
+                status=child_status,
+                input_image_uri=page.input_image_uri,
+                output_image_uri=(
+                    child_outcome.branch_response.processed_image_uri
+                    if child_outcome.branch_response is not None
+                    else child_uri
+                ),
+                review_reasons=(
+                    [child_outcome.review_reason or "split_child_failed"]
+                    if child_status == "pending_human_correction"
+                    else None
+                ),
+            )
+            session.add(child_page)
+            session.flush()
+
+            child_lineage = create_lineage(
+                session,
+                lineage_id=str(uuid.uuid4()),
+                job_id=job.job_id,
+                page_number=page.page_number,
+                sub_page_index=sub_idx,
+                correlation_id=lineage.correlation_id,
+                input_image_uri=lineage.input_image_uri,
+                otiff_uri=lineage.otiff_uri,
+                input_image_hash=lineage.input_image_hash,
+                material_type=material_type,
+                policy_version=job.policy_version,
+                parent_page_id=page.page_id,
+                split_source=True,
+            )
+            child_lineage.output_image_uri = child_page.output_image_uri
+            if child_status == "accepted":
+                child_lineage.acceptance_decision = "accepted"
+                child_lineage.routing_path = "split_child_accepted"
+            confirm_preprocessed_artifact(session, child_lineage.lineage_id)
+
+            logger.info(
+                "worker_loop: split child created job=%s page=%d sub=%d route=%s uri=%s",
+                job.job_id, page.page_number, sub_idx,
+                child_outcome.route,
+                child_page.output_image_uri,
+            )
+
+        _sync_job_summary(session, job)
+        _commit(session)
+        return "ack"
+
+    # ── Single-page normalization ──────────────────────────────────────────────
 
     output_uri = _artifact_uri(
         page.input_image_uri,
@@ -1161,23 +1323,6 @@ async def _run_preprocessing(
 
     branch_response = norm_outcome.branch_response
     quality_summary = _quality_summary_dict(branch_response)
-
-    if selection.selected.response.split_required:
-        # Normalization has now run so the reviewer has a preprocessed artifact
-        # (branch_response.processed_image_uri) to open and split.
-        confirm_preprocessed_artifact(session, lineage.lineage_id)
-        _complete_pending_human_correction(
-            session,
-            page=page,
-            job=job,
-            lineage=lineage,
-            from_state=current_state,
-            review_reason="split_required",
-            total_processing_ms=(time.monotonic() - task_started_at) * 1000.0,
-            output_image_uri=branch_response.processed_image_uri,
-            quality_summary=quality_summary,
-        )
-        return "ack"
 
     if page.status == "preprocessing" and norm_outcome.route == "rescue_required":
         advanced = advance_page_state(

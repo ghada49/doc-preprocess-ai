@@ -272,7 +272,7 @@ export default function JobDetailPage() {
                                 layoutUri={page.output_layout_uri}
                                 pageLabel={`Page ${page.page_number}${
                                   page.sub_page_index != null
-                                    ? ` / ${page.sub_page_index}`
+                                    ? ` ${page.sub_page_index === 0 ? "Left" : "Right"}`
                                     : ""
                                 }`}
                               />
@@ -331,7 +331,9 @@ function PageRow({
         <span className="text-xs text-slate-400 tabular-nums font-mono">
           {page.page_number}
           {page.sub_page_index != null && (
-            <span className="text-slate-300">/{page.sub_page_index}</span>
+            <span className="ml-1 text-2xs font-sans font-medium text-indigo-400">
+              {page.sub_page_index === 0 ? "Left" : "Right"}
+            </span>
           )}
         </span>
       </td>

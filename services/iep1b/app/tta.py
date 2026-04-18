@@ -205,8 +205,9 @@ def compute_real_tta_stats(
     else:
         agreement_rate = 0.0
 
-    # Compute keypoint variance across passes
-    variance = _compute_keypoint_variance(all_keypoints)
+    # Compute keypoint variance across passes (normalized by image size)
+    img_h, img_w = image.shape[:2]
+    variance = _compute_keypoint_variance(all_keypoints, img_w, img_h)
 
     return TTAStats(
         structural_agreement_rate=round(agreement_rate, 4),
@@ -216,19 +217,27 @@ def compute_real_tta_stats(
     )
 
 
-def _compute_keypoint_variance(all_keypoints: list[list[tuple[float, float]]]) -> float:
+def _compute_keypoint_variance(
+    all_keypoints: list[list[tuple[float, float]]],
+    img_w: int = 1,
+    img_h: int = 1,
+) -> float:
     """
     Compute inter-pass variance of keypoint coordinates.
 
-    For each pass, compute the centroid of all keypoints. Then compute the
+    For each pass, compute the centroid of all keypoints, normalize by image
+    dimensions so the result is in the [0, 1] range, then compute the
     variance of centroids across passes.
     """
+    w = max(img_w, 1)
+    h = max(img_h, 1)
+
     centroids: list[tuple[float, float]] = []
     for kps in all_keypoints:
         if not kps:
             continue
-        cx = sum(x for x, _ in kps) / len(kps)
-        cy = sum(y for _, y in kps) / len(kps)
+        cx = sum(x for x, _ in kps) / len(kps) / w
+        cy = sum(y for _, y in kps) / len(kps) / h
         centroids.append((cx, cy))
 
     if len(centroids) < 2:

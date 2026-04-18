@@ -105,7 +105,12 @@ def get_job_status(
 
     assert_job_ownership(job, user)
 
-    all_pages: list[JobPage] = db.query(JobPage).filter(JobPage.job_id == job_id).all()
+    all_pages: list[JobPage] = (
+        db.query(JobPage)
+        .filter(JobPage.job_id == job_id)
+        .order_by(JobPage.page_number, JobPage.sub_page_index.asc().nullsfirst())
+        .all()
+    )
 
     leaf_pages = leaf_pages_from_pages(all_pages)
     derived_status: JobStatus = _derive_job_status(leaf_pages)
@@ -120,7 +125,7 @@ def get_job_status(
         shadow_mode=job.shadow_mode,
         created_by=job.created_by,
         status=derived_status,
-        page_count=job.page_count,
+        page_count=len(leaf_pages),
         accepted_count=counts.accepted_count,
         review_count=counts.review_count,
         failed_count=counts.failed_count,

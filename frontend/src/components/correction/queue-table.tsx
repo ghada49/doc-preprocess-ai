@@ -192,7 +192,11 @@ export function CorrectionQueueTable({
                           </code>
                           <span className="text-xs text-slate-500">
                             Page {item.page_number}
-                            {item.sub_page_index != null && ` · sub ${item.sub_page_index}`}
+                            {item.sub_page_index != null && (
+                              <span className="ml-1 text-2xs font-medium text-indigo-400">
+                                {item.sub_page_index === 0 ? "Left" : "Right"}
+                              </span>
+                            )}
                           </span>
                         </div>
                       </td>

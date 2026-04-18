@@ -34,8 +34,11 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
 from datetime import datetime, timezone
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from pydantic import ValidationError
 from sqlalchemy.orm import Session
@@ -497,6 +500,18 @@ async def invoke_geometry_services(
         proxy_width=proxy_width,
         proxy_height=proxy_height,
         config=gate_config,
+    )
+
+    # ── Debug: log geometry gate outcome ──────────────────────────────────────
+    logger.info(
+        "geometry_gate: job=%s page=%d route=%s review=%s sanity=%s "
+        "tta_var=%s structural_agreement=%s",
+        job_id, page_number,
+        selection_result.route_decision,
+        selection_result.review_reason,
+        selection_result.sanity_results,
+        selection_result.tta_variance_per_model,
+        selection_result.structural_agreement,
     )
 
     # ── Drift observation (best-effort; never blocks return) ─────────────────

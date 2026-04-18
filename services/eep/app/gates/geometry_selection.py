@@ -331,9 +331,14 @@ def check_sanity(
 
         # -------------------------------------------------------------------
         # Check 3: Page area fraction plausible
+        # For 2-page spreads each page is naturally smaller, so halve the
+        # minimum area threshold when the response reports page_count == 2.
         # -------------------------------------------------------------------
+        area_min = config.geometry_sanity_area_min_fraction
+        if response.page_count == 2:
+            area_min = area_min / 2.0
         if not (
-            config.geometry_sanity_area_min_fraction
+            area_min
             <= region.page_area_fraction
             <= config.geometry_sanity_area_max_fraction
         ):
