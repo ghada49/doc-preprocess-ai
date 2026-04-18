@@ -89,7 +89,7 @@ class PreprocessingGateConfig:
     """
 
     geometry_sanity_area_min_fraction: float = 0.15
-    geometry_sanity_area_max_fraction: float = 0.98
+    geometry_sanity_area_max_fraction: float = 1.0
     aspect_ratio_bounds: dict[str, tuple[float, float]] = field(
         default_factory=lambda: dict(_DEFAULT_ASPECT_RATIO_BOUNDS)
     )

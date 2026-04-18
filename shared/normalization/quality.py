@@ -46,7 +46,10 @@ _BORDER_FRAC: float = 0.05
 _BORDER_STD_MAX: float = 50.0
 
 # Minimum Hough accumulator votes to accept a line for skew estimation.
-_HOUGH_THRESHOLD: int = 50
+# A higher threshold filters out short/spurious lines from noise, ads, and
+# image edges in complex layouts like newspapers.  For a ~2000 px-wide scan a
+# real text baseline easily exceeds 200 edge pixels.
+_HOUGH_THRESHOLD: int = 200
 
 
 # ── Result type ───────────────────────────────────────────────────────────────
@@ -169,7 +172,7 @@ def compute_skew_residual(image: np.ndarray) -> float:
         if abs(angle_deg) <= 45.0:  # consider only near-horizontal lines
             deviations.append(abs(angle_deg))
 
-    return float(np.mean(deviations)) if deviations else 0.0
+    return float(np.median(deviations)) if deviations else 0.0
 
 
 def compute_quality_metrics(image: np.ndarray) -> QualityMetricsResult:
