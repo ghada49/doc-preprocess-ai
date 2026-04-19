@@ -235,7 +235,23 @@ def _detections_to_response(
     elapsed_ms: float,
 ) -> GeometryResponse:
     """Convert raw detections list into a GeometryResponse."""
-    detections = detections[:2]
+    # Limit to at most 2 page detections (area sort already applied by caller).
+    # Re-sort the final 2 by the dominant split axis:
+    #   - Horizontal spread (x_min values differ more than y_min values):
+    #     sort by x_min ascending → pages[0]=physical left, pages[1]=physical right.
+    #   - Vertical stack (y_min values differ more than x_min values):
+    #     sort by y_min ascending → pages[0]=top page, pages[1]=bottom page.
+    # The worker applies a post-IEP1E rotation-aware swap to finalize left/right.
+    top2 = detections[:2]
+    if len(top2) == 2:
+        x_sep = abs(top2[0]["bbox"][0] - top2[1]["bbox"][0])
+        y_sep = abs(top2[0]["bbox"][1] - top2[1]["bbox"][1])
+        if y_sep > x_sep:
+            detections = sorted(top2, key=lambda d: d["bbox"][1])  # top-to-bottom
+        else:
+            detections = sorted(top2, key=lambda d: d["bbox"][0])  # left-to-right
+    else:
+        detections = top2
     page_count = len(detections) if detections else 1
 
     if not detections:

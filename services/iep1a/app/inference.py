@@ -234,8 +234,12 @@ def _detections_to_response(
     elapsed_ms: float,
 ) -> GeometryResponse:
     """Convert raw detections list into a GeometryResponse."""
-    # Limit to at most 2 page detections
-    detections = detections[:2]
+    # Limit to at most 2 page detections (area sort already applied by caller).
+    #  # Re-sort the final 2 by x_min so that pages[0] is always the physical left
+  #  page and pages[1] is always the physical right page.  This guarantees the
+    # split_x midpoint calculation and split.py coordinate assumptions hold.
+    detections = sorted(detections[:2], key=lambda d: d["bbox"][0])
+
     page_count = len(detections) if detections else 1
 
     if not detections:

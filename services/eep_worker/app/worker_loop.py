@@ -958,7 +958,7 @@ async def _call_layout_service(
 
 
 _IEP1E_READY_POLL_INTERVAL_SECONDS: float = 5.0
-_IEP1E_READY_TIMEOUT_SECONDS: float = 300.0  # generous: covers model download + init
+_IEP1E_READY_TIMEOUT_SECONDS: float = 600.0  # covers model download + init on cold start
 
 
 async def _wait_for_iep1e_ready(endpoint: str) -> bool:
@@ -1470,6 +1470,113 @@ async def _run_preprocessing(
                                     job.job_id,
                                     _rot_exc,
                                 )
+
+                    # ── Post-rotation left/right ordering ─────────────────────
+                    # The geometry model runs on the pre-rotation scan, so the
+                    # initial pages[0]/pages[1] order (and hence sub=0/sub=1)
+                    # reflects scan-space positions, not corrected-view positions.
+                    # Example: a landscape spread photographed 90° CCW appears
+                    # as two vertically-stacked crops; the top crop (pages[0])
+                    # becomes the RIGHT page after 270° CW correction, not left.
+                    #
+                    # Algorithm: transform each page's center (from the full-res
+                    # crop_box) through the IEP1E rotation angle to get its
+                    # post-correction x-position.  If sub=0 ends up to the RIGHT
+                    # of sub=1 after correction, swap the URI assignments.
+                    #
+                    # Rotation transforms for a W×H image:
+                    #   0°   → x_post = x_pre           (no change)
+                    #   90°  → x_post = H - y_pre       (top → right)
+                    #   180° → x_post = W - x_pre       (left ↔ right)
+                    #   270° → x_post = y_pre            (top → left)
+                    try:
+                        _iep1e_by_sub = {
+                            _sp.sub_page_index: _sp for _sp in _split_sem_result.pages
+                        }
+                        _rot_p0 = _iep1e_by_sub.get(0)
+                        _rot_p1 = _iep1e_by_sub.get(1)
+                        if (
+                            _rot_p0 is not None
+                            and _rot_p1 is not None
+                            and _left_br is not None
+                            and _right_br is not None
+                        ):
+                            # Use the confident page's rotation; fallback to sub=0
+                            if (
+                                _rot_p1.orientation.orientation_confident
+                                and not _rot_p0.orientation.orientation_confident
+                            ):
+                                _ref_rot_deg = _rot_p1.orientation.best_rotation_deg
+                            else:
+                                _ref_rot_deg = _rot_p0.orientation.best_rotation_deg
+
+                            _fr_h, _fr_w = full_res_image.shape[:2]
+
+                            # Page centers in full-res scan space
+                            _cx0 = (
+                                _left_br.crop.crop_box.x_min
+                                + _left_br.crop.crop_box.x_max
+                            ) / 2.0
+                            _cy0 = (
+                                _left_br.crop.crop_box.y_min
+                                + _left_br.crop.crop_box.y_max
+                            ) / 2.0
+                            _cx1 = (
+                                _right_br.crop.crop_box.x_min
+                                + _right_br.crop.crop_box.x_max
+                            ) / 2.0
+                            _cy1 = (
+                                _right_br.crop.crop_box.y_min
+                                + _right_br.crop.crop_box.y_max
+                            ) / 2.0
+
+                            def _post_rot_x(
+                                cx: float, cy: float, deg: int, W: int, H: int
+                            ) -> float:
+                                if deg == 90:
+                                    return H - cy   # top → right
+                                if deg == 180:
+                                    return W - cx   # left ↔ right
+                                if deg == 270:
+                                    return cy       # top → left
+                                return cx           # 0°: unchanged
+
+                            _px0 = _post_rot_x(_cx0, _cy0, _ref_rot_deg, _fr_w, _fr_h)
+                            _px1 = _post_rot_x(_cx1, _cy1, _ref_rot_deg, _fr_w, _fr_h)
+
+                            if _px0 > _px1:
+                                # After correction sub=0 is to the RIGHT of sub=1:
+                                # swap URI assignments so sub=0 → left, sub=1 → right.
+                                _split_iep1e_uri_map[0], _split_iep1e_uri_map[1] = (
+                                    _split_iep1e_uri_map[1],
+                                    _split_iep1e_uri_map[0],
+                                )
+                                logger.info(
+                                    "worker_loop: post-rotation left/right swap "
+                                    "rot=%d° cx0=%.0f cy0=%.0f→px0=%.0f "
+                                    "cx1=%.0f cy1=%.0f→px1=%.0f "
+                                    "job=%s page=%d",
+                                    _ref_rot_deg,
+                                    _cx0, _cy0, _px0,
+                                    _cx1, _cy1, _px1,
+                                    job.job_id,
+                                    page.page_number,
+                                )
+                            else:
+                                logger.debug(
+                                    "worker_loop: post-rotation order preserved "
+                                    "rot=%d° px0=%.0f px1=%.0f job=%s page=%d",
+                                    _ref_rot_deg, _px0, _px1,
+                                    job.job_id, page.page_number,
+                                )
+                    except Exception as _swap_exc:
+                        logger.warning(
+                            "worker_loop: post-rotation swap failed job=%s page=%d: %s "
+                            "— keeping current URI order",
+                            job.job_id,
+                            page.page_number,
+                            _swap_exc,
+                        )
         except Exception:
             logger.exception(
                 "worker_loop: iep1e split call raised unexpectedly job=%s page=%d; "
