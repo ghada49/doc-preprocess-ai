@@ -249,6 +249,33 @@ IEP1D_REJECTION_REASONS = Counter(
     # reason label values: low_confidence, skew_not_improved, border_regressed, warning_veto
 )
 
+# ── IEP1E metrics ─────────────────────────────────────────────────────────────
+
+IEP1E_ORIENTATION_DECISIONS = Counter(
+    "iep1e_orientation_decisions_total",
+    "IEP1E orientation decision count",
+    ["confident"],
+    # confident label values: "true", "false"
+)
+
+IEP1E_READING_DIRECTION = Counter(
+    "iep1e_reading_direction_total",
+    "IEP1E reading-direction decision count",
+    ["direction"],
+    # direction label values: ltr, rtl, unresolved
+)
+
+IEP1E_PROCESSING_SECONDS = Histogram(
+    "iep1e_processing_seconds",
+    "IEP1E semantic-norm wall-clock time in seconds",
+    buckets=_GPU_SECONDS_BUCKETS,
+)
+
+IEP1E_FALLBACK_TOTAL = Counter(
+    "iep1e_fallback_total",
+    "IEP1E calls that used geometry-only fallback (blank pages or OCR unavailable)",
+)
+
 # ── Google Document AI cleanup metrics ────────────────────────────────────────
 
 GOOGLE_CLEANUP_DECISIONS = Counter(

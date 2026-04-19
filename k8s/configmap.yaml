@@ -28,6 +28,7 @@ data:
   IEP1A_URL: "http://iep1a:8001"
   IEP1B_URL: "http://iep1b:8002"
   IEP1D_URL: "http://iep1d:8003"
+  IEP1E_URL: "http://iep1e:8007"
   IEP2A_URL: "http://iep2a:8004"
   IEP2B_URL: "http://iep2b:8005"
 

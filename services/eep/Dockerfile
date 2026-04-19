@@ -12,7 +12,8 @@ WORKDIR /app
 
 ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    UV_HTTP_TIMEOUT=120
 
 # Install the shared runtime dependency set needed by the EEP API and the
 # modules it imports at startup and request time.

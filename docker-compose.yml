@@ -534,6 +534,46 @@ services:
     restart: unless-stopped
     command: ["uvicorn", "services.iep1d.app.main:app", "--host", "0.0.0.0", "--port", "8003", "--reload"]
 
+  # ── IEP1E — Semantic normalization service ───────────────────────────────────
+  #
+  # Real-model build (optional):
+  #   Set IEP1E_ENABLE_REAL_MODEL=true in your shell or .env, then:
+  #     docker compose build iep1e
+  #   Enable inference at runtime by also setting IEP1E_MOCK_MODE=false in .env.
+  #   Without real-model, service runs in mock mode (returns no rotation, unresolved).
+
+  iep1e:
+    build:
+      context: .
+      dockerfile: services/iep1e/Dockerfile
+      args:
+        ENABLE_REAL_MODEL: "${IEP1E_ENABLE_REAL_MODEL:-false}"
+    volumes:
+      - .:/app
+    environment:
+      PYTHONPATH: /app
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      # Default to mock mode; set IEP1E_MOCK_MODE=false to use real PaddleOCR.
+      IEP1E_MOCK_MODE: "${IEP1E_MOCK_MODE:-true}"
+      IEP1E_USE_GPU: "${IEP1E_USE_GPU:-false}"
+    env_file: .env
+    ports:
+      - "8007:8007"
+    networks:
+      - libraryai-net
+    restart: unless-stopped
+    command: [
+      "uvicorn", "services.iep1e.app.main:app",
+      "--host", "0.0.0.0", "--port", "8007",
+      "--reload",
+      "--reload-dir", "/app/services/iep1e",
+      "--reload-dir", "/app/shared/semantic_norm",
+      "--reload-dir", "/app/shared/schemas",
+      "--reload-dir", "/app/shared/io",
+      "--reload-dir", "/app/shared/metrics.py"
+    ]
+
   # ── IEP2A — Detectron2 layout detection ──────────────────────────────────────
   #
   # Real-model build (optional):

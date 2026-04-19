@@ -12,7 +12,8 @@ WORKDIR /app
 
 ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    UV_HTTP_TIMEOUT=120
 
 # Install the shared runtime dependency set so the cleanup service has the same
 # storage/DB client availability as the rest of the orchestration services.

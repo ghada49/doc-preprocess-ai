@@ -1,0 +1,62 @@
+FROM python:3.11-slim-bookworm
+
+# Set ENABLE_REAL_MODEL=true to install PaddleOCR for real inference.
+# Without it the service runs in mock mode (IEP1E_MOCK_MODE=true is default).
+ARG ENABLE_REAL_MODEL=false
+
+RUN set -eux; \
+    if [ -f /etc/apt/sources.list ]; then \
+      sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list; \
+    fi; \
+    if [ -f /etc/apt/sources.list.d/debian.sources ]; then \
+      sed -i 's|http://deb.debian.org|https://deb.debian.org|g' /etc/apt/sources.list.d/debian.sources; \
+    fi; \
+    for i in 1 2 3; do \
+      apt-get update && break || sleep 5; \
+    done; \
+    apt-get install -y --no-install-recommends --fix-missing \
+      -o Acquire::Retries=5 \
+      -o Acquire::http::Timeout=30 \
+      -o Acquire::https::Timeout=30 \
+      curl; \
+    if [ "$ENABLE_REAL_MODEL" = "true" ]; then \
+      apt-get install -y --no-install-recommends --fix-missing \
+        -o Acquire::Retries=5 \
+        -o Acquire::http::Timeout=30 \
+        -o Acquire::https::Timeout=30 \
+        libgl1 \
+        libglib2.0-0 \
+        libgomp1; \
+    fi; \
+    rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+ENV PYTHONPATH=/app \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+RUN pip install --no-cache-dir --upgrade pip wheel "setuptools<81"
+
+RUN pip install --no-cache-dir \
+    "fastapi>=0.110.0" \
+    "uvicorn[standard]>=0.27.0" \
+    "prometheus-client>=0.20.0" \
+    "boto3>=1.34" \
+    "numpy>=1.24" \
+    "opencv-python-headless>=4.8"
+
+# Install PaddleOCR only when building the real-model image.
+# In the default (stub) image, IEP1E_MOCK_MODE=true keeps all requests working.
+#
+# PaddleOCR is pinned to <3.0 because 3.x removed lang="arabic" support and
+# restructured the model registry — our build_ocr_engine() targets the 2.x API.
+RUN if [ "$ENABLE_REAL_MODEL" = "true" ]; then \
+      pip install --no-cache-dir \
+        "paddlepaddle>=2.6,<3.0" \
+        "paddleocr>=2.7.0,<3.0"; \
+    fi
+
+EXPOSE 8007
+
+CMD ["uvicorn", "services.iep1e.app.main:app", "--host", "0.0.0.0", "--port", "8007"]

@@ -1,0 +1,126 @@
+# IEP1E — Semantic Normalization service (orientation + reading-order)
+# Port 8007.  Default: mock mode (no PaddleOCR weights loaded).
+#
+# To enable real PaddleOCR inference:
+#   1. Build the image with --build-arg ENABLE_REAL_MODEL=true
+#   2. Set IEP1E_MOCK_MODE: "false" in this Deployment (or via a ConfigMap patch)
+#   3. Uncomment the GPU resource limits block below and ensure the node has
+#      the nvidia-device-plugin DaemonSet installed.
+#
+# Apply:
+#   kubectl apply -f k8s/iep1e.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iep1e
+  namespace: libraryai
+  labels:
+    app: iep1e
+    app.kubernetes.io/part-of: libraryai
+spec:
+  # GPU inference: keep replicas: 1 per GPU node; scale nodes instead.
+  # Mock mode: any replica count is fine (CPU-only, stateless).
+  replicas: 1
+  selector:
+    matchLabels:
+      app: iep1e
+  template:
+    metadata:
+      labels:
+        app: iep1e
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8007"
+    spec:
+      containers:
+        - name: iep1e
+          image: your-registry/libraryai-iep1e:latest
+          imagePullPolicy: Always
+          command:
+            - uvicorn
+            - services.iep1e.app.main:app
+            - --host
+            - "0.0.0.0"
+            - --port
+            - "8007"
+          ports:
+            - containerPort: 8007
+              name: http
+          envFrom:
+            - configMapRef:
+                name: libraryai-config
+            - secretRef:
+                name: libraryai-secret
+          env:
+            - name: PYTHONPATH
+              value: /app
+            # ── Mock / real model switch ──────────────────────────────────────
+            # Override to "false" when deploying with a real PaddleOCR image.
+            - name: IEP1E_MOCK_MODE
+              value: "true"
+            # Set to "true" when GPU nodes and ENABLE_REAL_MODEL=true image are used.
+            - name: IEP1E_USE_GPU
+              value: "false"
+          resources:
+            # ── CPU / mock-mode resources ─────────────────────────────────────
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+            # ── GPU resources (uncomment when using real PaddleOCR) ───────────
+            # requests:
+            #   cpu: "500m"
+            #   memory: "2Gi"
+            #   nvidia.com/gpu: "1"
+            # limits:
+            #   cpu: "2000m"
+            #   memory: "4Gi"
+            #   nvidia.com/gpu: "1"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8007
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            # /ready gates traffic until the OCR model is fully loaded.
+            # In mock mode this returns 200 immediately.
+            # With a real model, allow up to ~3 min for PaddleOCR weight download.
+            httpGet:
+              path: /ready
+              port: 8007
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 18    # 18 × 10 s = 3 min grace period
+      # ── GPU node affinity (uncomment when using real PaddleOCR) ──────────────
+      # nodeSelector:
+      #   accelerator: nvidia-gpu
+      # tolerations:
+      #   - key: nvidia.com/gpu
+      #     operator: Exists
+      #     effect: NoSchedule
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iep1e
+  namespace: libraryai
+  labels:
+    app: iep1e
+    app.kubernetes.io/part-of: libraryai
+spec:
+  selector:
+    app: iep1e
+  ports:
+    - name: http
+      port: 8007
+      targetPort: 8007
+  type: ClusterIP

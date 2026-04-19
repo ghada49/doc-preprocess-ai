@@ -57,7 +57,8 @@ WORKDIR /app
 
 ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    UV_HTTP_TIMEOUT=120
 
 RUN pip install --no-cache-dir --upgrade pip wheel "setuptools<81"
 

@@ -14,7 +14,8 @@ WORKDIR /app
 
 ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    UV_HTTP_TIMEOUT=120
 
 # Install runtime deps needed for UVDoc inference + artifact I/O.
 COPY services/iep1d/requirements-real.txt /tmp/requirements-real.txt
