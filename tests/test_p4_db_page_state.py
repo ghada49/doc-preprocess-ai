@@ -69,8 +69,9 @@ class TestTerminalPageStates:
     def test_failed_is_terminal(self) -> None:
         assert "failed" in TERMINAL_PAGE_STATES
 
-    def test_pending_human_correction_is_terminal(self) -> None:
-        assert "pending_human_correction" in TERMINAL_PAGE_STATES
+    def test_pending_human_correction_is_not_job_terminal(self) -> None:
+        # Worker-stop but not job-accounting terminal — human action re-queues it.
+        assert "pending_human_correction" not in TERMINAL_PAGE_STATES
 
     def test_split_is_terminal(self) -> None:
         assert "split" in TERMINAL_PAGE_STATES
@@ -80,11 +81,12 @@ class TestTerminalPageStates:
 
 
 class TestValidTransitions:
-    def test_all_9_states_present_as_source(self) -> None:
+    def test_all_10_states_present_as_source(self) -> None:
         expected = {
             "queued",
             "preprocessing",
             "rectification",
+            "ptiff_qa_pending",
             "layout_detection",
             "pending_human_correction",
             "accepted",
@@ -95,19 +97,21 @@ class TestValidTransitions:
         assert set(VALID_TRANSITIONS.keys()) == expected
 
     def test_leaf_final_states_have_empty_targets(self) -> None:
-        # accepted, review, failed, split are permanently terminal — no transitions.
-        # pending_human_correction IS in TERMINAL_PAGE_STATES (worker-terminal)
-        # but can re-enter the pipeline after human correction, so it retains
-        # valid transitions (spec Section 1.6).
-        permanently_terminal = {"accepted", "review", "failed", "split"}
+        # "review", "failed", and "split" are permanently terminal — no transitions.
+        # "accepted" now allows reviewer-initiated flagging to pending_human_correction,
+        # so it is no longer permanently terminal.
+        permanently_terminal = {"review", "failed", "split"}
         for state in permanently_terminal:
             assert (
                 VALID_TRANSITIONS[state] == frozenset()
             ), f"Leaf-final state {state!r} must have no valid transitions"
+        # accepted has exactly one outgoing transition (reviewer flag action)
+        assert VALID_TRANSITIONS["accepted"] == frozenset({"pending_human_correction"})
 
-    def test_pending_human_correction_has_transitions_despite_being_terminal(self) -> None:
-        """Worker-terminal but not leaf-final — human correction re-queues it."""
-        assert "pending_human_correction" in TERMINAL_PAGE_STATES
+    def test_pending_human_correction_has_transitions_despite_being_worker_stop(self) -> None:
+        """Worker-stop (automated processing halts) but not leaf-final or job-terminal.
+        Human correction re-queues the page, so valid outgoing transitions exist."""
+        assert "pending_human_correction" not in TERMINAL_PAGE_STATES  # not job-accounting terminal
         assert len(VALID_TRANSITIONS["pending_human_correction"]) > 0
 
     def test_queued_targets(self) -> None:
@@ -117,8 +121,9 @@ class TestValidTransitions:
         assert VALID_TRANSITIONS["preprocessing"] == frozenset(
             {
                 "rectification",
-                "layout_detection",
-                "accepted",
+                "ptiff_qa_pending",     # manual PTIFF QA mode
+                "layout_detection",     # auto_continue + layout mode
+                "accepted",             # auto_continue + preprocess mode
                 "pending_human_correction",
                 "split",
                 "failed",
@@ -128,8 +133,9 @@ class TestValidTransitions:
     def test_rectification_targets(self) -> None:
         assert VALID_TRANSITIONS["rectification"] == frozenset(
             {
-                "layout_detection",
-                "accepted",
+                "ptiff_qa_pending",     # manual PTIFF QA mode
+                "layout_detection",     # auto_continue + layout mode
+                "accepted",             # auto_continue + preprocess mode
                 "pending_human_correction",
                 "split",
                 "failed",

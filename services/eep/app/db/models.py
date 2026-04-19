@@ -70,7 +70,7 @@ class Job(Base):
     collection_id: Mapped[str] = mapped_column(Text(), nullable=False)
     material_type: Mapped[str] = mapped_column(Text(), nullable=False)
     pipeline_mode: Mapped[str] = mapped_column(Text(), nullable=False, default="layout")
-    ptiff_qa_mode: Mapped[str] = mapped_column(Text(), nullable=False, default="manual")
+    ptiff_qa_mode: Mapped[str] = mapped_column(Text(), nullable=False, default="auto_continue")
     policy_version: Mapped[str] = mapped_column(Text(), nullable=False)
     status: Mapped[str] = mapped_column(Text(), nullable=False, default="queued")
     page_count: Mapped[int] = mapped_column(Integer(), nullable=False)

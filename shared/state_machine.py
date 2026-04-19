@@ -46,21 +46,34 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     ),
     "preprocessing": frozenset(
         {
-            "rectification",  # artifact invalid → IEP1D fallback (Step 6)
-            "layout_detection",  # preprocessing succeeded, pipeline_mode=layout (Step 8.5)
-            "accepted",  # preprocessing succeeded, pipeline_mode=preprocess (Step 8.5)
+            "rectification",        # artifact invalid → IEP1D fallback (Step 6)
+            "ptiff_qa_pending",     # preprocessing succeeded, ptiff_qa_mode=manual (Step 8.5)
+            "layout_detection",     # preprocessing succeeded, ptiff_qa_mode=auto_continue, layout mode
+            "accepted",             # preprocessing succeeded, ptiff_qa_mode=auto_continue, preprocess mode
             "pending_human_correction",  # geometry / selection / normalization failures
-            "split",  # spread parent: children created and enqueued (Step 8)
-            "failed",  # infrastructure failure; retries exhausted
+            "split",                # spread parent: children created and enqueued (Step 8)
+            "failed",               # infrastructure failure; retries exhausted
         }
     ),
     "rectification": frozenset(
         {
-            "layout_detection",  # IEP1D + second-pass succeeded, pipeline_mode=layout (Step 8.5)
-            "accepted",  # IEP1D + second-pass succeeded, pipeline_mode=preprocess (Step 8.5)
+            "ptiff_qa_pending",     # IEP1D + second-pass succeeded, ptiff_qa_mode=manual (Step 8.5)
+            "layout_detection",     # IEP1D + second-pass succeeded, ptiff_qa_mode=auto_continue, layout mode
+            "accepted",             # IEP1D + second-pass succeeded, ptiff_qa_mode=auto_continue, preprocess mode
             "pending_human_correction",  # IEP1D / second-pass / final validation failure
-            "split",  # spread parent: both child artifacts validated (Step 8)
-            "failed",  # infrastructure failure; retries exhausted
+            "split",                # spread parent: both child artifacts validated (Step 8)
+            "failed",               # infrastructure failure; retries exhausted
+        }
+    ),
+    # PTIFF QA checkpoint (spec Section 3.1 / 8.5):
+    #   Manual mode  — page waits here until reviewer approves or sends to correction.
+    #   Auto mode    — gate releases immediately when all pages reach this state.
+    #   Worker must stop here; no automated processing resumes until gate releases.
+    "ptiff_qa_pending": frozenset(
+        {
+            "accepted",             # gate release, pipeline_mode=preprocess
+            "layout_detection",     # gate release, pipeline_mode=layout
+            "pending_human_correction",  # reviewer sends page to correction via /edit
         }
     ),
     "layout_detection": frozenset(
@@ -79,8 +92,16 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
             "split",  # human split: parent → split after children reach terminal
         }
     ),
-    # ── Leaf-final states: no outgoing transitions ────────────────────────────
-    "accepted": frozenset(),
+    # ── Accepted: leaf-final for automation, but reviewer may flag for re-correction ──
+    # Transition to pending_human_correction is user-initiated only (PTIFF QA viewer
+    # flag action). This re-opens the page for human correction; after correction the
+    # page resumes the normal pipeline (layout_detection or accepted depending on mode).
+    "accepted": frozenset(
+        {
+            "pending_human_correction",  # reviewer flags via PTIFF QA viewer
+        }
+    ),
+    # ── Truly leaf-final states: no outgoing transitions ─────────────────────────
     "review": frozenset(),
     "failed": frozenset(),
     # ── Routing-terminal state: no outgoing transitions ───────────────────────
@@ -93,6 +114,7 @@ _ALL_PAGE_STATES: frozenset[str] = frozenset(
         "queued",
         "preprocessing",
         "rectification",
+        "ptiff_qa_pending",
         "layout_detection",
         "pending_human_correction",
         "accepted",
@@ -105,11 +127,20 @@ assert (
     set(ALLOWED_TRANSITIONS.keys()) == _ALL_PAGE_STATES
 ), "ALLOWED_TRANSITIONS must cover every PageState"
 
-# Leaf-final states: once reached, no further transitions are possible.
-# These are permanent outcomes (spec Section 9.1).
-_LEAF_FINAL_STATES: frozenset[str] = frozenset({"accepted", "review", "failed"})
+# Leaf-final states: once reached, no further AUTOMATED transitions are possible.
+# "accepted" is excluded: a reviewer may flag an accepted page for re-correction via
+# the PTIFF QA viewer, which transitions it to pending_human_correction. This is a
+# deliberate user-initiated action, not an automated pipeline step.
+_LEAF_FINAL_STATES: frozenset[str] = frozenset({"review", "failed"})
 _WORKER_STOP_STATES: frozenset[str] = frozenset(
-    {"accepted", "pending_human_correction", "review", "failed", "split"}
+    {
+        "ptiff_qa_pending",          # worker stops; gate or reviewer resumes
+        "accepted",
+        "pending_human_correction",
+        "review",
+        "failed",
+        "split",
+    }
 )
 
 

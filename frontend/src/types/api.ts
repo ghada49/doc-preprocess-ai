@@ -64,6 +64,7 @@ export type PageState =
   | "queued"
   | "preprocessing"
   | "rectification"
+  | "ptiff_qa_pending"
   | "layout_detection"
   | "pending_human_correction"
   | "accepted"
@@ -648,4 +649,133 @@ export interface PresignReadResponse {
   read_url: string;
   expires_in: number;
   content_type_hint: string;
+}
+
+// ---- PTIFF QA (table / gate endpoints) -------------------------------------------------------
+
+export interface PtiffQaPageEntry {
+  page_number: number;
+  sub_page_index: number | null;
+  current_state: string;
+  approval_status: "approved" | "pending";
+  needs_correction: boolean;
+}
+
+export interface PtiffQaResponse {
+  job_id: string;
+  ptiff_qa_mode: string;
+  total_pages: number;
+  pages_pending: number;
+  pages_approved: number;
+  pages_in_correction: number;
+  is_gate_ready: boolean;
+  pages: PtiffQaPageEntry[];
+}
+
+export interface PtiffApprovePageResponse {
+  page_number: number;
+  approved: boolean;
+  gate_released: boolean;
+}
+
+export interface PtiffApproveAllResponse {
+  approved_count: number;
+  gate_released: boolean;
+}
+
+export interface PtiffEditPageResponse {
+  page_number: number;
+  new_state: string;
+}
+
+// ---- PTIFF QA Viewer (carousel endpoints) -------------------------------------------------------
+
+export interface ViewerPageRef {
+  page_number: number;
+  sub_page_index: number | null;
+}
+
+export interface ViewerQualitySummary {
+  blur_score: number | null;
+  skew_angle_deg: number | null;
+  border_fraction: number | null;
+  coverage_fraction: number | null;
+  overall_passed: boolean | null;
+}
+
+export interface ViewerCurrentPage {
+  page_number: number;
+  sub_page_index: number | null;
+  status: string;
+  ptiff_qa_approved: boolean;
+  output_image_uri: string | null;
+  input_image_uri: string | null;
+  preview_url: string | null;
+  preview_uri_used: string | null;
+  preview_expires_in: number;
+  preview_unavailable_reason: string | null;
+  quality_summary: ViewerQualitySummary | null;
+  review_reasons: string[] | null;
+  routing_path: string | null;
+  processing_time_ms: number | null;
+  can_approve: boolean;
+  can_send_to_correction: boolean;
+}
+
+export interface ViewerNavigation {
+  current_index: number;
+  total_pages: number;
+  prev: ViewerPageRef | null;
+  next: ViewerPageRef | null;
+}
+
+export interface ViewerJobSummary {
+  job_id: string;
+  ptiff_qa_mode: string;
+  pipeline_mode: string;
+  total_pages: number;
+  pages_pending_qa: number;
+  pages_approved: number;
+  pages_in_correction: number;
+  pages_accepted: number;
+  pages_failed: number;
+  is_gate_ready: boolean;
+}
+
+export interface PtiffQaViewerResponse {
+  job_summary: ViewerJobSummary;
+  current_page: ViewerCurrentPage;
+  navigation: ViewerNavigation;
+}
+
+export interface FlagPageResponse {
+  page_number: number;
+  sub_page_index: number | null;
+  previous_state: string;
+  new_state: string;
+}
+
+// ---- Download -------------------------------------------------------
+
+export interface DownloadArtifact {
+  page_number: number;
+  sub_page_index: number | null;
+  status: string;
+  filename: string;
+  source: "ptiff" | "otiff" | null;
+  output_image_uri: string | null;
+  download_url: string | null;
+  expires_in: number;
+}
+
+export interface DownloadManifestResponse {
+  job_id: string;
+  collection_id: string;
+  material_type: string;
+  total_pages: number;
+  pages_with_output: number;
+  pages_without_output: number;
+  large_collection_warning: string | null;
+  generated_at: string;
+  artifacts: DownloadArtifact[];
 }

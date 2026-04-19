@@ -651,15 +651,21 @@ class TestB14AutomationFirstRouting:
 class TestB15IEP2AsyncAfterCorrection:
     """B15: IEP2 is never run inline; it is enqueued to Redis after human correction."""
 
-    def test_ptiff_qa_mode_guard_absent_from_worker_loop(self) -> None:
-        """B15: worker_loop source no longer contains ptiff_qa_mode routing guards."""
+    def test_ptiff_qa_mode_routes_to_ptiff_qa_pending_in_worker_loop(self) -> None:
+        """B15 / Packet 5.0b: worker_loop checks ptiff_qa_mode and routes to
+        ptiff_qa_pending for manual QA mode (spec Section 3.1 / 8.5).
+        auto_continue mode bypasses the QA gate and routes directly."""
         import inspect
         from services.eep_worker.app import worker_loop
 
         source = inspect.getsource(worker_loop)
-        assert "ptiff_qa_mode" not in source, (
-            "Found ptiff_qa_mode in worker_loop — "
-            "automation-first refactor has not been applied correctly"
+        assert "ptiff_qa_mode" in source, (
+            "worker_loop must check ptiff_qa_mode to route pages to ptiff_qa_pending "
+            "in manual PTIFF QA mode (Packet 5.0b)"
+        )
+        assert "ptiff_qa_pending" in source, (
+            "worker_loop must transition pages to ptiff_qa_pending "
+            "when ptiff_qa_mode == 'manual'"
         )
 
     def test_apply_correction_enqueues_to_redis_for_layout_mode(self) -> None:

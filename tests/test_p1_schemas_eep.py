@@ -85,8 +85,11 @@ class TestTerminalPageStates:
     def test_contains_accepted(self) -> None:
         assert "accepted" in TERMINAL_PAGE_STATES
 
-    def test_contains_pending_human_correction(self) -> None:
-        assert "pending_human_correction" in TERMINAL_PAGE_STATES
+    def test_pending_human_correction_not_terminal(self) -> None:
+        # pending_human_correction is a worker-stop state (automated worker halts)
+        # but NOT a job-accounting terminal state — the page is still open for
+        # human action and will re-enter the pipeline after correction.
+        assert "pending_human_correction" not in TERMINAL_PAGE_STATES
 
     def test_contains_review(self) -> None:
         assert "review" in TERMINAL_PAGE_STATES
@@ -98,7 +101,10 @@ class TestTerminalPageStates:
         assert "split" in TERMINAL_PAGE_STATES
 
     def test_exact_membership(self) -> None:
-        expected = frozenset({"accepted", "pending_human_correction", "review", "failed", "split"})
+        # TERMINAL_PAGE_STATES covers leaf-final job-accounting outcomes only.
+        # pending_human_correction and ptiff_qa_pending are worker-stop states but
+        # NOT job-terminal — pages in those states are still open for action.
+        expected = frozenset({"accepted", "review", "failed", "split"})
         assert TERMINAL_PAGE_STATES == expected
 
     def test_queued_not_terminal(self) -> None:
@@ -119,6 +125,7 @@ class TestPageState:
         "queued",
         "preprocessing",
         "rectification",
+        "ptiff_qa_pending",
         "layout_detection",
         "pending_human_correction",
         "accepted",
@@ -127,8 +134,8 @@ class TestPageState:
         "split",
     ]
 
-    def test_nine_states_total(self) -> None:
-        assert len(self.ALL_PAGE_STATES) == 9
+    def test_ten_states_total(self) -> None:
+        assert len(self.ALL_PAGE_STATES) == 10
 
     def test_page_status_accepts_all_states(self) -> None:
         for state in self.ALL_PAGE_STATES:
@@ -407,7 +414,9 @@ class TestJobStatusResponse:
             pages=[PageStatus(page_number=1, status="pending_human_correction")],
         )
         assert r.pages[0].status == "pending_human_correction"
-        assert "pending_human_correction" in TERMINAL_PAGE_STATES
+        # pending_human_correction is a worker-stop state (automated processing halts)
+        # but NOT a job-accounting terminal state — the page remains open for human action.
+        assert "pending_human_correction" not in TERMINAL_PAGE_STATES
 
     def test_roundtrip_serialization(self) -> None:
         original = JobStatusResponse(

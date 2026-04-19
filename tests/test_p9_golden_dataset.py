@@ -844,9 +844,11 @@ class TestStateTransitionGolden:
         for state in active_states:
             assert is_worker_terminal(state) is False, f"Expected {state!r} to be non-terminal"
 
-    def test_is_leaf_final_accepted_review_failed(self) -> None:
-        """is_leaf_final returns True only for the three permanent outcomes."""
-        assert is_leaf_final("accepted") is True
+    def test_is_leaf_final_review_failed(self) -> None:
+        """is_leaf_final returns True for review and failed (permanent outcomes).
+        accepted is excluded: reviewers may flag it for re-correction via the
+        PTIFF QA viewer (accepted → pending_human_correction transition)."""
+        assert is_leaf_final("accepted") is False
         assert is_leaf_final("review") is True
         assert is_leaf_final("failed") is True
 
@@ -859,6 +861,7 @@ class TestStateTransitionGolden:
         "allowed_next('queued') returns exactly {'preprocessing', 'failed'}."
         assert allowed_next("queued") == frozenset({"preprocessing", "failed"})
 
-    def test_allowed_next_accepted_empty(self) -> None:
-        "allowed_next('accepted') returns empty frozenset (leaf-final, no exits)."
-        assert allowed_next("accepted") == frozenset()
+    def test_allowed_next_accepted_flag_only(self) -> None:
+        """allowed_next('accepted') returns {pending_human_correction}.
+        Reviewers may flag an accepted page for re-correction from the PTIFF QA viewer."""
+        assert allowed_next("accepted") == frozenset({"pending_human_correction"})
