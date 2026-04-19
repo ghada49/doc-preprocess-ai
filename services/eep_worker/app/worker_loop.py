@@ -386,6 +386,36 @@ def _sync_job_summary(session: Session, job: Job) -> None:
         job.completed_at = None
 
 
+def _update_job_reading_direction(job: Job, new_direction: str) -> None:
+    """
+    Persist reading_direction on job with merge policy:
+      - Write "ltr" or "rtl" unconditionally (resolved always wins).
+      - Write "unresolved" only if no resolved value has been stored yet.
+
+    This ensures a resolved direction from an earlier page is never demoted.
+    """
+    if new_direction in ("ltr", "rtl"):
+        job.reading_direction = new_direction
+    elif new_direction == "unresolved" and job.reading_direction is None:
+        job.reading_direction = "unresolved"
+
+
+def _reading_order_for_sub(direction: str, sub_page_index: int) -> int:
+    """
+    Compute the semantic reading_order (1-based) for a split child page.
+
+    After the post-rotation swap, sub_page_index=0 is always the physical
+    left page and sub_page_index=1 is the physical right page.
+
+    RTL:  right page (sub=1) is first in reading order → reading_order=1
+    LTR / unresolved: left page (sub=0) is first → reading_order=1
+    """
+    if direction == "rtl":
+        return 2 if sub_page_index == 0 else 1
+    # ltr or unresolved: left-first
+    return 1 if sub_page_index == 0 else 2
+
+
 def _resolve_material_type_placeholder(session: Session, job: Job, page: JobPage) -> str:
     """
     Placeholder IEP0 hook.
@@ -1603,6 +1633,13 @@ async def _run_preprocessing(
         lineage.split_source = True
         _commit(session)
 
+        # Derive reading_direction for this spread from IEP1E result (or "unresolved").
+        _split_direction: str = (
+            _split_sem_result.reading_direction
+            if _split_sem_result is not None
+            else "unresolved"
+        )
+
         # Create child rows for each split half
         for child_outcome, child_uri in [
             (split_outcome.left, left_output_uri),
@@ -1642,6 +1679,7 @@ async def _run_preprocessing(
                     if child_status == "pending_human_correction"
                     else None
                 ),
+                reading_order=_reading_order_for_sub(_split_direction, sub_idx),
             )
             session.add(child_page)
             session.flush()
@@ -1683,6 +1721,7 @@ async def _run_preprocessing(
                 enqueue_page_task(redis_client, _page_task_for(child_page))
 
         _sync_job_summary(session, job)
+        _update_job_reading_direction(job, _split_direction)
         _commit(session)
         return "ack"
 
@@ -1861,6 +1900,7 @@ async def _run_preprocessing(
     ) / 2.0
     _iep1e_sub_idx = page.sub_page_index if page.sub_page_index is not None else 0
     _sem_norm_uri = final_branch.processed_image_uri  # default: unchanged
+    _sem_norm_result = None
     try:
         _sem_norm_result = await _call_iep1e(
             page_uris=[final_branch.processed_image_uri],
@@ -1927,6 +1967,7 @@ async def _run_preprocessing(
     page.quality_summary = final_quality_summary
     page.processing_time_ms = total_processing_ms
     page.review_reasons = None
+    page.reading_order = 1  # single page is always the first (and only) in reading order
 
     if to_state == "ptiff_qa_pending":
         # Worker stops here; the PTIFF QA gate (ptiff_qa.py) owns the next
@@ -1953,7 +1994,13 @@ async def _run_preprocessing(
             output_image_uri=_sem_norm_uri,
         )
 
+    _single_direction: str = (
+        _sem_norm_result.reading_direction
+        if _sem_norm_result is not None
+        else "unresolved"
+    )
     _sync_job_summary(session, job)
+    _update_job_reading_direction(job, _single_direction)
     _commit(session)
     return "ack"
 

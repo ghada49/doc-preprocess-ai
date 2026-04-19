@@ -17,10 +17,11 @@ Implements:
        automated pipeline and landed in accepted.
 
 Ordering:
-  Pages are sorted by (page_number ASC, sub_page_index ASC NULLS FIRST).
-  Split children (sub_page_index 0 and 1) immediately follow the parent
-  page_number. The parent row itself (sub_page_index IS NULL) is excluded by
-  _leaf_pages, so children appear in sequence after any preceding whole page.
+  Pages are sorted by (page_number ASC, reading_order ASC, sub_page_index ASC).
+  When reading_order is set (assigned by IEP1E), split children appear in
+  semantic reading order (RTL spreads show right page first).  For pages not yet
+  through IEP1E (ptiff_qa_pending in manual mode), reading_order is NULL and the
+  fallback physical sub_page_index order is used.
 
 Image delivery:
   Prefers output_image_uri (PTIFF).  Falls back to input_image_uri (OTIFF)
@@ -190,18 +191,29 @@ def _fetch_job_or_404(db: Session, job_id: str) -> Job:
 
 def _leaf_pages_ordered(db: Session, job_id: str) -> list[JobPage]:
     """
-    Return all non-split leaf pages sorted by (page_number, sub_page_index).
+    Return all non-split leaf pages sorted in reading order.
 
-    Split-parent rows (status == 'split') are excluded; their children appear
-    in ascending sub_page_index order after any preceding whole-page rows.
-    None sub_page_index sorts before 0 (NULLS FIRST semantics).
+    Sort key: (page_number, reading_order, sub_page_index)
+
+    When reading_order is set (assigned by IEP1E after orientation + direction
+    resolution), the carousel navigates pages in the order a reader would
+    encounter them — e.g. right-page first for RTL spreads.
+
+    For pages where reading_order is NULL (ptiff_qa_pending state in manual
+    mode runs before IEP1E, so reading_order is not yet assigned), the sort
+    falls back to physical sub_page_index, preserving the previous behaviour.
     """
     rows: list[JobPage] = (
         db.query(JobPage)
         .filter(JobPage.job_id == job_id, JobPage.status != "split")
         .all()
     )
-    rows.sort(key=lambda p: (p.page_number, p.sub_page_index if p.sub_page_index is not None else -1))
+    rows.sort(key=lambda p: (
+        p.page_number,
+        p.reading_order if p.reading_order is not None
+        else (p.sub_page_index + 1 if p.sub_page_index is not None else 0),
+        p.sub_page_index if p.sub_page_index is not None else -1,
+    ))
     return rows
 
 
@@ -344,10 +356,12 @@ def ptiff_qa_viewer(
 
     **Navigation**
 
-    Pages are ordered by ``(page_number ASC, sub_page_index ASC NULLS FIRST)``.
-    Omit ``page_number`` to start at the first page.  Use the ``prev`` and
-    ``next`` fields in the response to walk forward or backward through the
-    collection.
+    Pages are ordered by ``(page_number ASC, reading_order ASC, sub_page_index ASC)``.
+    When ``reading_order`` is set (post-IEP1E), carousel navigation follows
+    semantic reading order — RTL spreads navigate right-page → left-page.
+    For pages not yet through IEP1E, physical sub_page_index order is used.
+    Omit ``page_number`` to start at the first page in reading order.  Use
+    the ``prev`` and ``next`` fields to walk forward or backward.
 
     **Image display**
 

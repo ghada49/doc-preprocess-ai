@@ -566,13 +566,7 @@ services:
     restart: unless-stopped
     command: [
       "uvicorn", "services.iep1e.app.main:app",
-      "--host", "0.0.0.0", "--port", "8007",
-      "--reload",
-      "--reload-dir", "/app/services/iep1e",
-      "--reload-dir", "/app/shared/semantic_norm",
-      "--reload-dir", "/app/shared/schemas",
-      "--reload-dir", "/app/shared/io",
-      "--reload-dir", "/app/shared/metrics.py"
+      "--host", "0.0.0.0", "--port", "8007"
     ]
 
   # ── IEP2A — Detectron2 layout detection ──────────────────────────────────────

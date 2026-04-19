@@ -133,6 +133,7 @@ def get_job_status(
         created_at=job.created_at,
         updated_at=job.updated_at,
         completed_at=job.completed_at,
+        reading_direction=job.reading_direction,  # type: ignore[arg-type]
     )
 
     page_statuses: list[PageStatus] = []
@@ -155,6 +156,7 @@ def get_job_status(
                 review_reasons=p.review_reasons,
                 acceptance_decision=p.acceptance_decision,  # type: ignore[arg-type]
                 processing_time_ms=p.processing_time_ms,
+                reading_order=p.reading_order,
             )
         )
 

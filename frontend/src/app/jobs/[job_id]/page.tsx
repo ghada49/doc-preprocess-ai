@@ -207,6 +207,16 @@ export default function JobDetailPage() {
                   </Badge>
                 }
               />
+              <MetaField
+                label="Reading Direction"
+                value={
+                  summary.reading_direction ? (
+                    <ReadingDirectionBadge direction={summary.reading_direction} />
+                  ) : (
+                    <span className="text-slate-400">—</span>
+                  )
+                }
+              />
               <MetaField label="Created" value={formatDate(summary.created_at)} />
               <MetaField
                 label="Completed"
@@ -263,63 +273,72 @@ export default function JobDetailPage() {
             </h2>
             <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
               <table className="w-full data-table">
-                <thead>
-                  <tr>
-                    <th className="w-12">#</th>
-                    <th>State</th>
-                    <th>Routing</th>
-                    <th>Review Reasons</th>
-                    <th>Quality</th>
-                    <th>Time</th>
-                    <th>Output</th>
-                    <th></th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {operationalPages.map((page) => {
-                    const pageKey = `${page.page_number}-${page.sub_page_index ?? 0}`;
-                    const isLayoutOpen = expandedLayoutKey === pageKey;
-                    const displayImageUri = page.output_image_uri ?? page.input_image_uri;
+                {(() => {
+                  const hasSplitPages = operationalPages.some(p => p.sub_page_index != null);
+                  return (
+                    <>
+                      <thead>
+                        <tr>
+                          <th className="w-12">#</th>
+                          {hasSplitPages && <th className="w-10">Order</th>}
+                          <th>State</th>
+                          <th>Routing</th>
+                          <th>Review Reasons</th>
+                          <th>Quality</th>
+                          <th>Time</th>
+                          <th>Output</th>
+                          <th></th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {operationalPages.map((page) => {
+                          const pageKey = `${page.page_number}-${page.sub_page_index ?? 0}`;
+                          const isLayoutOpen = expandedLayoutKey === pageKey;
+                          const displayImageUri = page.output_image_uri ?? page.input_image_uri;
 
-                    return (
-                      <Fragment key={pageKey}>
-                        <PageRow
-                          page={page}
-                          isLayoutOpen={isLayoutOpen}
-                          onToggleLayout={() =>
-                            setExpandedLayoutKey((current) =>
-                              current === pageKey ? null : pageKey
-                            )
-                          }
-                          onOpenWorkspace={() =>
-                            router.push(
-                              `/queue/${summary.job_id}/${page.page_number}/workspace${
-                                page.sub_page_index != null
-                                  ? `?sub_page_index=${page.sub_page_index}`
-                                  : ""
-                              }`
-                            )
-                          }
-                        />
-                        {isLayoutOpen && (
-                          <tr className="bg-slate-50/80">
-                            <td colSpan={8} className="px-4 py-4">
-                              <LayoutOverlay
-                                imageUri={displayImageUri}
-                                layoutUri={page.output_layout_uri}
-                                pageLabel={`Page ${page.page_number}${
-                                  page.sub_page_index != null
-                                    ? ` ${page.sub_page_index === 0 ? "Left" : "Right"}`
-                                    : ""
-                                }`}
+                          return (
+                            <Fragment key={pageKey}>
+                              <PageRow
+                                page={page}
+                                showOrderColumn={hasSplitPages}
+                                isLayoutOpen={isLayoutOpen}
+                                onToggleLayout={() =>
+                                  setExpandedLayoutKey((current) =>
+                                    current === pageKey ? null : pageKey
+                                  )
+                                }
+                                onOpenWorkspace={() =>
+                                  router.push(
+                                    `/queue/${summary.job_id}/${page.page_number}/workspace${
+                                      page.sub_page_index != null
+                                        ? `?sub_page_index=${page.sub_page_index}`
+                                        : ""
+                                    }`
+                                  )
+                                }
                               />
-                            </td>
-                          </tr>
-                        )}
-                      </Fragment>
-                    );
-                  })}
-                </tbody>
+                              {isLayoutOpen && (
+                                <tr className="bg-slate-50/80">
+                                  <td colSpan={hasSplitPages ? 9 : 8} className="px-4 py-4">
+                                    <LayoutOverlay
+                                      imageUri={displayImageUri}
+                                      layoutUri={page.output_layout_uri}
+                                      pageLabel={`Page ${page.page_number}${
+                                        page.sub_page_index != null
+                                          ? ` ${page.sub_page_index === 0 ? "Left" : "Right"}`
+                                          : ""
+                                      }`}
+                                    />
+                                  </td>
+                                </tr>
+                              )}
+                            </Fragment>
+                          );
+                        })}
+                      </tbody>
+                    </>
+                  );
+                })()}
               </table>
             </div>
           </div>
@@ -333,22 +352,55 @@ function filterOperationalPages(pages: JobPage[]): JobPage[] {
   const pageNumbersWithChildren = new Set(
     pages.filter((page) => page.sub_page_index != null).map((page) => page.page_number)
   );
-  return pages.filter((page) => {
+  const filtered = pages.filter((page) => {
     if (page.status === "split") return false;
     if (page.sub_page_index == null && pageNumbersWithChildren.has(page.page_number)) {
       return false;
     }
     return true;
   });
+
+  // Sort by (page_number, reading_order, sub_page_index) so reading_order is honoured
+  // when available. Pages without reading_order fall back to physical sub_page_index order.
+  return filtered.sort((a, b) => {
+    if (a.page_number !== b.page_number) return a.page_number - b.page_number;
+    const aOrder = a.reading_order ?? (a.sub_page_index != null ? a.sub_page_index + 1 : 0);
+    const bOrder = b.reading_order ?? (b.sub_page_index != null ? b.sub_page_index + 1 : 0);
+    return aOrder - bOrder;
+  });
+}
+
+function ReadingDirectionBadge({ direction }: { direction: "ltr" | "rtl" | "unresolved" }) {
+  if (direction === "ltr") {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded px-1.5 py-0.5">
+        LTR →
+      </span>
+    );
+  }
+  if (direction === "rtl") {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs font-medium text-purple-700 bg-purple-50 border border-purple-200 rounded px-1.5 py-0.5">
+        ← RTL
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 text-xs font-medium text-slate-500 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">
+      ?
+    </span>
+  );
 }
 
 function PageRow({
   page,
+  showOrderColumn,
   isLayoutOpen,
   onToggleLayout,
   onOpenWorkspace,
 }: {
   page: JobPage;
+  showOrderColumn: boolean;
   isLayoutOpen: boolean;
   onToggleLayout: () => void;
   onOpenWorkspace: () => void;
@@ -374,6 +426,15 @@ function PageRow({
           )}
         </span>
       </td>
+      {showOrderColumn && (
+        <td>
+          <span className="text-xs text-slate-400 tabular-nums font-mono">
+            {page.sub_page_index != null && page.reading_order != null
+              ? page.reading_order
+              : "—"}
+          </span>
+        </td>
+      )}
       <td>
         <StatusBadge status={page.status} type="page" />
       </td>

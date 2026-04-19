@@ -111,6 +111,7 @@ export interface JobSummary {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  reading_direction: "ltr" | "rtl" | "unresolved" | null;
 }
 
 export interface QualitySummary {
@@ -132,6 +133,7 @@ export interface JobPage {
   review_reasons: string[] | null;
   acceptance_decision: string | null;
   processing_time_ms: number | null;
+  reading_order: number | null;
 }
 
 export interface JobDetailResponse {

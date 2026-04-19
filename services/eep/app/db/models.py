@@ -82,6 +82,7 @@ class Job(Base):
     )
     shadow_mode: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
     created_by: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    reading_direction: Mapped[str | None] = mapped_column(Text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -127,6 +128,7 @@ class JobPage(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     output_layout_uri: Mapped[str | None] = mapped_column(Text(), nullable=True)
     ptiff_qa_approved: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
+    reading_order: Mapped[int | None] = mapped_column(Integer(), nullable=True)
 
     __table_args__ = (UniqueConstraint("job_id", "page_number", "sub_page_index"),)
 

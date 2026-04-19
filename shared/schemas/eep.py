@@ -199,6 +199,7 @@ class PageStatus(BaseModel):
     review_reasons: list[str] | None = None
     acceptance_decision: Literal["accepted", "review", "failed"] | None = None
     processing_time_ms: float | None = None
+    reading_order: int | None = None
 
 
 # ── JobStatusSummary ───────────────────────────────────────────────────────────
@@ -247,6 +248,7 @@ class JobStatusSummary(BaseModel):
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None = None
+    reading_direction: Literal["ltr", "rtl", "unresolved"] | None = None
 
 
 # ── JobStatusResponse ──────────────────────────────────────────────────────────
