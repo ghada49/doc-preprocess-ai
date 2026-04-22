@@ -183,8 +183,8 @@ class TestJobCreateRequest:
         assert r.pipeline_mode == "layout"
         assert r.shadow_mode is False
 
-    def test_both_pipeline_modes_valid(self) -> None:
-        for mode in ["preprocess", "layout"]:
+    def test_all_pipeline_modes_valid(self) -> None:
+        for mode in ["preprocess", "layout", "layout_with_ocr"]:
             r = JobCreateRequest.model_validate(
                 {
                     "collection_id": "c1",
@@ -236,6 +236,18 @@ class TestJobCreateRequest:
     def test_single_page_valid(self) -> None:
         r = _create_request(n_pages=1)
         assert len(r.pages) == 1
+
+    def test_duplicate_page_numbers_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            JobCreateRequest(
+                collection_id="c1",
+                material_type="book",
+                pages=[
+                    PageInput(page_number=1, input_uri="s3://x/1.tiff"),
+                    PageInput(page_number=1, input_uri="s3://x/1-duplicate.tiff"),
+                ],
+                policy_version="v1.0",
+            )
 
     def test_invalid_pipeline_mode_rejected(self) -> None:
         with pytest.raises(ValidationError):

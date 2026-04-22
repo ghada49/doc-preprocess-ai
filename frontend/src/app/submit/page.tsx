@@ -182,6 +182,7 @@ export default function SubmitJobPage() {
                 </SelectTrigger>
                 <SelectContent>
                   <SelectItem value="layout">Layout (full pipeline)</SelectItem>
+                  <SelectItem value="layout_with_ocr">Layout + OCR (Google direct)</SelectItem>
                   <SelectItem value="preprocess">Preprocess only</SelectItem>
                 </SelectContent>
               </Select>

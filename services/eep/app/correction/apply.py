@@ -687,6 +687,25 @@ def _apply_split_correction(
         "image_width": parent_image_width,
         "image_height": parent_image_height,
     }
+
+    advanced = advance_page_state(
+        db,
+        parent.page_id,
+        from_state="pending_human_correction",
+        to_state="split",
+    )
+    if not advanced:
+        logger.warning(
+            "Split correction parent-to-split CAS miss before child creation: job=%s page_id=%s",
+            parent.job_id,
+            parent.page_id,
+        )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Page state changed concurrently; please retry.",
+        )
+
+    parent.status = "split"
     _invalidate_layout_state(parent, parent_lineage)
     parent_lineage.human_correction_fields = correction_fields
     parent_lineage.reviewer_notes = body.notes
@@ -792,19 +811,6 @@ def _apply_split_correction(
 
     db.flush()
 
-    advanced = advance_page_state(
-        db,
-        parent.page_id,
-        from_state="pending_human_correction",
-        to_state="split",
-    )
-    if not advanced:
-        logger.warning(
-            "Split correction parent-to-split CAS miss: job=%s page_id=%s",
-            parent.job_id,
-            parent.page_id,
-        )
-
     logger.info(
         "Split correction applied: job=%s page=%d split_x=%d pipeline_mode=%s",
         parent.job_id,
@@ -822,8 +828,7 @@ def _apply_single_page_correction(
     job: Job,
     page: JobPage,
     body: CorrectionApplyRequest,
-    r: redis.Redis,
-) -> None:
+) -> PageTask:
     """
     Execute the single-page correction path (Packet 5.2).
 
@@ -887,9 +892,6 @@ def _apply_single_page_correction(
         source_uri=source_uri,
         context="single-page correction",
     )
-    _invalidate_layout_state(page, lineage)
-    get_backend(corrected_uri).put_bytes(corrected_uri, corrected_bytes)
-
     now = datetime.now(UTC)
     effective_selection_mode = _normalize_selection_mode(body.selection_mode, body.quad_points)
     stored_quad_points = body.quad_points
@@ -905,19 +907,6 @@ def _apply_single_page_correction(
         "source_artifact_uri": source_uri,
     }
 
-    lineage.human_corrected = True
-    lineage.human_correction_timestamp = now
-    lineage.human_correction_fields = correction_fields
-    lineage.output_image_uri = corrected_uri
-    if body.notes is not None:
-        lineage.reviewer_notes = body.notes
-
-    page.output_image_uri = corrected_uri
-    confirm_preprocessed_artifact(db, lineage.lineage_id)
-
-    # Always route through semantic_norm so iep1e corrects orientation and reading
-    # order regardless of pipeline mode. The worker then routes to layout_detection
-    # (layout) or accepted (preprocess-only) after iep1e completes.
     advanced = advance_page_state(
         db,
         page.page_id,
@@ -932,21 +921,33 @@ def _apply_single_page_correction(
             page.page_id,
             page.page_number,
         )
-        return
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Page state changed concurrently; please retry.",
+        )
 
     page.status = "semantic_norm"
+    _invalidate_layout_state(page, lineage)
+    get_backend(corrected_uri).put_bytes(corrected_uri, corrected_bytes)
+
+    lineage.human_corrected = True
+    lineage.human_correction_timestamp = now
+    lineage.human_correction_fields = correction_fields
+    lineage.output_image_uri = corrected_uri
+    if body.notes is not None:
+        lineage.reviewer_notes = body.notes
+
+    page.output_image_uri = corrected_uri
+    confirm_preprocessed_artifact(db, lineage.lineage_id)
 
     db.flush()
 
-    enqueue_page_task(
-        r,
-        PageTask(
-            task_id=str(uuid.uuid4()),
-            job_id=page.job_id,
-            page_id=page.page_id,
-            page_number=page.page_number,
-            sub_page_index=page.sub_page_index,
-        ),
+    task = PageTask(
+        task_id=str(uuid.uuid4()),
+        job_id=page.job_id,
+        page_id=page.page_id,
+        page_number=page.page_number,
+        sub_page_index=page.sub_page_index,
     )
 
     logger.info(
@@ -955,6 +956,7 @@ def _apply_single_page_correction(
         page.page_number,
         page.sub_page_index,
     )
+    return task
 
 
 # ── Endpoint ────────────────────────────────────────────────────────────────────
@@ -1011,6 +1013,8 @@ def apply_correction(
     job = _fetch_job_or_404(db, job_id)
     assert_job_ownership(job, user)
 
+    task_to_enqueue: PageTask | None = None
+
     if sub_page_index is not None:
         # ── Child sub-page correction (split already occurred) ────────────────
         # Split structure was already decided on the parent, so child requests
@@ -1037,7 +1041,7 @@ def apply_correction(
                     f"{page.status!r}, not 'pending_human_correction'."
                 ),
             )
-        _apply_single_page_correction(db, job, page, body, r)
+        task_to_enqueue = _apply_single_page_correction(db, job, page, body)
 
     else:
         # ── Parent page correction ────────────────────────────────────────────
@@ -1068,7 +1072,17 @@ def apply_correction(
         if body.page_structure == "spread" or body.split_x is not None:
             _apply_split_correction(db, job, page, body, r)
         else:
-            _apply_single_page_correction(db, job, page, body, r)
+            task_to_enqueue = _apply_single_page_correction(db, job, page, body)
 
     db.commit()
+    if task_to_enqueue is not None:
+        try:
+            enqueue_page_task(r, task_to_enqueue)
+        except redis.RedisError:
+            logger.exception(
+                "Correction apply: DB committed but enqueue failed job=%s page=%d sub=%s",
+                job_id,
+                page_number,
+                sub_page_index,
+            )
     return CorrectionApplyResponse()

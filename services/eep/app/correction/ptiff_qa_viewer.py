@@ -47,6 +47,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import boto3
@@ -58,6 +59,7 @@ from services.eep.app.auth import CurrentUser, assert_job_ownership, require_use
 from services.eep.app.db.models import Job, JobPage
 from services.eep.app.db.page_state import advance_page_state
 from services.eep.app.db.session import get_session
+from services.eep.app.jobs.summary import derive_job_status, leaf_pages_from_pages
 from shared.io.storage import rewrite_presigned_url_for_public_endpoint
 
 logger = logging.getLogger(__name__)
@@ -69,6 +71,24 @@ router = APIRouter()
 
 _BUCKET: str = os.environ.get("S3_BUCKET_NAME", "libraryai")
 _READ_EXPIRES_IN: int = int(os.environ.get("ARTIFACT_READ_PRESIGN_EXPIRES_SECONDS", "300"))
+
+
+def _sync_job_summary(db: Session, job: Job) -> None:
+    pages = db.query(JobPage).filter_by(job_id=job.job_id).all()
+    leaf_pages = leaf_pages_from_pages(pages)
+    now = datetime.now(timezone.utc)
+
+    job.accepted_count = sum(1 for page in leaf_pages if page.status == "accepted")
+    job.review_count = sum(1 for page in leaf_pages if page.status == "review")
+    job.failed_count = sum(1 for page in leaf_pages if page.status == "failed")
+    job.pending_human_correction_count = sum(
+        1 for page in leaf_pages if page.status == "pending_human_correction"
+    )
+    job.status = derive_job_status(leaf_pages)
+    if job.status in {"done", "failed"}:
+        job.completed_at = job.completed_at or now
+    else:
+        job.completed_at = None
 
 
 # ---------------------------------------------------------------------------
@@ -575,9 +595,19 @@ def flag_page_for_correction(
                 page.page_id,
                 page.status,
             )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Page state changed concurrently; please retry.",
+            )
+        page.status = "pending_human_correction"
+        page.acceptance_decision = None
+        page.routing_path = None
+        page.completed_at = None
+        page.review_reasons = ["user_flagged_for_correction"]
         # Clear any prior QA approval so re-correction starts fresh.
         page.ptiff_qa_approved = False
 
+    _sync_job_summary(db, job)
     db.commit()
 
     logger.info(

@@ -31,7 +31,7 @@ from pydantic import BaseModel, Field, model_validator
 # ── Type aliases ───────────────────────────────────────────────────────────────
 
 MaterialType = Literal["book", "newspaper", "archival_document", "microfilm"]
-PipelineMode = Literal["preprocess", "layout"]
+PipelineMode = Literal["preprocess", "layout", "layout_with_ocr"]
 JobStatus = Literal["queued", "running", "done", "failed"]
 
 # All valid page states (spec Section 9.1 + DB CHECK constraint in Section 13).
@@ -120,6 +120,16 @@ class JobCreateRequest(BaseModel):
         n = len(self.pages)
         if not (1 <= n <= 1000):
             raise ValueError(f"pages must contain 1–1000 entries; got {n}")
+        seen: set[int] = set()
+        duplicates: set[int] = set()
+        for page in self.pages:
+            if page.page_number in seen:
+                duplicates.add(page.page_number)
+            seen.add(page.page_number)
+        if duplicates:
+            raise ValueError(
+                f"page_number must be unique within a job; duplicates: {sorted(duplicates)}"
+            )
         return self
 
 

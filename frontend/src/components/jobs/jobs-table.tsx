@@ -109,6 +109,7 @@ export function JobsTable({ isAdmin = false, basePath = "/jobs" }: JobsTableProp
             <SelectContent>
               <SelectItem value="all">All pipelines</SelectItem>
               <SelectItem value="layout">Layout</SelectItem>
+              <SelectItem value="layout_with_ocr">Layout + OCR</SelectItem>
               <SelectItem value="preprocess">Preprocess</SelectItem>
             </SelectContent>
           </Select>

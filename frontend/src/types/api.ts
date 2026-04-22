@@ -57,7 +57,7 @@ export type MaterialType =
   | "newspaper"
   | "microfilm";
 
-export type PipelineMode = "preprocess" | "layout";
+export type PipelineMode = "preprocess" | "layout" | "layout_with_ocr";
 export type JobStatus = "queued" | "running" | "done" | "failed";
 
 export type PageState =

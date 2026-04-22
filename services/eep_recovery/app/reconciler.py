@@ -34,13 +34,15 @@ Reconciliation logic (reconcile_once):
   Dead-letter queue size is checked at the end of every scan.  A warning is
   logged when it exceeds dead_letter_warning_threshold.
 
-DB is authoritative (spec Section 9.8).  The reconciler never mutates page
-state — it only moves tasks between Redis queues.
+DB is authoritative (spec Section 9.8).  The reconciler normally moves tasks
+between Redis queues; when a task is exhausted or already dead-lettered, it
+also marks the corresponding active DB page failed so jobs reach a terminal
+state instead of running forever.
 
 Caller responsibilities:
   - Provide a Redis client (decode_responses=True).
   - Provide a SQLAlchemy Session (or session factory for the loop).
-  - Commit/rollback the session (not performed here).
+  - Provide a session that can be committed/rolled back by reconciliation.
 
 Exported:
     ReconcilerConfig       — configuration dataclass
@@ -63,7 +65,10 @@ from uuid import uuid4
 import redis as redis_lib
 from sqlalchemy.orm import Session
 
-from services.eep.app.db.models import JobPage
+from services.eep.app.db.lineage import update_lineage_completion
+from services.eep.app.db.models import Job, JobPage, PageLineage
+from services.eep.app.db.page_state import advance_page_state
+from services.eep.app.jobs.summary import derive_job_status, leaf_pages_from_pages
 from services.eep.app.queue import CLAIMS_KEY, MAX_TASK_RETRIES
 from shared.schemas.queue import (
     QUEUE_DEAD_LETTER,
@@ -203,19 +208,120 @@ def _ack_from_processing(
     pipe.execute()
 
 
+def _sync_job_summary(session: Session, job_id: str) -> None:
+    job = session.get(Job, job_id)
+    if job is None:
+        return
+
+    pages = session.query(JobPage).filter_by(job_id=job_id).all()
+    leaf_pages = leaf_pages_from_pages(pages)
+    now = datetime.now(timezone.utc)
+
+    job.accepted_count = sum(1 for page in leaf_pages if page.status == "accepted")
+    job.review_count = sum(1 for page in leaf_pages if page.status == "review")
+    job.failed_count = sum(1 for page in leaf_pages if page.status == "failed")
+    job.pending_human_correction_count = sum(
+        1 for page in leaf_pages if page.status == "pending_human_correction"
+    )
+    job.status = derive_job_status(leaf_pages)
+    if job.status in {"done", "failed"}:
+        job.completed_at = job.completed_at or now
+    else:
+        job.completed_at = None
+
+
+def _mark_page_failed_for_dead_letter(
+    session: Session,
+    page: JobPage,
+    *,
+    reason: str,
+) -> bool:
+    from_state = page.status
+    try:
+        advanced = advance_page_state(
+            session,
+            page.page_id,
+            from_state=from_state,
+            to_state="failed",
+            acceptance_decision="failed",
+            routing_path="recovery_dead_letter",
+        )
+    except ValueError:
+        logger.exception(
+            "reconciler: cannot fail page %s from invalid state %r before DLQ",
+            page.page_id,
+            from_state,
+        )
+        session.rollback()
+        return False
+
+    if not advanced:
+        logger.warning(
+            "reconciler: page %s changed state before DLQ failure transition from %s",
+            page.page_id,
+            from_state,
+        )
+        session.rollback()
+        return False
+
+    page.status = "failed"
+    page.acceptance_decision = "failed"
+    page.routing_path = "recovery_dead_letter"
+    page.review_reasons = [reason]
+    lineage = (
+        session.query(PageLineage)
+        .filter(
+            PageLineage.job_id == page.job_id,
+            PageLineage.page_number == page.page_number,
+            PageLineage.sub_page_index == page.sub_page_index,
+        )
+        .first()
+    )
+    if lineage is None:
+        logger.error(
+            "reconciler: no lineage row while marking page %s failed for DLQ",
+            page.page_id,
+        )
+    else:
+        update_lineage_completion(
+            session,
+            lineage.lineage_id,
+            acceptance_decision="failed",
+            acceptance_reason=reason,
+            routing_path="recovery_dead_letter",
+            total_processing_ms=page.processing_time_ms,
+            output_image_uri=page.output_image_uri,
+        )
+    _sync_job_summary(session, page.job_id)
+    session.commit()
+    logger.error(
+        "reconciler: marked page %s failed before dead-lettering task (from=%s reason=%s)",
+        page.page_id,
+        from_state,
+        reason,
+    )
+    return True
+
+
 def _requeue_or_dead_letter(
     r: redis_lib.Redis,
+    session: Session,
     raw_json: str,
     task: PageTask,
+    page: JobPage,
     max_retries: int,
+    *,
+    reason: str,
 ) -> str:
     """
     Remove task from the processing list and either re-enqueue it with
     incremented retry_count or move it to the dead-letter queue.
 
-    Returns "requeued" or "dead_lettered".
+    Returns "requeued", "dead_lettered", or "skipped".
     """
     if task.retry_count >= max_retries:
+        if not _mark_page_failed_for_dead_letter(session, page, reason=reason):
+            return "skipped"
         pipe = r.pipeline(transaction=True)
         pipe.lrem(QUEUE_PAGE_TASKS_PROCESSING, 1, raw_json)
         pipe.hdel(CLAIMS_KEY, task.task_id)
@@ -275,7 +381,7 @@ def _timeout_seconds_for_page(page: JobPage, cfg: ReconcilerConfig) -> float:
 def _collect_redis_page_ids(r: redis_lib.Redis) -> set[str]:
     """Return page_ids present in Redis queues relevant to recovery."""
     page_ids: set[str] = set()
-    for queue_key in (QUEUE_PAGE_TASKS, QUEUE_PAGE_TASKS_PROCESSING, QUEUE_DEAD_LETTER):
+    for queue_key in (QUEUE_PAGE_TASKS, QUEUE_PAGE_TASKS_PROCESSING):
         raw_items: list[str] = cast(list[str], r.lrange(queue_key, 0, -1))
         for raw in raw_items:
             try:
@@ -287,6 +393,41 @@ def _collect_redis_page_ids(r: redis_lib.Redis) -> set[str]:
                     raw,
                 )
     return page_ids
+
+
+def _finalize_dead_lettered_db_pages(
+    r: redis_lib.Redis,
+    session: Session,
+) -> int:
+    """
+    Repair active DB pages that already have a task sitting in the DLQ.
+
+    The DLQ entry stays in Redis for audit; the DB page becomes authoritative
+    and terminal so jobs do not remain running forever.
+    """
+    dlq_size: int = r.llen(QUEUE_DEAD_LETTER)  # type: ignore[assignment]
+    if dlq_size <= 0:
+        return 0
+
+    finalized = 0
+    raw_items: list[str] = cast(list[str], r.lrange(QUEUE_DEAD_LETTER, 0, -1))
+    for raw in raw_items:
+        try:
+            task = PageTask.model_validate_json(raw)
+        except Exception:
+            continue
+        page = session.get(JobPage, task.page_id)
+        if page is None or page.status in _COMPLETE_STATES:
+            continue
+        if page.status not in _ACTIVE_STATES and page.status != "queued":
+            continue
+        if _mark_page_failed_for_dead_letter(
+            session,
+            page,
+            reason="dead_letter_queue_active_page_repaired",
+        ):
+            finalized += 1
+    return finalized
 
 
 def _recover_db_orphaned_pages(
@@ -347,8 +488,9 @@ def reconcile_once(
     Execute one full reconciliation pass over QUEUE_PAGE_TASKS_PROCESSING.
 
     The pass is DB-authoritative: every action is driven by the page's current
-    status in job_pages.  No page state is mutated — only Redis queue entries
-    are moved.
+    status in job_pages.  Redis queue entries are moved for normal recovery;
+    exhausted or already dead-lettered active pages are marked failed in DB so
+    they do not remain non-terminal forever.
 
     Args:
         r:       Redis client (decode_responses=True).
@@ -409,11 +551,21 @@ def reconcile_once(
                 task.page_id,
                 task.task_id,
             )
-            action = _requeue_or_dead_letter(r, raw_json, task, cfg.max_task_retries)
+            action = _requeue_or_dead_letter(
+                r,
+                session,
+                raw_json,
+                task,
+                page,
+                cfg.max_task_retries,
+                reason="queued_task_retry_exhausted",
+            )
             if action == "requeued":
                 requeued += 1
-            else:
+            elif action == "dead_lettered":
                 dead_lettered += 1
+            else:
+                skipped_active += 1
 
         # ── Active states — stale detection ───────────────────────────────────
         elif page.status in _ACTIVE_STATES:
@@ -426,11 +578,21 @@ def reconcile_once(
                     task.task_id,
                     timeout_seconds,
                 )
-                action = _requeue_or_dead_letter(r, raw_json, task, cfg.max_task_retries)
+                action = _requeue_or_dead_letter(
+                    r,
+                    session,
+                    raw_json,
+                    task,
+                    page,
+                    cfg.max_task_retries,
+                    reason=f"stale_{page.status}_task_retry_exhausted",
+                )
                 if action == "requeued":
                     requeued += 1
-                else:
+                elif action == "dead_lettered":
                     dead_lettered += 1
+                else:
+                    skipped_active += 1
             else:
                 skipped_active += 1
 
@@ -446,6 +608,10 @@ def reconcile_once(
             acked += 1
 
     # ── Dead-letter queue size check ──────────────────────────────────────────
+    repaired_dlq_pages = _finalize_dead_lettered_db_pages(r, session)
+    if repaired_dlq_pages:
+        dead_lettered += repaired_dlq_pages
+
     existing_page_ids = _collect_redis_page_ids(r)
     requeued_orphaned = _recover_db_orphaned_pages(r, session, existing_page_ids)
 

@@ -34,20 +34,41 @@ Exported:
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from services.eep.app.auth import CurrentUser, assert_job_ownership, require_user
+from services.eep.app.db.lineage import update_lineage_completion
 from services.eep.app.db.models import Job, JobPage, PageLineage
 from services.eep.app.db.page_state import advance_page_state
 from services.eep.app.db.session import get_session
+from services.eep.app.jobs.summary import derive_job_status, leaf_pages_from_pages
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 _REJECT_REASON = "human_correction_rejected"
+
+
+def _sync_job_summary(db: Session, job: Job) -> None:
+    pages = db.query(JobPage).filter_by(job_id=job.job_id).all()
+    leaf_pages = leaf_pages_from_pages(pages)
+    now = datetime.now(timezone.utc)
+
+    job.accepted_count = sum(1 for page in leaf_pages if page.status == "accepted")
+    job.review_count = sum(1 for page in leaf_pages if page.status == "review")
+    job.failed_count = sum(1 for page in leaf_pages if page.status == "failed")
+    job.pending_human_correction_count = sum(
+        1 for page in leaf_pages if page.status == "pending_human_correction"
+    )
+    job.status = derive_job_status(leaf_pages)
+    if job.status in {"done", "failed"}:
+        job.completed_at = job.completed_at or now
+    else:
+        job.completed_at = None
 
 
 # ── Request / Response schemas ───────────────────────────────────────────────────
@@ -178,6 +199,8 @@ def reject_correction(
         page.page_id,
         from_state="pending_human_correction",
         to_state="review",
+        acceptance_decision="review",
+        routing_path=_REJECT_REASON,
     )
 
     if not advanced:
@@ -188,15 +211,32 @@ def reject_correction(
             page.page_id,
             page_number,
         )
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Page state changed concurrently; please retry.",
+        )
 
     # Step 4 — Record rejection on the page row
+    page.status = "review"
+    page.acceptance_decision = "review"
+    page.routing_path = _REJECT_REASON
     page.review_reasons = [_REJECT_REASON]
 
     # Step 5 — Update lineage: mark page as NOT human-corrected, store notes
     lineage.human_corrected = False
     if body.notes is not None:
         lineage.reviewer_notes = body.notes
+    update_lineage_completion(
+        db,
+        lineage.lineage_id,
+        acceptance_decision="review",
+        acceptance_reason=_REJECT_REASON,
+        routing_path=_REJECT_REASON,
+        total_processing_ms=page.processing_time_ms,
+        output_image_uri=page.output_image_uri,
+    )
 
+    _sync_job_summary(db, job)
     db.flush()
     db.commit()
 

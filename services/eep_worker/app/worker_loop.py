@@ -103,6 +103,7 @@ _ACK_ONLY_STATES: frozenset[str] = frozenset(
         "accepted",
         "review",
         "failed",
+        "ptiff_qa_pending",
         "pending_human_correction",
         "split",
     }
@@ -1717,6 +1718,8 @@ async def _run_preprocessing(
             else "unresolved"
         )
 
+        split_children_to_enqueue: list[PageTask] = []
+
         # Create child rows for each split half
         for child_outcome, child_uri in [
             (split_outcome.left, left_output_uri),
@@ -1728,7 +1731,7 @@ async def _run_preprocessing(
                 # ptiff_qa_mode=manual stops at ptiff_qa_pending, else accepted.
                 if job.ptiff_qa_mode == "manual":
                     child_status = "ptiff_qa_pending"
-                elif job.pipeline_mode == "layout":
+                elif job.pipeline_mode in {"layout", "layout_with_ocr"}:
                     child_status = "layout_detection"
                 else:
                     child_status = "accepted"
@@ -1790,16 +1793,22 @@ async def _run_preprocessing(
                 child_page.output_image_uri,
             )
 
-            # Enqueue split children that need further processing:
-            # - layout_detection: IEP2 worker picks up the child page
-            # - ptiff_qa_pending:  QA viewer holds the child until a reviewer releases it
-            # Children in "accepted" or "pending_human_correction" need no enqueue.
-            if child_status in ("layout_detection", "ptiff_qa_pending"):
-                enqueue_page_task(redis_client, _page_task_for(child_page))
+            # Only layout_detection children need worker processing. PTIFF QA
+            # pages are released by the QA endpoints after reviewer approval.
+            if child_status == "layout_detection":
+                split_children_to_enqueue.append(_page_task_for(child_page))
 
         _sync_job_summary(session, job)
         _update_job_reading_direction(job, _split_direction)
         _commit(session)
+        for child_task in split_children_to_enqueue:
+            try:
+                enqueue_page_task(redis_client, child_task)
+            except redis_lib.RedisError:
+                logger.exception(
+                    "worker_loop: failed to enqueue committed split child page_id=%s",
+                    child_task.page_id,
+                )
         return "ack"
 
     # ── Single-page normalization ──────────────────────────────────────────────
@@ -2038,8 +2047,8 @@ async def _run_preprocessing(
         # The gate (ptiff_qa.py) will release the page to layout_detection or
         # accepted once the reviewer approves via the QA viewer.
         to_state = "ptiff_qa_pending"
-    elif job.pipeline_mode == "layout":
-        # auto_continue + layout: proceed directly to layout detection and enqueue IEP2.
+    elif job.pipeline_mode in {"layout", "layout_with_ocr"}:
+        # auto_continue + layout/layout_with_ocr: proceed directly to layout detection.
         to_state = "layout_detection"
     else:
         # auto_continue + preprocess-only: accept immediately.
@@ -2071,6 +2080,7 @@ async def _run_preprocessing(
     page.review_reasons = None
     page.reading_order = 1  # single page is always the first (and only) in reading order
 
+    task_after_commit: PageTask | None = None
     if to_state == "ptiff_qa_pending":
         # Worker stops here; the PTIFF QA gate (ptiff_qa.py) owns the next
         # transition.  No lineage completion or layout enqueue at this point.
@@ -2081,8 +2091,8 @@ async def _run_preprocessing(
             page.page_number,
             page.sub_page_index,
         )
-    elif job.pipeline_mode == "layout":
-        enqueue_page_task(redis_client, _page_task_for(page))
+    elif job.pipeline_mode in {"layout", "layout_with_ocr"}:
+        task_after_commit = _page_task_for(page)
     else:
         page.acceptance_decision = "accepted"
         page.routing_path = "preprocessing_only"
@@ -2104,6 +2114,14 @@ async def _run_preprocessing(
     _sync_job_summary(session, job)
     _update_job_reading_direction(job, _single_direction)
     _commit(session)
+    if task_after_commit is not None:
+        try:
+            enqueue_page_task(redis_client, task_after_commit)
+        except redis_lib.RedisError:
+            logger.exception(
+                "worker_loop: failed to enqueue committed layout page_id=%s",
+                task_after_commit.page_id,
+            )
     return "ack"
 
 
@@ -2508,7 +2526,7 @@ async def _run_split_group_semantic_norm(
         )
 
     total_processing_ms = (time.monotonic() - task_started_at) * 1000.0
-    current_target = "layout_detection" if job.pipeline_mode == "layout" else "accepted"
+    current_target = "layout_detection" if job.pipeline_mode in {"layout", "layout_with_ocr"} else "accepted"
     pages_to_enqueue: list[JobPage] = []
 
     for item in ordered_group:
@@ -2566,7 +2584,7 @@ async def _run_split_group_semantic_norm(
                 )
             continue
 
-        if job.pipeline_mode == "layout" and uri_changed and child.status == "accepted":
+        if job.pipeline_mode in {"layout", "layout_with_ocr"} and uri_changed and child.status == "accepted":
             reopened = advance_page_state(
                 session,
                 child.page_id,
@@ -2604,9 +2622,9 @@ async def _run_split_group_semantic_norm(
                     job.job_id,
                     child.page_id,
                 )
-        elif job.pipeline_mode == "layout" and child.status == "layout_detection":
+        elif job.pipeline_mode in {"layout", "layout_with_ocr"} and child.status == "layout_detection":
             pages_to_enqueue.append(child)
-        elif job.pipeline_mode != "layout" and child.status == "accepted" and uri_changed:
+        elif job.pipeline_mode == "preprocess" and child.status == "accepted" and uri_changed:
             update_lineage_completion(
                 session,
                 child_lineage.lineage_id,
@@ -2710,7 +2728,7 @@ async def _run_semantic_norm(
         oriented_uri = sem_result.ordered_page_uris[0]
 
     total_processing_ms = (time.monotonic() - task_started_at) * 1000.0
-    to_state = "layout_detection" if job.pipeline_mode == "layout" else "accepted"
+    to_state = "layout_detection" if job.pipeline_mode in {"layout", "layout_with_ocr"} else "accepted"
 
     advanced = advance_page_state(
         session,
@@ -2731,7 +2749,7 @@ async def _run_semantic_norm(
     page.output_image_uri = oriented_uri
     page.reading_order = 1
 
-    if job.pipeline_mode == "layout":
+    if job.pipeline_mode in {"layout", "layout_with_ocr"}:
         session.commit()
         enqueue_page_task(
             redis_client,
@@ -2876,55 +2894,60 @@ async def _run_layout(
             context="layout_google_fallback",
         )
 
-    try:
-        iep2a_result = await asyncio.wait_for(
-            _call_layout_service(
-                service_name="iep2a",
-                endpoint=config.iep2a_endpoint,
-                job_id=job.job_id,
-                page_number=page.page_number,
-                sub_page_index=page.sub_page_index,
-                image_uri=layout_image_uri,
-                material_type=material_type,
-                backend=config.backend,
-                circuit_breaker=config.iep2a_circuit_breaker,
-            ),
-            timeout=config.iep2_call_timeout_seconds,
-        )
-    except asyncio.TimeoutError:
-        logger.warning(
-            "worker_loop: iep2a timed out after %.1fs job=%s page=%d",
-            config.iep2_call_timeout_seconds,
-            job.job_id,
-            page.page_number,
-        )
-        config.iep2a_circuit_breaker.record_failure(None)
+    # layout_with_ocr: bypass local detectors entirely — always use Google directly.
+    if job.pipeline_mode == "layout_with_ocr":
         iep2a_result = None
-
-    try:
-        iep2b_result = await asyncio.wait_for(
-            _call_layout_service(
-                service_name="iep2b",
-                endpoint=config.iep2b_endpoint,
-                job_id=job.job_id,
-                page_number=page.page_number,
-                sub_page_index=page.sub_page_index,
-                image_uri=layout_image_uri,
-                material_type=material_type,
-                backend=config.backend,
-                circuit_breaker=config.iep2b_circuit_breaker,
-            ),
-            timeout=config.iep2_call_timeout_seconds,
-        )
-    except asyncio.TimeoutError:
-        logger.warning(
-            "worker_loop: iep2b timed out after %.1fs job=%s page=%d",
-            config.iep2_call_timeout_seconds,
-            job.job_id,
-            page.page_number,
-        )
-        config.iep2b_circuit_breaker.record_failure(None)
         iep2b_result = None
+    else:
+        try:
+            iep2a_result = await asyncio.wait_for(
+                _call_layout_service(
+                    service_name="iep2a",
+                    endpoint=config.iep2a_endpoint,
+                    job_id=job.job_id,
+                    page_number=page.page_number,
+                    sub_page_index=page.sub_page_index,
+                    image_uri=layout_image_uri,
+                    material_type=material_type,
+                    backend=config.backend,
+                    circuit_breaker=config.iep2a_circuit_breaker,
+                ),
+                timeout=config.iep2_call_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "worker_loop: iep2a timed out after %.1fs job=%s page=%d",
+                config.iep2_call_timeout_seconds,
+                job.job_id,
+                page.page_number,
+            )
+            config.iep2a_circuit_breaker.record_failure(None)
+            iep2a_result = None
+
+        try:
+            iep2b_result = await asyncio.wait_for(
+                _call_layout_service(
+                    service_name="iep2b",
+                    endpoint=config.iep2b_endpoint,
+                    job_id=job.job_id,
+                    page_number=page.page_number,
+                    sub_page_index=page.sub_page_index,
+                    image_uri=layout_image_uri,
+                    material_type=material_type,
+                    backend=config.backend,
+                    circuit_breaker=config.iep2b_circuit_breaker,
+                ),
+                timeout=config.iep2_call_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "worker_loop: iep2b timed out after %.1fs job=%s page=%d",
+                config.iep2_call_timeout_seconds,
+                job.job_id,
+                page.page_number,
+            )
+            config.iep2b_circuit_breaker.record_failure(None)
+            iep2b_result = None
 
     # Rescale IEP2A and IEP2B outputs back to canonical (original-resolution) coordinates.
     if layout_input.coordinate_rescaled and downsample_gate is not None:
@@ -3158,29 +3181,30 @@ async def run_worker_loop(
 
     try:
         while True:
-            try:
-                claimed = await asyncio.to_thread(
-                    claim_task,
-                    redis_client,
-                    config.worker_id,
-                    config.poll_timeout_seconds,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("worker_loop: claim_task failed; retrying")
-                await asyncio.sleep(1.0)
-                continue
-
-            if claimed is None:
-                continue
-
-            if watchdog is not None:
-                watchdog.register(claimed.task.task_id)
-                _claimed_tasks[claimed.task.task_id] = claimed
-
+            claimed: ClaimedTask | None = None
             try:
                 async with WorkerSlotContext(redis_client):
+                    try:
+                        claimed = await asyncio.to_thread(
+                            claim_task,
+                            redis_client,
+                            config.worker_id,
+                            config.poll_timeout_seconds,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.exception("worker_loop: claim_task failed; retrying")
+                        await asyncio.sleep(1.0)
+                        continue
+
+                    if claimed is None:
+                        continue
+
+                    if watchdog is not None:
+                        watchdog.register(claimed.task.task_id)
+                        _claimed_tasks[claimed.task.task_id] = claimed
+
                     await process_page_task(
                         claimed,
                         config,
@@ -3188,7 +3212,7 @@ async def run_worker_loop(
                         session_factory=session_factory,
                     )
             finally:
-                if watchdog is not None:
+                if watchdog is not None and "claimed" in locals() and claimed is not None:
                     watchdog.deregister(claimed.task.task_id)
                     _claimed_tasks.pop(claimed.task.task_id, None)
     finally:
