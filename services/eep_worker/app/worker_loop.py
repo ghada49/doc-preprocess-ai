@@ -79,6 +79,7 @@ from services.eep_worker.app.rescue_step import RescueOutcome, run_rescue_flow
 from services.eep_worker.app.task import build_gate_config
 from services.eep_worker.app.watchdog import TaskWatchdog
 from shared.gpu.backend import BackendError, GPUBackend, LocalHTTPBackend, RunpodBackend
+from shared.metrics import EEP_RECTIFICATION_POLICY_SKIPS
 from shared.io.storage import get_backend
 from shared.schemas.iep0 import BatchClassifyResponse, ClassifyResponse
 from shared.schemas.layout import (
@@ -1834,6 +1835,31 @@ async def _run_preprocessing(
     quality_summary = _quality_summary_dict(branch_response)
 
     if page.status == "preprocessing" and norm_outcome.route == "rescue_required":
+        if gate_config.rectification_policy == "disabled_direct_review":
+            logger.info(
+                {
+                    "event": "rectification_skipped_by_policy",
+                    "policy": "disabled_direct_review",
+                    "job_id": job.job_id,
+                    "page_id": page.page_id,
+                    "page_number": page.page_number,
+                }
+            )
+            EEP_RECTIFICATION_POLICY_SKIPS.labels(policy="disabled_direct_review").inc()
+            confirm_preprocessed_artifact(session, lineage.lineage_id)
+            _complete_pending_human_correction(
+                session,
+                page=page,
+                job=job,
+                lineage=lineage,
+                from_state="preprocessing",
+                review_reason="rectification_policy_disabled",
+                total_processing_ms=(time.monotonic() - task_started_at) * 1000.0,
+                output_image_uri=branch_response.processed_image_uri,
+                quality_summary=quality_summary,
+            )
+            return "ack"
+
         advanced = advance_page_state(
             session,
             page.page_id,

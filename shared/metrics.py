@@ -249,6 +249,13 @@ IEP1D_REJECTION_REASONS = Counter(
     # reason label values: low_confidence, skew_not_improved, border_regressed, warning_veto
 )
 
+EEP_RECTIFICATION_POLICY_SKIPS = Counter(
+    "eep_rectification_policy_skips_total",
+    "Pages routed directly to pending_human_correction because rectification was disabled by policy",
+    ["policy"],
+    # policy label values: disabled_direct_review
+)
+
 # ── IEP1E metrics ─────────────────────────────────────────────────────────────
 
 IEP1E_ORIENTATION_DECISIONS = Counter(

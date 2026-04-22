@@ -166,9 +166,6 @@ export function CorrectionWorkspace({
       toast.success("Correction submitted.");
       queryClient.invalidateQueries({ queryKey: ["correction-queue"] });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
-      queryClient.invalidateQueries({
-        queryKey: ["correction-workspace", jobId, pageNumber, subPageIndex],
-      });
       if (subPageIndex == null && pageStructure === "spread") {
         const firstChildIndex = workspace?.child_pages[0]?.sub_page_index ?? 0;
         router.push(workspacePathForSubPage(firstChildIndex));

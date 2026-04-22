@@ -465,7 +465,8 @@ export interface ServiceHealthRate {
     | "rectification_success_rate"
     | "layout_success_rate"
     | "human_review_throughput_rate"
-    | "structural_agreement_rate";
+    | "structural_agreement_rate"
+    | "rescue_rate";
   label: string;
   value: number | null;
 }
@@ -476,6 +477,8 @@ export interface ServiceHealthResponse {
   layout_success_rate?: number | null;
   human_review_throughput_rate?: number | null;
   structural_agreement_rate?: number | null;
+  rescue_rate?: number | null;
+  policy_skips_count?: number | null;
   window_hours?: number | null;
   services?: Array<{
     service_name: string;

@@ -99,6 +99,11 @@ class PreprocessingGateConfig:
     page_area_preference_threshold: float = 0.30
     # Packet 3.5 fields — artifact soft signal scoring (spec Section 6.9 + 8.4).
     artifact_validation_threshold: float = 0.60
+    # Rectification routing policy (spec Section 8.4).
+    # "conditional"            — attempt IEP1D whenever first pass is not acceptable (default).
+    # "disabled_direct_review" — skip IEP1D; route first-pass non-acceptable pages directly
+    #                            to pending_human_correction.
+    rectification_policy: str = "conditional"
     skew_residual_good_max: float = 1.0
     skew_residual_bad_min: float = 5.0
     blur_score_good_max: float = 0.4

@@ -37,9 +37,12 @@ Exported:
 from __future__ import annotations
 
 import dataclasses
+import logging
 import time
 from collections.abc import Callable
 from typing import Literal
+
+logger = logging.getLogger(__name__)
 
 import numpy as np
 from sqlalchemy.orm import Session
@@ -58,6 +61,7 @@ from services.eep_worker.app.normalization_step import (
 from services.eep_worker.app.rescue_step import RescueOutcome, run_rescue_flow
 from shared.gpu.backend import GPUBackend
 from shared.io.storage import StorageBackend
+from shared.metrics import EEP_RECTIFICATION_POLICY_SKIPS
 from shared.schemas.geometry import GeometryResponse
 from shared.schemas.preprocessing import PreprocessBranchResponse
 
@@ -294,6 +298,7 @@ async def run_split_normalization(
         (infrastructure failures — the caller decides retry vs. fail).
     """
     t0 = time.monotonic()
+    _rectification_policy = (gate_config or PreprocessingGateConfig()).rectification_policy
 
     # ── Left child (page_index=0) ─────────────────────────────────────────────
     left_norm: NormalizationOutcome = run_normalization_and_first_validation(
@@ -312,8 +317,27 @@ async def run_split_normalization(
 
     if left_norm.route == "accept_now":
         left_child = _child_from_norm(0, left_norm)
+    elif _rectification_policy == "disabled_direct_review":
+        logger.info(
+            {
+                "event": "rectification_skipped_by_policy",
+                "policy": "disabled_direct_review",
+                "job_id": job_id,
+                "page_number": page_number,
+                "sub_page_index": 0,
+            }
+        )
+        EEP_RECTIFICATION_POLICY_SKIPS.labels(policy="disabled_direct_review").inc()
+        left_child = SplitChildOutcome(
+            sub_page_index=0,
+            route="pending_human_correction",
+            review_reason="rectification_policy_disabled",
+            branch_response=left_norm.branch_response,
+            validation_result=left_norm.validation_result,
+            used_rescue=False,
+        )
     else:
-        # rescue_required
+        # rescue_required — conditional policy: invoke IEP1D rescue flow
         left_rescue: RescueOutcome = await run_rescue_flow(
             artifact_uri=left_output_uri,
             is_split_child=True,
@@ -357,8 +381,27 @@ async def run_split_normalization(
 
     if right_norm.route == "accept_now":
         right_child = _child_from_norm(1, right_norm)
+    elif _rectification_policy == "disabled_direct_review":
+        logger.info(
+            {
+                "event": "rectification_skipped_by_policy",
+                "policy": "disabled_direct_review",
+                "job_id": job_id,
+                "page_number": page_number,
+                "sub_page_index": 1,
+            }
+        )
+        EEP_RECTIFICATION_POLICY_SKIPS.labels(policy="disabled_direct_review").inc()
+        right_child = SplitChildOutcome(
+            sub_page_index=1,
+            route="pending_human_correction",
+            review_reason="rectification_policy_disabled",
+            branch_response=right_norm.branch_response,
+            validation_result=right_norm.validation_result,
+            used_rescue=False,
+        )
     else:
-        # rescue_required
+        # rescue_required — conditional policy: invoke IEP1D rescue flow
         right_rescue: RescueOutcome = await run_rescue_flow(
             artifact_uri=right_output_uri,
             is_split_child=True,

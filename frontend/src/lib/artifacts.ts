@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useRef } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   presignReadArtifact,
@@ -65,12 +65,18 @@ export function useArtifactPreview(
     refetchOnMount: queryOptions.refetchOnMount,
   });
 
-  // Revoke the blob URL when it changes or the component unmounts.
+  // Revoke the previous blob URL when it changes.
+  // useRef is required to be StrictMode-safe: React dev mode runs cleanup
+  // immediately after every effect, so a plain closure would revoke the URL
+  // before the image renders. The ref is updated inside the effect so the
+  // cleanup can compare prev vs current and skip the no-op double-invoke.
+  const blobUrlRef = useRef<string | null>(null);
   useEffect(() => {
-    const current = result.data?.blobUrl ?? null;
+    const prev = blobUrlRef.current;
+    blobUrlRef.current = result.data?.blobUrl ?? null;
     return () => {
-      if (current) {
-        URL.revokeObjectURL(current);
+      if (prev && prev !== blobUrlRef.current) {
+        URL.revokeObjectURL(prev);
       }
     };
   }, [result.data?.blobUrl]);

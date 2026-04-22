@@ -14,8 +14,57 @@ import { Textarea } from "@/components/ui/textarea";
 import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { ErrorBanner } from "@/components/shared/error-banner";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
 import { getApiErrorMessage } from "@/lib/api/client";
 import { formatDate } from "@/lib/utils";
+
+type RectificationPolicy = "conditional" | "disabled_direct_review";
+
+const RECTIFICATION_POLICY_OPTIONS: { value: RectificationPolicy; label: string; help: string }[] =
+  [
+    {
+      value: "conditional",
+      label: "Conditional",
+      help: "Attempt automatic rectification (IEP1D) when the first pass is not acceptable.",
+    },
+    {
+      value: "disabled_direct_review",
+      label: "Disable and send directly to review",
+      help: "Skip rectification entirely. Pages that fail the first-pass quality check are sent directly to human review.",
+    },
+  ];
+
+// ── YAML helpers ──────────────────────────────────────────────────────────────
+
+function parseRectificationPolicy(yaml: string): RectificationPolicy {
+  const match = yaml.match(/^\s+rectification_policy:\s*(\S+)/m);
+  const raw = match?.[1];
+  if (raw === "conditional" || raw === "disabled_direct_review") return raw;
+  return "conditional";
+}
+
+function setRectificationPolicyInYaml(yaml: string, value: RectificationPolicy): string {
+  const line = `  rectification_policy: ${value}`;
+  // Key already present — replace in place
+  if (/^\s+rectification_policy:\s*\S*/m.test(yaml)) {
+    return yaml.replace(/^(\s+)rectification_policy:\s*\S*/m, line);
+  }
+  // preprocessing: section exists — insert as first child
+  if (/^preprocessing:/m.test(yaml)) {
+    return yaml.replace(/^(preprocessing:.*)$/m, `$1\n${line}`);
+  }
+  // No preprocessing section — append one
+  const trimmed = yaml.trimEnd();
+  return `${trimmed}\npreprocessing:\n${line}\n`;
+}
+
+// ── Page ──────────────────────────────────────────────────────────────────────
 
 export default function PolicyPage() {
   const queryClient = useQueryClient();
@@ -60,7 +109,9 @@ export default function PolicyPage() {
   if (isLoading) {
     return (
       <AdminShell breadcrumbs={[{ label: "Policy" }]}>
-        <div className="flex items-center justify-center py-16"><Spinner size="lg" /></div>
+        <div className="flex items-center justify-center py-16">
+          <Spinner size="lg" />
+        </div>
       </AdminShell>
     );
   }
@@ -79,6 +130,11 @@ export default function PolicyPage() {
     );
   }
 
+  const currentRectificationPolicy = parseRectificationPolicy(configYaml);
+  const selectedOption = RECTIFICATION_POLICY_OPTIONS.find(
+    (o) => o.value === currentRectificationPolicy
+  )!;
+
   const canSave =
     isDirty &&
     configYaml.trim().length > 0 &&
@@ -96,7 +152,12 @@ export default function PolicyPage() {
           iconColor="text-indigo-600"
           badge={<Badge variant="info">{policy.version}</Badge>}
           actions={
-            <Button variant="ghost" size="sm" onClick={() => refetch()} className="gap-1.5 text-slate-500">
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={() => refetch()}
+              className="gap-1.5 text-slate-500"
+            >
               <RefreshCw className="h-3.5 w-3.5" />
             </Button>
           }
@@ -121,7 +182,9 @@ export default function PolicyPage() {
           {policy.justification && (
             <div className="mt-4 pt-4 border-t border-slate-200">
               <p className="text-2xs text-slate-400 mb-1">Justification</p>
-              <p className="text-xs text-slate-500 italic">&ldquo;{policy.justification}&rdquo;</p>
+              <p className="text-xs text-slate-500 italic">
+                &ldquo;{policy.justification}&rdquo;
+              </p>
             </div>
           )}
         </div>
@@ -130,11 +193,49 @@ export default function PolicyPage() {
         <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-sm">
           <h2 className="text-sm font-semibold text-slate-800">Edit Policy</h2>
 
+          {/* Rectification policy toggle */}
+          <div className="space-y-1.5">
+            <Label>Rectification Policy</Label>
+            <Select
+              value={currentRectificationPolicy}
+              onValueChange={(val) => {
+                const updated = setRectificationPolicyInYaml(
+                  configYaml,
+                  val as RectificationPolicy
+                );
+                setConfigYaml(updated);
+                setIsDirty(true);
+              }}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {RECTIFICATION_POLICY_OPTIONS.map((opt) => (
+                  <SelectItem key={opt.value} value={opt.value}>
+                    {opt.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <p className="text-xs text-slate-500">{selectedOption.help}</p>
+            {currentRectificationPolicy === "disabled_direct_review" && (
+              <p className="text-xs text-amber-600 bg-amber-50 border border-amber-200 rounded-md px-3 py-2">
+                Pages that fail the first-pass quality check will skip rectification and go
+                directly to human review. Pages already in the{" "}
+                <span className="font-mono">rectification</span> state will not be affected.
+              </p>
+            )}
+          </div>
+
           <div className="space-y-1.5">
             <Label>Configuration YAML</Label>
             <Textarea
               value={configYaml}
-              onChange={(e) => { setConfigYaml(e.target.value); setIsDirty(true); }}
+              onChange={(e) => {
+                setConfigYaml(e.target.value);
+                setIsDirty(true);
+              }}
               className="font-mono text-xs min-h-[320px]"
               placeholder="# YAML configuration…"
             />
@@ -151,7 +252,9 @@ export default function PolicyPage() {
               />
             </div>
             <div className="space-y-1.5">
-              <Label>Justification <span className="text-red-500">*</span></Label>
+              <Label>
+                Justification <span className="text-red-500">*</span>
+              </Label>
               <Input
                 value={justification}
                 onChange={(e) => setJustification(e.target.value)}
