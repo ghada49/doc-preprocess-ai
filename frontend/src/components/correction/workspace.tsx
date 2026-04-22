@@ -63,8 +63,6 @@ export function CorrectionWorkspace({
   backPath = "/queue",
   isAdmin = false,
 }: WorkspaceProps) {
-  void isAdmin;
-
   const router = useRouter();
   const queryClient = useQueryClient();
 
@@ -77,6 +75,7 @@ export function CorrectionWorkspace({
     queryKey: ["correction-workspace", jobId, pageNumber, subPageIndex],
     queryFn: () => getCorrectionWorkspace(jobId, pageNumber, subPageIndex),
     staleTime: 0,
+    retry: false,
   });
 
   const [activeSource, setActiveSource] = useState<SourceView>("current");
@@ -135,6 +134,7 @@ export function CorrectionWorkspace({
 
   const workspacePathForSubPage = (nextSubPageIndex: number) =>
     `${backPath}/${jobId}/${pageNumber}/workspace?sub_page_index=${nextSubPageIndex}`;
+  const jobDetailPath = `${isAdmin ? "/admin/jobs" : "/jobs"}/${jobId}`;
 
   const submitMut = useMutation({
     mutationFn: () =>
@@ -173,7 +173,16 @@ export function CorrectionWorkspace({
         const firstChildIndex = workspace?.child_pages[0]?.sub_page_index ?? 0;
         router.push(workspacePathForSubPage(firstChildIndex));
       } else {
-        router.push(backPath);
+        const nextPendingChild = workspace?.child_pages.find(
+          (child) =>
+            child.status === "pending_human_correction" &&
+            child.sub_page_index !== subPageIndex
+        );
+        router.push(
+          nextPendingChild
+            ? workspacePathForSubPage(nextPendingChild.sub_page_index)
+            : jobDetailPath
+        );
       }
     },
     onError: (err: unknown) => {
@@ -249,8 +258,8 @@ export function CorrectionWorkspace({
 
   // Scale factor: preview pixels / original image pixels.
   // When image dimensions are unknown we fall back to 1 (legacy behaviour).
-  const pageImageWidth = workspace.page_image_width ?? null;
-  const pageImageHeight = workspace.page_image_height ?? null;
+  const pageImageWidth = viewerData?.originalWidth ?? workspace.page_image_width ?? null;
+  const pageImageHeight = viewerData?.originalHeight ?? workspace.page_image_height ?? null;
   const splitScale =
     pageImageWidth != null && previewNaturalWidth != null && previewNaturalWidth > 0
       ? previewNaturalWidth / pageImageWidth
@@ -345,6 +354,16 @@ export function CorrectionWorkspace({
           </div>
 
           <div className="flex flex-col gap-1 p-2">
+            {workspace.parent_source_uri && (
+              <SourceButton
+                label="Original Parent"
+                description="Parent scan"
+                active={activeSource === "parent"}
+                available={!!workspace.parent_source_uri}
+                onClick={() => setActiveSource("parent")}
+                icon={<Eye className="h-3.5 w-3.5" />}
+              />
+            )}
             <SourceButton
               label="Current"
               description={currentArtifactLabel(workspace.current_output_role)}
@@ -353,19 +372,22 @@ export function CorrectionWorkspace({
               onClick={() => setActiveSource("current")}
               icon={<Eye className="h-3.5 w-3.5" />}
             />
-            <SourceButton
-              label="Original OTIFF"
-              description="Raw scan"
-              active={activeSource === "original"}
-              available={!isChildPage && !!workspace.original_otiff_uri}
-              onClick={() => setActiveSource("original")}
-              icon={<Eye className="h-3.5 w-3.5" />}
-            />
+            {(!workspace.parent_source_uri ||
+              workspace.original_otiff_uri !== workspace.parent_source_uri) && (
+              <SourceButton
+                label="Original OTIFF"
+                description="Raw scan"
+                active={activeSource === "original"}
+                available={!!workspace.original_otiff_uri}
+                onClick={() => setActiveSource("original")}
+                icon={<Eye className="h-3.5 w-3.5" />}
+              />
+            )}
             <SourceButton
               label="Normalized"
               description="Normalized"
               active={activeSource === "normalized"}
-              available={!isChildPage && !!workspace.branch_outputs.iep1c_normalized}
+              available={!!workspace.branch_outputs.iep1c_normalized}
               onClick={() => setActiveSource("normalized")}
               icon={<GitBranch className="h-3.5 w-3.5" />}
             />
@@ -373,7 +395,7 @@ export function CorrectionWorkspace({
               label="Rectified"
               description="Rectified"
               active={activeSource === "rectified"}
-              available={!isChildPage && !!workspace.branch_outputs.iep1d_rectified}
+              available={!!workspace.branch_outputs.iep1d_rectified}
               onClick={() => setActiveSource("rectified")}
               icon={<GitBranch className="h-3.5 w-3.5" />}
             />
@@ -442,7 +464,7 @@ export function CorrectionWorkspace({
                 No displayable artifact is available for the selected source. Choose another source before submitting a correction.
               </div>
             )}
-            {canEditGeometry && activeUri && activeSource !== "current" && !isChildPage && (
+            {canEditGeometry && activeUri && activeSource !== "current" && (
               <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
                 Edits will be applied using the selected <strong>{sourceViewLabel(activeSource)}</strong> artifact and the result will become the new current artifact.
               </div>
@@ -754,6 +776,8 @@ function currentArtifactLabel(role: CorrectionWorkspaceDetail["current_output_ro
 
 function sourceViewLabel(source: SourceView): string {
   switch (source) {
+    case "parent":
+      return "Original Parent";
     case "original":
       return "Original OTIFF";
     case "normalized":

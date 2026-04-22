@@ -353,7 +353,6 @@ function filterOperationalPages(pages: JobPage[]): JobPage[] {
     pages.filter((page) => page.sub_page_index != null).map((page) => page.page_number)
   );
   const filtered = pages.filter((page) => {
-    if (page.status === "split") return false;
     if (page.sub_page_index == null && pageNumbersWithChildren.has(page.page_number)) {
       return false;
     }

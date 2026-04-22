@@ -104,6 +104,7 @@ def _make_lineage(
     human_corrected: bool = False,
     split_source: bool = False,
     human_correction_fields: dict[str, Any] | None = None,
+    gate_results: dict[str, Any] | None = None,
 ) -> PageLineage:
     lin = MagicMock(spec=PageLineage)
     lin.job_id = job_id
@@ -117,6 +118,7 @@ def _make_lineage(
     lin.human_corrected = human_corrected
     lin.split_source = split_source
     lin.human_correction_fields = human_correction_fields
+    lin.gate_results = gate_results
     return lin
 
 
@@ -440,6 +442,7 @@ class TestAssembleCorrectionWorkspace:
         assert result.review_reasons == ["geometry_failed"]
         # No lineage → falls back to input_image_uri
         assert result.original_otiff_uri == "s3://bucket/raw/page5.tiff"
+        assert result.parent_source_uri is None
         assert result.best_output_uri is None
         assert result.branch_outputs.iep1c_normalized is None
         assert result.branch_outputs.iep1d_rectified is None
@@ -487,6 +490,7 @@ class TestAssembleCorrectionWorkspace:
         result = assemble_correction_workspace(session, "job-001", 1)
 
         assert result.original_otiff_uri == "s3://bucket/raw/page1.tiff"
+        assert result.parent_source_uri is None
         assert result.best_output_uri == "s3://bucket/normalized/page1.tiff"
         # Untouched normalized pages do not currently expose iep1c_normalized;
         # only the current artifact carries the normalized URI.
@@ -972,6 +976,40 @@ class TestAssembleCorrectionWorkspace:
         result = assemble_correction_workspace(session, "job-001", 1)
         assert result.original_otiff_uri == "s3://bucket/fallback_input.tiff"
 
+    def test_accepted_split_child_rereview_exposes_original_parent_source(
+        self, session: MagicMock
+    ) -> None:
+        job = _make_job()
+        page = _make_page(
+            status="pending_human_correction",
+            sub_page_index=1,
+            output_image_uri="s3://bucket/jobs/job-001/output/1_1.tiff",
+        )
+        lineage = _make_lineage(
+            sub_page_index=1,
+            otiff_uri="s3://bucket/raw/parent-page1.tiff",
+            output_image_uri="s3://bucket/jobs/job-001/output/1_1.tiff",
+            split_source=True,
+            human_corrected=False,
+            human_correction_fields={},
+            gate_results={"downsample": {"original_width": 2400, "original_height": 3200}},
+        )
+        _setup_session(session, job=job, page=page, lineage=lineage, gate=None)
+
+        result = assemble_correction_workspace(session, "job-001", 1, sub_page_index=1)
+
+        assert result.parent_source_uri == "s3://bucket/raw/parent-page1.tiff"
+        assert result.original_otiff_uri == "s3://bucket/raw/parent-page1.tiff"
+        assert result.current_output_uri == "s3://bucket/jobs/job-001/output/1_1.tiff"
+        assert result.current_output_role == "split_child"
+        assert result.current_crop_box == [1200, 0, 2400, 3200]
+        assert result.current_quad_points == [
+            (1200.0, 0.0),
+            (2400.0, 0.0),
+            (2400.0, 3200.0),
+            (1200.0, 3200.0),
+        ]
+
     def test_child_workspace_current_output_uri_points_to_shared_parent_source(
         self, session: MagicMock
     ) -> None:
@@ -1022,6 +1060,7 @@ class TestAssembleCorrectionWorkspace:
 
         result = assemble_correction_workspace(session, "job-001", 1, sub_page_index=1)
 
+        assert result.parent_source_uri == "s3://bucket/raw/page1.tiff"
         assert result.current_output_uri == "s3://bucket/norm/page1.tiff"
         assert result.best_output_uri == "s3://bucket/norm/page1.tiff"
         assert result.current_output_role == "split_child"
@@ -1117,6 +1156,8 @@ class TestAssembleCorrectionWorkspace:
 
         assert left_result.current_output_uri == "s3://bucket/norm/page1.tiff"
         assert right_result.current_output_uri == "s3://bucket/norm/page1.tiff"
+        assert left_result.parent_source_uri == "s3://bucket/raw/page1.tiff"
+        assert right_result.parent_source_uri == "s3://bucket/raw/page1.tiff"
         assert left_result.current_selection_mode == "quad"
         assert right_result.current_selection_mode == "quad"
         assert left_result.current_quad_points == [

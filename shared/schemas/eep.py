@@ -41,6 +41,7 @@ PageState = Literal[
     "rectification",
     "ptiff_qa_pending",        # PTIFF QA checkpoint (spec Section 3.1 / 8.5)
     "layout_detection",
+    "semantic_norm",           # post-human-correction iep1e pass before layout_detection
     "pending_human_correction",
     "accepted",
     "review",

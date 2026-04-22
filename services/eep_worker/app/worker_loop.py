@@ -113,6 +113,12 @@ class RetryableTaskError(RuntimeError):
 
 
 @dataclass(slots=True)
+class _SemanticNormSplitChild:
+    page: JobPage
+    lineage: PageLineage
+
+
+@dataclass(slots=True)
 class WorkerConfig:
     worker_id: str
     poll_timeout_seconds: float
@@ -414,6 +420,75 @@ def _reading_order_for_sub(direction: str, sub_page_index: int) -> int:
         return 2 if sub_page_index == 0 else 1
     # ltr or unresolved: left-first
     return 1 if sub_page_index == 0 else 2
+
+
+def _clear_layout_artifacts_for_semantic_update(page: JobPage, lineage: PageLineage) -> None:
+    """Clear layout outputs that were produced against a now-stale page image."""
+    page.output_layout_uri = None
+    page.layout_consensus_result = None
+    gate_results = dict(lineage.gate_results or {})
+    gate_results.pop("downsample", None)
+    gate_results.pop("layout_input", None)
+    gate_results.pop("layout_adjudication", None)
+    lineage.gate_results = gate_results or None
+    lineage.layout_artifact_state = "pending"
+
+
+def _find_split_child_group_for_semantic_norm(
+    session: Session,
+    page: JobPage,
+    lineage: PageLineage,
+) -> list[_SemanticNormSplitChild] | None:
+    """Return sibling split children that must be semantically normalized together."""
+    if page.sub_page_index is None:
+        return None
+    if not getattr(lineage, "split_source", False) and not getattr(lineage, "parent_page_id", None):
+        return None
+
+    children: list[JobPage] = (
+        session.query(JobPage)
+        .filter(
+            JobPage.job_id == page.job_id,
+            JobPage.page_number == page.page_number,
+            JobPage.sub_page_index.isnot(None),
+        )
+        .order_by(JobPage.sub_page_index.asc())
+        .all()
+    )
+    if len(children) < 2:
+        return None
+
+    group: list[_SemanticNormSplitChild] = []
+    for child in children:
+        child_lineage = _find_lineage(
+            session,
+            child.job_id,
+            child.page_number,
+            child.sub_page_index,
+        )
+        if child_lineage is None:
+            logger.warning(
+                "worker_loop: split semantic_norm missing sibling lineage "
+                "job=%s page=%d sub=%s",
+                child.job_id,
+                child.page_number,
+                child.sub_page_index,
+            )
+            return None
+        if not child.output_image_uri:
+            logger.warning(
+                "worker_loop: split semantic_norm missing sibling artifact "
+                "job=%s page=%d sub=%s",
+                child.job_id,
+                child.page_number,
+                child.sub_page_index,
+            )
+            return None
+        group.append(_SemanticNormSplitChild(page=child, lineage=child_lineage))
+
+    if not any(child.page.page_id == page.page_id for child in group):
+        return None
+    return group
 
 
 def _resolve_material_type_placeholder(session: Session, job: Job, page: JobPage) -> str:
@@ -1404,6 +1479,7 @@ async def _run_preprocessing(
             1: split_outcome.right.branch_response.processed_image_uri
             if split_outcome.right.branch_response is not None else right_output_uri,
         }
+        _split_sem_result: SemanticNormResponse | None = None
         try:
             _left_br = split_outcome.left.branch_response
             _right_br = split_outcome.right.branch_response
@@ -1615,7 +1691,8 @@ async def _run_preprocessing(
                 page.page_number,
             )
 
-        # Set parent page to "split" status
+        # Keep the parent split transition and child row creation in one
+        # transaction; a split parent without child leaves disappears from the UI.
         advanced = advance_page_state(
             session,
             page.page_id,
@@ -1631,7 +1708,6 @@ async def _run_preprocessing(
             return "ack"
         page.status = "split"
         lineage.split_source = True
-        _commit(session)
 
         # Derive reading_direction for this spread from IEP1E result (or "unresolved").
         _split_direction: str = (
@@ -2266,6 +2342,407 @@ def _rescale_layout_response(
     return response.model_copy(update={"regions": rescaled})
 
 
+async def _inherit_blank_rotation_for_semantic_group(
+    *,
+    job: Job,
+    page_number: int,
+    sem_result: SemanticNormResponse | None,
+    oriented_uri_by_sub: dict[int, str],
+) -> None:
+    """
+    If one split child is blank, rotate it with the confident sibling's rotation.
+
+    IEP1E leaves a blank page at rotation 0 because there is no OCR evidence.
+    For a spread pair, a blank sibling should still follow the rotation resolved
+    from the text-bearing page.
+    """
+    if sem_result is None or len(sem_result.pages) != 2:
+        return
+
+    p0, p1 = sem_result.pages[0], sem_result.pages[1]
+    confident_page = None
+    blank_page = None
+    if p0.orientation.orientation_confident and not p1.orientation.orientation_confident:
+        confident_page, blank_page = p0, p1
+    elif p1.orientation.orientation_confident and not p0.orientation.orientation_confident:
+        confident_page, blank_page = p1, p0
+
+    if confident_page is None or blank_page is None:
+        return
+
+    donor_deg = confident_page.orientation.best_rotation_deg
+    if donor_deg == 0:
+        return
+
+    blank_src_uri = blank_page.original_uri
+    blank_oriented_uri = _artifact_uri(
+        blank_src_uri,
+        job.job_id,
+        "oriented",
+        page_number,
+        blank_page.sub_page_index,
+        ".tiff",
+    )
+
+    try:
+        raw = await asyncio.to_thread(get_backend(blank_src_uri).get_bytes, blank_src_uri)
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        blank_img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if blank_img is None:
+            return
+        cv2_rot = {
+            90: cv2.ROTATE_90_CLOCKWISE,
+            180: cv2.ROTATE_180,
+            270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+        }[donor_deg]
+        rotated_blank = cv2.rotate(blank_img, cv2_rot)
+        success, buf = cv2.imencode(".tiff", rotated_blank)
+        if not success:
+            return
+        get_backend(blank_oriented_uri).put_bytes(blank_oriented_uri, bytes(buf.tobytes()))
+        oriented_uri_by_sub[blank_page.sub_page_index] = blank_oriented_uri
+        logger.info(
+            "worker_loop: split semantic_norm blank sibling sub=%d inherited rotation=%d "
+            "from sub=%d job=%s page=%d uri=%s",
+            blank_page.sub_page_index,
+            donor_deg,
+            confident_page.sub_page_index,
+            job.job_id,
+            page_number,
+            blank_oriented_uri,
+        )
+    except Exception as exc:
+        logger.warning(
+            "worker_loop: split semantic_norm blank rotation inheritance failed "
+            "job=%s page=%d sub=%d error=%s",
+            job.job_id,
+            page_number,
+            blank_page.sub_page_index,
+            exc,
+        )
+
+
+async def _run_split_group_semantic_norm(
+    *,
+    session: Session,
+    page: JobPage,
+    job: Job,
+    lineage: PageLineage,
+    config: WorkerConfig,
+    redis_client: redis_lib.Redis,
+    task_started_at: float,
+) -> TaskResolution | None:
+    """
+    Re-run semantic normalization for all split children after one child is corrected.
+
+    Reading direction and sibling rotation are pair-level decisions.  A child that
+    returned from human review cannot be normalized in isolation if its sibling was
+    already accepted directly from the split path.
+    """
+    group = _find_split_child_group_for_semantic_norm(session, page, lineage)
+    if group is None:
+        return None
+
+    ordered_group = sorted(
+        group,
+        key=lambda item: int(
+            item.page.sub_page_index if item.page.sub_page_index is not None else 0
+        ),
+    )
+    material_type = _resolve_material_type_placeholder(session, job, page)
+    page_uris = [item.page.output_image_uri or "" for item in ordered_group]
+    sub_page_indices = [
+        int(item.page.sub_page_index if item.page.sub_page_index is not None else 0)
+        for item in ordered_group
+    ]
+    x_centers = [float(sub_idx) for sub_idx in sub_page_indices]
+
+    sem_result = await _call_iep1e(
+        page_uris=page_uris,
+        x_centers=x_centers,
+        sub_page_indices=sub_page_indices,
+        job_id=job.job_id,
+        page_number=page.page_number,
+        material_type=material_type,
+        endpoint=config.iep1e_endpoint,
+        backend=config.backend,
+        cb=config.iep1e_circuit_breaker,
+    )
+
+    direction = sem_result.reading_direction if sem_result is not None else "unresolved"
+    oriented_uri_by_sub: dict[int, str] = dict(zip(sub_page_indices, page_uris))
+    if sem_result is not None:
+        for result in sem_result.pages:
+            oriented_uri_by_sub[result.sub_page_index] = result.oriented_uri
+        await _inherit_blank_rotation_for_semantic_group(
+            job=job,
+            page_number=page.page_number,
+            sem_result=sem_result,
+            oriented_uri_by_sub=oriented_uri_by_sub,
+        )
+
+    total_processing_ms = (time.monotonic() - task_started_at) * 1000.0
+    current_target = "layout_detection" if job.pipeline_mode == "layout" else "accepted"
+    pages_to_enqueue: list[JobPage] = []
+
+    for item in ordered_group:
+        child = item.page
+        child_lineage = item.lineage
+        sub_idx = int(child.sub_page_index if child.sub_page_index is not None else 0)
+        previous_uri = child.output_image_uri
+        oriented_uri = oriented_uri_by_sub.get(sub_idx) or previous_uri
+        uri_changed = oriented_uri is not None and oriented_uri != previous_uri
+
+        if oriented_uri is not None:
+            child.output_image_uri = oriented_uri
+            child_lineage.output_image_uri = oriented_uri
+        child.reading_order = _reading_order_for_sub(direction, sub_idx)
+
+        if uri_changed:
+            _clear_layout_artifacts_for_semantic_update(child, child_lineage)
+
+        if child.page_id == page.page_id:
+            advanced = advance_page_state(
+                session,
+                child.page_id,
+                from_state="semantic_norm",
+                to_state=current_target,
+                output_image_uri=oriented_uri,
+            )
+            if not advanced:
+                logger.warning(
+                    "worker_loop: split semantic_norm CAS miss job=%s page_id=%s",
+                    job.job_id,
+                    child.page_id,
+                )
+                return "ack"
+
+            child.status = current_target
+            child.output_image_uri = oriented_uri
+            child.processing_time_ms = total_processing_ms
+            child.review_reasons = None
+            if current_target == "layout_detection":
+                child.acceptance_decision = None
+                child.routing_path = None
+                child.completed_at = None
+                pages_to_enqueue.append(child)
+            else:
+                child.acceptance_decision = "accepted"
+                child.routing_path = "preprocessing_only"
+                update_lineage_completion(
+                    session,
+                    child_lineage.lineage_id,
+                    acceptance_decision="accepted",
+                    acceptance_reason="preprocessing accepted after human correction",
+                    routing_path="preprocessing_only",
+                    total_processing_ms=total_processing_ms,
+                    output_image_uri=oriented_uri,
+                )
+            continue
+
+        if job.pipeline_mode == "layout" and uri_changed and child.status == "accepted":
+            reopened = advance_page_state(
+                session,
+                child.page_id,
+                from_state="accepted",
+                to_state="semantic_norm",
+            )
+            if not reopened:
+                logger.warning(
+                    "worker_loop: split semantic_norm could not reopen accepted sibling "
+                    "job=%s page_id=%s",
+                    job.job_id,
+                    child.page_id,
+                )
+                continue
+            child.status = "semantic_norm"
+            child.acceptance_decision = None
+            child.routing_path = None
+            child.completed_at = None
+
+            advanced = advance_page_state(
+                session,
+                child.page_id,
+                from_state="semantic_norm",
+                to_state="layout_detection",
+                output_image_uri=oriented_uri,
+            )
+            if advanced:
+                child.status = "layout_detection"
+                child.completed_at = None
+                pages_to_enqueue.append(child)
+            else:
+                logger.warning(
+                    "worker_loop: split semantic_norm could not send sibling to layout "
+                    "job=%s page_id=%s",
+                    job.job_id,
+                    child.page_id,
+                )
+        elif job.pipeline_mode == "layout" and child.status == "layout_detection":
+            pages_to_enqueue.append(child)
+        elif job.pipeline_mode != "layout" and child.status == "accepted" and uri_changed:
+            update_lineage_completion(
+                session,
+                child_lineage.lineage_id,
+                acceptance_decision=child.acceptance_decision or "accepted",
+                acceptance_reason="preprocessing accepted after sibling semantic correction",
+                routing_path=child.routing_path or "preprocessing_only",
+                total_processing_ms=child.processing_time_ms,
+                output_image_uri=oriented_uri,
+            )
+
+    _sync_job_summary(session, job)
+    _update_job_reading_direction(job, direction)
+    _commit(session)
+
+    for child in pages_to_enqueue:
+        enqueue_page_task(redis_client, _page_task_for(child))
+
+    logger.info(
+        "worker_loop: split semantic_norm complete job=%s page=%d direction=%s pages=%d",
+        job.job_id,
+        page.page_number,
+        direction,
+        len(ordered_group),
+    )
+    return "ack"
+
+
+async def _run_semantic_norm(
+    *,
+    session: Session,
+    page: JobPage,
+    job: Job,
+    config: WorkerConfig,
+    redis_client: redis_lib.Redis,
+    task_started_at: float,
+) -> TaskResolution:
+    """
+    Run iep1e for a page returning from human correction (all pipeline modes).
+
+    Orientation and reading-order correction applies whether or not the job
+    proceeds to layout detection — a preprocess-only job still needs the
+    artifact rotated correctly before acceptance.
+
+    Routes to layout_detection (layout mode) or accepted (preprocess-only mode).
+    """
+    lineage = _find_lineage(session, page.job_id, page.page_number, page.sub_page_index)
+    if lineage is None:
+        _complete_failed(
+            session,
+            page=page,
+            job=job,
+            lineage=None,
+            from_state="semantic_norm",
+            failure_reason="missing_lineage_for_semantic_norm",
+            total_processing_ms=(time.monotonic() - task_started_at) * 1000.0,
+        )
+        return "ack"
+
+    image_uri = page.output_image_uri
+    if not image_uri:
+        _complete_failed(
+            session,
+            page=page,
+            job=job,
+            lineage=lineage,
+            from_state="semantic_norm",
+            failure_reason="missing_corrected_artifact_for_semantic_norm",
+            total_processing_ms=(time.monotonic() - task_started_at) * 1000.0,
+        )
+        return "ack"
+
+    group_resolution = await _run_split_group_semantic_norm(
+        session=session,
+        page=page,
+        job=job,
+        lineage=lineage,
+        config=config,
+        redis_client=redis_client,
+        task_started_at=task_started_at,
+    )
+    if group_resolution is not None:
+        return group_resolution
+
+    material_type = _resolve_material_type_placeholder(session, job, page)
+    sub_idx = page.sub_page_index if page.sub_page_index is not None else 0
+
+    sem_result = await _call_iep1e(
+        page_uris=[image_uri],
+        x_centers=[0.0],
+        sub_page_indices=[sub_idx],
+        job_id=job.job_id,
+        page_number=page.page_number,
+        material_type=material_type,
+        endpoint=config.iep1e_endpoint,
+        backend=config.backend,
+        cb=config.iep1e_circuit_breaker,
+    )
+
+    oriented_uri = image_uri
+    if sem_result is not None and sem_result.ordered_page_uris:
+        oriented_uri = sem_result.ordered_page_uris[0]
+
+    total_processing_ms = (time.monotonic() - task_started_at) * 1000.0
+    to_state = "layout_detection" if job.pipeline_mode == "layout" else "accepted"
+
+    advanced = advance_page_state(
+        session,
+        page.page_id,
+        from_state="semantic_norm",
+        to_state=to_state,
+        output_image_uri=oriented_uri,
+    )
+    if not advanced:
+        logger.warning(
+            "worker_loop: semantic_norm CAS miss job=%s page_id=%s",
+            job.job_id,
+            page.page_id,
+        )
+        return "ack"
+
+    page.status = to_state
+    page.output_image_uri = oriented_uri
+    page.reading_order = 1
+
+    if job.pipeline_mode == "layout":
+        session.commit()
+        enqueue_page_task(
+            redis_client,
+            PageTask(
+                task_id=str(uuid.uuid4()),
+                job_id=page.job_id,
+                page_id=page.page_id,
+                page_number=page.page_number,
+                sub_page_index=page.sub_page_index,
+            ),
+        )
+    else:
+        page.acceptance_decision = "accepted"
+        page.routing_path = "preprocessing_only"
+        update_lineage_completion(
+            session,
+            lineage.lineage_id,
+            acceptance_decision="accepted",
+            acceptance_reason="preprocessing accepted after human correction",
+            routing_path="preprocessing_only",
+            total_processing_ms=total_processing_ms,
+            output_image_uri=oriented_uri,
+        )
+        _sync_job_summary(session, job)
+        _commit(session)
+
+    logger.info(
+        "worker_loop: semantic_norm complete job=%s page=%d sub=%s → %s uri=%s",
+        job.job_id,
+        page.page_number,
+        page.sub_page_index,
+        to_state,
+        oriented_uri,
+    )
+    return "ack"
+
+
 async def _run_layout(
     *,
     session: Session,
@@ -2523,6 +3000,15 @@ async def process_page_task(
             resolution = "ack"
         elif page.status in {"queued", "preprocessing", "rectification"}:
             resolution = await _run_preprocessing(
+                session=session,
+                page=page,
+                job=job,
+                config=config,
+                redis_client=redis_client,
+                task_started_at=time.monotonic(),
+            )
+        elif page.status == "semantic_norm":
+            resolution = await _run_semantic_norm(
                 session=session,
                 page=page,
                 job=job,

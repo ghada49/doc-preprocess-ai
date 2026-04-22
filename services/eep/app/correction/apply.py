@@ -16,10 +16,10 @@ Single-page path (child correction or parent kept as a single page)
   - The correction is authoritative; processing is not re-run.
   - The existing artifact is copied to a derived corrected URI via the
     storage backend and the URI is recorded in lineage.
-  - State: pending_human_correction → layout_detection (layout mode) or
-           pending_human_correction → accepted (preprocess-only mode).
-  - In layout mode the page is enqueued to Redis for async IEP2 processing.
-  - IEP2 is NEVER run inline while the page is still in human review.
+  - State: pending_human_correction → semantic_norm (all pipeline modes).
+  - The page is enqueued to Redis; the worker runs iep1e (orientation +
+    reading order), then routes to layout_detection (layout) or accepted
+    (preprocess-only). IEP2 is NEVER run inline here.
 
 ──────────────────────────────────────────────────────────────────────────
 Split path (reviewer selects a two-page spread or supplies an explicit split_x fallback)
@@ -915,15 +915,14 @@ def _apply_single_page_correction(
     page.output_image_uri = corrected_uri
     confirm_preprocessed_artifact(db, lineage.lineage_id)
 
-    # Automation-first: route directly to layout_detection (layout mode) or
-    # accepted (preprocess-only mode). IEP2 is never run inline here.
-    to_state = "layout_detection" if job.pipeline_mode == "layout" else "accepted"
-
+    # Always route through semantic_norm so iep1e corrects orientation and reading
+    # order regardless of pipeline mode. The worker then routes to layout_detection
+    # (layout) or accepted (preprocess-only) after iep1e completes.
     advanced = advance_page_state(
         db,
         page.page_id,
         from_state="pending_human_correction",
-        to_state=to_state,
+        to_state="semantic_norm",
     )
     if not advanced:
         logger.warning(
@@ -935,40 +934,26 @@ def _apply_single_page_correction(
         )
         return
 
-    page.status = to_state
+    page.status = "semantic_norm"
 
     db.flush()
 
-    if job.pipeline_mode == "layout":
-        enqueue_page_task(
-            r,
-            PageTask(
-                task_id=str(uuid.uuid4()),
-                job_id=page.job_id,
-                page_id=page.page_id,
-                page_number=page.page_number,
-                sub_page_index=page.sub_page_index,
-            ),
-        )
-    else:
-        page.acceptance_decision = "accepted"
-        page.routing_path = "preprocessing_only"
-        update_lineage_completion(
-            db,
-            lineage.lineage_id,
-            acceptance_decision="accepted",
-            acceptance_reason="preprocessing accepted after human correction",
-            routing_path="preprocessing_only",
-            total_processing_ms=page.processing_time_ms,
-            output_image_uri=corrected_uri,
-        )
+    enqueue_page_task(
+        r,
+        PageTask(
+            task_id=str(uuid.uuid4()),
+            job_id=page.job_id,
+            page_id=page.page_id,
+            page_number=page.page_number,
+            sub_page_index=page.sub_page_index,
+        ),
+    )
 
     logger.info(
-        "Correction applied: job=%s page=%d sub_page_index=%s → %s",
+        "Correction applied: job=%s page=%d sub_page_index=%s → semantic_norm",
         page.job_id,
         page.page_number,
         page.sub_page_index,
-        to_state,
     )
 
 
@@ -1002,8 +987,9 @@ def apply_correction(
       Used for child-page corrections and for parent pages whose structure is
       kept as a single page. Processing is not re-run. The existing artifact is
       copied to a derived corrected URI and recorded in lineage. The page then
-      transitions to layout_detection (layout mode) or accepted (preprocess mode)
-      and is enqueued for async IEP2 processing in layout mode.
+      transitions to semantic_norm (all modes); the worker runs iep1e for
+      orientation and reading-order correction, then routes to layout_detection
+      (layout) or accepted (preprocess-only).
 
     **Split path**
       Used for parent pages when the reviewer selects ``page_structure="spread"``

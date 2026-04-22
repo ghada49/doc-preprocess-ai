@@ -60,6 +60,26 @@ def test_reconciler_requeues_orphaned_layout_detection_page_when_redis_is_empty(
     assert task.retry_count == 0
 
 
+def test_reconciler_requeues_orphaned_semantic_norm_page_when_redis_is_empty() -> None:
+    r = _make_redis()
+    orphan = _make_page(page_id="page-semantic", status="semantic_norm", sub_page_index=0)
+    session = MagicMock()
+    session.get.return_value = None
+    session.query.return_value.filter.return_value.all.return_value = [orphan]
+
+    result = reconcile_once(r, session, ReconcilerConfig())
+
+    assert result.processing_list_size == 0
+    assert result.requeued_orphaned == 1
+    r.lpush.assert_called_once()
+    queue_name, payload = r.lpush.call_args[0]
+    assert queue_name == QUEUE_PAGE_TASKS
+    task = PageTask.model_validate_json(payload)
+    assert task.page_id == orphan.page_id
+    assert task.sub_page_index == orphan.sub_page_index
+    assert task.retry_count == 0
+
+
 def test_reconciler_does_not_duplicate_page_already_present_in_main_queue() -> None:
     existing = PageTask(
         task_id="task-existing",

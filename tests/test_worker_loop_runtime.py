@@ -389,6 +389,504 @@ class TestLayoutArtifactIoReliability:
 # ── Layout No-Review Path ──────────────────────────────────────────────────
 
 
+class TestSemanticNormAfterHumanCorrection:
+    @pytest.mark.asyncio
+    async def test_preprocess_human_correction_runs_iep1e_then_accepts(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from services.eep_worker.app import worker_loop
+
+        session = MagicMock()
+        job = MockJob(job_id="job-123", pipeline_mode="preprocess")
+        page = MockJobPage(
+            job_id=job.job_id,
+            page_number=1,
+            status="semantic_norm",
+            output_image_uri="s3://bucket/jobs/job-123/corrected/1.tiff",
+        )
+        lineage = SimpleNamespace(lineage_id="lineage-1")
+        config = SimpleNamespace(
+            iep1e_endpoint="http://iep1e",
+            backend=object(),
+            iep1e_circuit_breaker=object(),
+        )
+        call_iep1e = AsyncMock(
+            return_value=SimpleNamespace(
+                ordered_page_uris=["s3://bucket/jobs/job-123/output/1.tiff"],
+            ),
+        )
+        advance_calls: list[dict[str, object]] = []
+        completion_calls: list[dict[str, object]] = []
+        summary_jobs: list[MockJob] = []
+        commits: list[object] = []
+        enqueued: list[object] = []
+
+        def advance_page_state(session_arg: object, page_id: str, **kwargs: object) -> bool:
+            advance_calls.append({"session": session_arg, "page_id": page_id, **kwargs})
+            return True
+
+        def update_lineage_completion(
+            session_arg: object,
+            lineage_id: str,
+            **kwargs: object,
+        ) -> None:
+            completion_calls.append(
+                {"session": session_arg, "lineage_id": lineage_id, **kwargs},
+            )
+
+        monkeypatch.setattr(
+            worker_loop,
+            "_find_lineage",
+            lambda session_arg, job_id, page_number, sub_page_index: lineage,
+        )
+        monkeypatch.setattr(
+            worker_loop,
+            "_resolve_material_type_placeholder",
+            lambda session_arg, job_arg, page_arg: "book",
+        )
+        monkeypatch.setattr(worker_loop, "_call_iep1e", call_iep1e)
+        monkeypatch.setattr(worker_loop, "advance_page_state", advance_page_state)
+        monkeypatch.setattr(worker_loop, "update_lineage_completion", update_lineage_completion)
+        monkeypatch.setattr(
+            worker_loop,
+            "_sync_job_summary",
+            lambda session_arg, job_arg: summary_jobs.append(job_arg),
+        )
+        monkeypatch.setattr(worker_loop, "_commit", lambda session_arg: commits.append(session_arg))
+        monkeypatch.setattr(
+            worker_loop,
+            "enqueue_page_task",
+            lambda redis_arg, task: enqueued.append(task),
+        )
+
+        resolution = await worker_loop._run_semantic_norm(
+            session=session,
+            page=page,
+            job=job,
+            config=config,
+            redis_client=object(),
+            task_started_at=time.monotonic(),
+        )
+
+        assert resolution == "ack"
+        call_iep1e.assert_awaited_once()
+        assert call_iep1e.await_args.kwargs["page_uris"] == [
+            "s3://bucket/jobs/job-123/corrected/1.tiff",
+        ]
+        assert call_iep1e.await_args.kwargs["sub_page_indices"] == [0]
+        assert advance_calls == [
+            {
+                "session": session,
+                "page_id": page.page_id,
+                "from_state": "semantic_norm",
+                "to_state": "accepted",
+                "output_image_uri": "s3://bucket/jobs/job-123/output/1.tiff",
+            }
+        ]
+        assert page.status == "accepted"
+        assert page.output_image_uri == "s3://bucket/jobs/job-123/output/1.tiff"
+        assert page.reading_order == 1
+        assert page.acceptance_decision == "accepted"
+        assert page.routing_path == "preprocessing_only"
+        assert len(completion_calls) == 1
+        assert isinstance(completion_calls[0]["total_processing_ms"], float)
+        assert completion_calls[0]["total_processing_ms"] >= 0.0
+        completion_without_time = {
+            key: value
+            for key, value in completion_calls[0].items()
+            if key != "total_processing_ms"
+        }
+        assert completion_without_time == {
+            "session": session,
+            "lineage_id": "lineage-1",
+            "acceptance_decision": "accepted",
+            "acceptance_reason": "preprocessing accepted after human correction",
+            "routing_path": "preprocessing_only",
+            "output_image_uri": "s3://bucket/jobs/job-123/output/1.tiff",
+        }
+        assert summary_jobs == [job]
+        assert commits == [session]
+        assert enqueued == []
+
+    @pytest.mark.asyncio
+    async def test_layout_human_correction_runs_iep1e_then_enqueues_layout(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from services.eep_worker.app import worker_loop
+
+        session = MagicMock()
+        job = MockJob(job_id="job-123", pipeline_mode="layout")
+        page = MockJobPage(
+            job_id=job.job_id,
+            page_number=1,
+            sub_page_index=2,
+            status="semantic_norm",
+            output_image_uri="s3://bucket/jobs/job-123/corrected/1_2.tiff",
+        )
+        lineage = SimpleNamespace(lineage_id="lineage-2")
+        config = SimpleNamespace(
+            iep1e_endpoint="http://iep1e",
+            backend=object(),
+            iep1e_circuit_breaker=object(),
+        )
+        call_iep1e = AsyncMock(
+            return_value=SimpleNamespace(
+                ordered_page_uris=["s3://bucket/jobs/job-123/output/1_2.tiff"],
+            ),
+        )
+        advance_calls: list[dict[str, object]] = []
+        enqueued: list[tuple[object, object]] = []
+
+        def advance_page_state(session_arg: object, page_id: str, **kwargs: object) -> bool:
+            advance_calls.append({"session": session_arg, "page_id": page_id, **kwargs})
+            return True
+
+        monkeypatch.setattr(
+            worker_loop,
+            "_find_lineage",
+            lambda session_arg, job_id, page_number, sub_page_index: lineage,
+        )
+        monkeypatch.setattr(
+            worker_loop,
+            "_resolve_material_type_placeholder",
+            lambda session_arg, job_arg, page_arg: "book",
+        )
+        monkeypatch.setattr(worker_loop, "_call_iep1e", call_iep1e)
+        monkeypatch.setattr(worker_loop, "advance_page_state", advance_page_state)
+        monkeypatch.setattr(
+            worker_loop,
+            "_commit",
+            lambda session_arg: pytest.fail("unexpected preprocess commit path"),
+        )
+        monkeypatch.setattr(
+            worker_loop,
+            "enqueue_page_task",
+            lambda redis_arg, task: enqueued.append((redis_arg, task)),
+        )
+
+        redis_client = object()
+        resolution = await worker_loop._run_semantic_norm(
+            session=session,
+            page=page,
+            job=job,
+            config=config,
+            redis_client=redis_client,
+            task_started_at=time.monotonic(),
+        )
+
+        assert resolution == "ack"
+        call_iep1e.assert_awaited_once()
+        assert call_iep1e.await_args.kwargs["page_uris"] == [
+            "s3://bucket/jobs/job-123/corrected/1_2.tiff",
+        ]
+        assert call_iep1e.await_args.kwargs["sub_page_indices"] == [2]
+        assert advance_calls == [
+            {
+                "session": session,
+                "page_id": page.page_id,
+                "from_state": "semantic_norm",
+                "to_state": "layout_detection",
+                "output_image_uri": "s3://bucket/jobs/job-123/output/1_2.tiff",
+            }
+        ]
+        assert page.status == "layout_detection"
+        assert page.output_image_uri == "s3://bucket/jobs/job-123/output/1_2.tiff"
+        assert page.reading_order == 1
+        session.commit.assert_called_once_with()
+        assert len(enqueued) == 1
+        assert enqueued[0][0] is redis_client
+        assert enqueued[0][1].job_id == job.job_id
+        assert enqueued[0][1].page_id == page.page_id
+        assert enqueued[0][1].page_number == page.page_number
+        assert enqueued[0][1].sub_page_index == page.sub_page_index
+
+    @pytest.mark.asyncio
+    async def test_layout_split_child_correction_reconsiders_accepted_sibling(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from services.eep_worker.app import worker_loop
+
+        session = MagicMock()
+        job = MockJob(job_id="job-123", pipeline_mode="layout")
+        page = MockJobPage(
+            job_id=job.job_id,
+            page_number=1,
+            sub_page_index=0,
+            status="semantic_norm",
+            output_image_uri="s3://bucket/jobs/job-123/corrected/1_0.tiff",
+        )
+        sibling = MockJobPage(
+            job_id=job.job_id,
+            page_number=1,
+            sub_page_index=1,
+            status="accepted",
+            output_image_uri="s3://bucket/jobs/job-123/output/1_1.tiff",
+            output_layout_uri="s3://bucket/jobs/job-123/layout/1_1.layout.json",
+            acceptance_decision="accepted",
+            routing_path="layout_adjudication",
+        )
+        sibling.layout_consensus_result = {"status": "done"}
+        lineage = SimpleNamespace(
+            lineage_id="lineage-0",
+            split_source=True,
+            parent_page_id="parent",
+            gate_results={},
+            layout_artifact_state="pending",
+            output_image_uri=page.output_image_uri,
+        )
+        sibling_lineage = SimpleNamespace(
+            lineage_id="lineage-1",
+            split_source=True,
+            parent_page_id="parent",
+            gate_results={
+                "downsample": {},
+                "layout_input": {},
+                "layout_adjudication": {},
+            },
+            layout_artifact_state="confirmed",
+            output_image_uri=sibling.output_image_uri,
+        )
+        config = SimpleNamespace(
+            iep1e_endpoint="http://iep1e",
+            backend=object(),
+            iep1e_circuit_breaker=object(),
+        )
+        orientation = SimpleNamespace(orientation_confident=True, best_rotation_deg=0)
+        sem_result = SimpleNamespace(
+            reading_direction="rtl",
+            pages=[
+                SimpleNamespace(
+                    sub_page_index=0,
+                    original_uri=page.output_image_uri,
+                    oriented_uri="s3://bucket/jobs/job-123/oriented/1_0.tiff",
+                    orientation=orientation,
+                ),
+                SimpleNamespace(
+                    sub_page_index=1,
+                    original_uri=sibling.output_image_uri,
+                    oriented_uri="s3://bucket/jobs/job-123/oriented/1_1.tiff",
+                    orientation=orientation,
+                ),
+            ],
+            ordered_page_uris=[
+                "s3://bucket/jobs/job-123/oriented/1_1.tiff",
+                "s3://bucket/jobs/job-123/oriented/1_0.tiff",
+            ],
+            fallback_used=False,
+        )
+        call_iep1e = AsyncMock(return_value=sem_result)
+        advance_calls: list[dict[str, object]] = []
+        commits: list[object] = []
+        enqueued: list[object] = []
+
+        def advance_page_state(session_arg: object, page_id: str, **kwargs: object) -> bool:
+            advance_calls.append({"session": session_arg, "page_id": page_id, **kwargs})
+            return True
+
+        monkeypatch.setattr(
+            worker_loop,
+            "_find_lineage",
+            lambda session_arg, job_id, page_number, sub_page_index: lineage,
+        )
+        monkeypatch.setattr(
+            worker_loop,
+            "_find_split_child_group_for_semantic_norm",
+            lambda session_arg, page_arg, lineage_arg: [
+                worker_loop._SemanticNormSplitChild(page=page, lineage=lineage),
+                worker_loop._SemanticNormSplitChild(page=sibling, lineage=sibling_lineage),
+            ],
+        )
+        monkeypatch.setattr(
+            worker_loop,
+            "_resolve_material_type_placeholder",
+            lambda session_arg, job_arg, page_arg: "book",
+        )
+        monkeypatch.setattr(worker_loop, "_call_iep1e", call_iep1e)
+        monkeypatch.setattr(worker_loop, "advance_page_state", advance_page_state)
+        monkeypatch.setattr(worker_loop, "_sync_job_summary", lambda session_arg, job_arg: None)
+        monkeypatch.setattr(worker_loop, "_commit", lambda session_arg: commits.append(session_arg))
+        monkeypatch.setattr(worker_loop, "enqueue_page_task", lambda redis_arg, task: enqueued.append(task))
+
+        resolution = await worker_loop._run_semantic_norm(
+            session=session,
+            page=page,
+            job=job,
+            config=config,
+            redis_client=object(),
+            task_started_at=time.monotonic(),
+        )
+
+        assert resolution == "ack"
+        call_iep1e.assert_awaited_once()
+        assert call_iep1e.await_args.kwargs["page_uris"] == [
+            "s3://bucket/jobs/job-123/corrected/1_0.tiff",
+            "s3://bucket/jobs/job-123/output/1_1.tiff",
+        ]
+        assert call_iep1e.await_args.kwargs["x_centers"] == [0.0, 1.0]
+        assert call_iep1e.await_args.kwargs["sub_page_indices"] == [0, 1]
+        assert [call["from_state"] for call in advance_calls] == [
+            "semantic_norm",
+            "accepted",
+            "semantic_norm",
+        ]
+        assert [call["to_state"] for call in advance_calls] == [
+            "layout_detection",
+            "semantic_norm",
+            "layout_detection",
+        ]
+        assert page.status == "layout_detection"
+        assert sibling.status == "layout_detection"
+        assert page.output_image_uri == "s3://bucket/jobs/job-123/oriented/1_0.tiff"
+        assert sibling.output_image_uri == "s3://bucket/jobs/job-123/oriented/1_1.tiff"
+        assert page.reading_order == 2
+        assert sibling.reading_order == 1
+        assert sibling.acceptance_decision is None
+        assert sibling.routing_path is None
+        assert sibling.output_layout_uri is None
+        assert sibling.layout_consensus_result is None
+        assert sibling_lineage.gate_results is None
+        assert sibling_lineage.layout_artifact_state == "pending"
+        assert getattr(job, "reading_direction") == "rtl"
+        assert commits == [session]
+        assert len(enqueued) == 2
+        assert {task.page_id for task in enqueued} == {page.page_id, sibling.page_id}
+
+    @pytest.mark.asyncio
+    async def test_preprocess_split_child_correction_reorders_accepted_sibling(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from services.eep_worker.app import worker_loop
+
+        session = MagicMock()
+        job = MockJob(job_id="job-123", pipeline_mode="preprocess")
+        page = MockJobPage(
+            job_id=job.job_id,
+            page_number=1,
+            sub_page_index=0,
+            status="semantic_norm",
+            output_image_uri="s3://bucket/jobs/job-123/corrected/1_0.tiff",
+        )
+        sibling = MockJobPage(
+            job_id=job.job_id,
+            page_number=1,
+            sub_page_index=1,
+            status="accepted",
+            output_image_uri="s3://bucket/jobs/job-123/output/1_1.tiff",
+            acceptance_decision="accepted",
+            routing_path="preprocessing_only",
+        )
+        lineage = SimpleNamespace(
+            lineage_id="lineage-0",
+            split_source=True,
+            parent_page_id="parent",
+            gate_results={},
+            layout_artifact_state="pending",
+            output_image_uri=page.output_image_uri,
+        )
+        sibling_lineage = SimpleNamespace(
+            lineage_id="lineage-1",
+            split_source=True,
+            parent_page_id="parent",
+            gate_results={},
+            layout_artifact_state="pending",
+            output_image_uri=sibling.output_image_uri,
+        )
+        config = SimpleNamespace(
+            iep1e_endpoint="http://iep1e",
+            backend=object(),
+            iep1e_circuit_breaker=object(),
+        )
+        orientation = SimpleNamespace(orientation_confident=True, best_rotation_deg=0)
+        call_iep1e = AsyncMock(
+            return_value=SimpleNamespace(
+                reading_direction="rtl",
+                pages=[
+                    SimpleNamespace(
+                        sub_page_index=0,
+                        original_uri=page.output_image_uri,
+                        oriented_uri=page.output_image_uri,
+                        orientation=orientation,
+                    ),
+                    SimpleNamespace(
+                        sub_page_index=1,
+                        original_uri=sibling.output_image_uri,
+                        oriented_uri=sibling.output_image_uri,
+                        orientation=orientation,
+                    ),
+                ],
+                ordered_page_uris=[
+                    sibling.output_image_uri,
+                    page.output_image_uri,
+                ],
+                fallback_used=False,
+            ),
+        )
+        advance_calls: list[dict[str, object]] = []
+        completion_calls: list[dict[str, object]] = []
+        enqueued: list[object] = []
+
+        def advance_page_state(session_arg: object, page_id: str, **kwargs: object) -> bool:
+            advance_calls.append({"session": session_arg, "page_id": page_id, **kwargs})
+            return True
+
+        def update_lineage_completion(
+            session_arg: object,
+            lineage_id: str,
+            **kwargs: object,
+        ) -> None:
+            completion_calls.append({"session": session_arg, "lineage_id": lineage_id, **kwargs})
+
+        monkeypatch.setattr(
+            worker_loop,
+            "_find_lineage",
+            lambda session_arg, job_id, page_number, sub_page_index: lineage,
+        )
+        monkeypatch.setattr(
+            worker_loop,
+            "_find_split_child_group_for_semantic_norm",
+            lambda session_arg, page_arg, lineage_arg: [
+                worker_loop._SemanticNormSplitChild(page=page, lineage=lineage),
+                worker_loop._SemanticNormSplitChild(page=sibling, lineage=sibling_lineage),
+            ],
+        )
+        monkeypatch.setattr(
+            worker_loop,
+            "_resolve_material_type_placeholder",
+            lambda session_arg, job_arg, page_arg: "book",
+        )
+        monkeypatch.setattr(worker_loop, "_call_iep1e", call_iep1e)
+        monkeypatch.setattr(worker_loop, "advance_page_state", advance_page_state)
+        monkeypatch.setattr(worker_loop, "update_lineage_completion", update_lineage_completion)
+        monkeypatch.setattr(worker_loop, "_sync_job_summary", lambda session_arg, job_arg: None)
+        monkeypatch.setattr(worker_loop, "_commit", lambda session_arg: None)
+        monkeypatch.setattr(worker_loop, "enqueue_page_task", lambda redis_arg, task: enqueued.append(task))
+
+        resolution = await worker_loop._run_semantic_norm(
+            session=session,
+            page=page,
+            job=job,
+            config=config,
+            redis_client=object(),
+            task_started_at=time.monotonic(),
+        )
+
+        assert resolution == "ack"
+        call_iep1e.assert_awaited_once()
+        assert advance_calls[0]["from_state"] == "semantic_norm"
+        assert advance_calls[0]["to_state"] == "accepted"
+        assert page.status == "accepted"
+        assert sibling.status == "accepted"
+        assert page.reading_order == 2
+        assert sibling.reading_order == 1
+        assert len(completion_calls) == 1
+        assert completion_calls[0]["lineage_id"] == "lineage-0"
+        assert enqueued == []
+
+
 class TestLayoutRouting:
     """
     Verify layout has no review path.

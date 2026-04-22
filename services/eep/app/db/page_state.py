@@ -18,8 +18,10 @@ State machine (valid transitions):
   rectification        → layout_detection | accepted |
                          pending_human_correction | split | failed
   layout_detection     → accepted | review | failed | pending_human_correction
-  pending_human_correction → layout_detection | accepted | review | split
-  split, accepted, review, failed → (terminal — no further transitions)
+  pending_human_correction → semantic_norm | review | split
+  semantic_norm        → layout_detection | accepted | failed
+  accepted             → pending_human_correction | semantic_norm
+  split, review, failed → (terminal — no further transitions)
 
 TERMINAL_PAGE_STATES is re-exported from shared.schemas.eep — the canonical
 definition.  No other module may redefine it inline (spec Section 12.1).

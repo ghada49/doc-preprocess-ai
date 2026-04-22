@@ -163,6 +163,7 @@ class CorrectionWorkspaceResponse(BaseModel):
     pipeline_mode: PipelineMode
     review_reasons: list[str]
     original_otiff_uri: str | None = None
+    parent_source_uri: str | None = None
     current_output_uri: str | None = None
     current_output_role: LayoutArtifactRole | None = None
     current_layout_uri: str | None = None

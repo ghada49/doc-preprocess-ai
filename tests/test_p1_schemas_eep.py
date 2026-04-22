@@ -127,6 +127,7 @@ class TestPageState:
         "rectification",
         "ptiff_qa_pending",
         "layout_detection",
+        "semantic_norm",
         "pending_human_correction",
         "accepted",
         "review",
@@ -134,8 +135,8 @@ class TestPageState:
         "split",
     ]
 
-    def test_ten_states_total(self) -> None:
-        assert len(self.ALL_PAGE_STATES) == 10
+    def test_eleven_states_total(self) -> None:
+        assert len(self.ALL_PAGE_STATES) == 11
 
     def test_page_status_accepts_all_states(self) -> None:
         for state in self.ALL_PAGE_STATES:

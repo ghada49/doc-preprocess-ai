@@ -16,7 +16,7 @@ JWT payload fields (spec Section 14 / rate-limiting Section 14):
 Environment variables:
   JWT_SECRET_KEY                   — signing secret; required in production
   JWT_ALGORITHM                    — default "HS256"
-  JWT_ACCESS_TOKEN_EXPIRE_MINUTES  — default 60
+  JWT_ACCESS_TOKEN_EXPIRE_MINUTES  — default 1440 (24 hours)
 
 Exported for Packet 7.2 use (not wired into endpoints here):
   decode_token(token) -> dict
@@ -47,7 +47,7 @@ from services.eep.app.db.session import get_session
 
 _SECRET_KEY: str = os.environ.get("JWT_SECRET_KEY", "dev-secret-key-change-in-production")
 _ALGORITHM: str = os.environ.get("JWT_ALGORITHM", "HS256")
-_ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.environ.get("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "60"))
+_ACCESS_TOKEN_EXPIRE_MINUTES: int = int(os.environ.get("JWT_ACCESS_TOKEN_EXPIRE_MINUTES", "1440"))
 
 # ── Password helpers ───────────────────────────────────────────────────────────
 

@@ -1,10 +1,10 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   presignReadArtifact,
-  fetchArtifactPreviewBlobUrl,
+  fetchArtifactPreviewBlob,
   fetchArtifactJson,
 } from "@/lib/api/artifacts";
 import {
@@ -58,7 +58,7 @@ export function useArtifactPreview(
 ) {
   const result = useQuery({
     queryKey: artifactPreviewQueryKey(uri, options, queryOptions.scopeKey),
-    queryFn: () => fetchArtifactPreviewBlobUrl(uri!, options),
+    queryFn: () => fetchArtifactPreviewBlob(uri!, options),
     enabled: Boolean(uri),
     staleTime: queryOptions.staleTimeMs ?? 5 * 60 * 1000,
     gcTime: queryOptions.gcTimeMs ?? 10 * 60 * 1000,
@@ -66,16 +66,14 @@ export function useArtifactPreview(
   });
 
   // Revoke the blob URL when it changes or the component unmounts.
-  const blobUrlRef = useRef<string | null>(null);
   useEffect(() => {
-    const prev = blobUrlRef.current;
-    blobUrlRef.current = result.data ?? null;
+    const current = result.data?.blobUrl ?? null;
     return () => {
-      if (prev && prev !== blobUrlRef.current) {
-        URL.revokeObjectURL(prev);
+      if (current) {
+        URL.revokeObjectURL(current);
       }
     };
-  }, [result.data]);
+  }, [result.data?.blobUrl]);
 
-  return { ...result, data: result.data ? { blobUrl: result.data } : undefined };
+  return result;
 }

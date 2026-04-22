@@ -558,7 +558,7 @@ class TestLayoutRoutingEnforcement:
     """
     Automation-first routing: preprocessing/rectification route directly to
     layout_detection without any intermediate gate.  pending_human_correction
-    resumes via layout_detection after correction.
+    resumes via semantic_norm (iep1e) then layout_detection after correction.
     """
 
     # --- Allowed transitions INTO layout_detection (automation-first) ---
@@ -569,8 +569,10 @@ class TestLayoutRoutingEnforcement:
     def test_rectification_can_reach_layout_detection(self) -> None:
         assert "layout_detection" in ALLOWED_TRANSITIONS["rectification"]
 
-    def test_pending_human_correction_can_reach_layout_detection(self) -> None:
-        assert "layout_detection" in ALLOWED_TRANSITIONS["pending_human_correction"]
+    def test_pending_human_correction_routes_via_semantic_norm(self) -> None:
+        # Post-correction, pages go through semantic_norm (iep1e) before layout_detection.
+        assert "semantic_norm" in ALLOWED_TRANSITIONS["pending_human_correction"]
+        assert "layout_detection" not in ALLOWED_TRANSITIONS["pending_human_correction"]
 
     def test_validate_transition_preprocessing_to_layout_does_not_raise(self) -> None:
         validate_transition("preprocessing", "layout_detection")  # must not raise
@@ -578,8 +580,8 @@ class TestLayoutRoutingEnforcement:
     def test_validate_transition_rectification_to_layout_does_not_raise(self) -> None:
         validate_transition("rectification", "layout_detection")  # must not raise
 
-    def test_validate_transition_pending_correction_to_layout_does_not_raise(self) -> None:
-        validate_transition("pending_human_correction", "layout_detection")  # must not raise
+    def test_validate_transition_semantic_norm_to_layout_does_not_raise(self) -> None:
+        validate_transition("semantic_norm", "layout_detection")  # must not raise
 
     # --- Disallowed direct transitions to layout_detection ---
 

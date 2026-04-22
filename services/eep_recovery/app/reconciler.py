@@ -20,7 +20,7 @@ Reconciliation logic (reconcile_once):
     → Worker crashed before the CAS transition to 'preprocessing'.
     → Requeue with retry_count + 1 (or dead-letter if retries exhausted).
 
-  Active states (preprocessing, rectification, layout_detection):
+  Active states (preprocessing, rectification, layout_detection, semantic_norm):
     → If stale (status_updated_at older than task_timeout_seconds):
         requeue or dead-letter.
     → If not stale: skip (live worker is likely still processing).
@@ -97,7 +97,9 @@ _COMPLETE_STATES: frozenset[str] = frozenset(
 
 # These states mean active processing is (or was) in progress.
 # Staleness detection applies.
-_ACTIVE_STATES: frozenset[str] = frozenset({"preprocessing", "rectification", "layout_detection"})
+_ACTIVE_STATES: frozenset[str] = frozenset(
+    {"preprocessing", "rectification", "layout_detection", "semantic_norm"}
+)
 
 
 # ── Configuration ──────────────────────────────────────────────────────────────
@@ -298,7 +300,13 @@ def _recover_db_orphaned_pages(
     This covers the failure mode where a page remains active in the database
     but its task has vanished from both the main queue and the processing list.
     """
-    recoverable_states = ("queued", "preprocessing", "rectification", "layout_detection")
+    recoverable_states = (
+        "queued",
+        "preprocessing",
+        "rectification",
+        "layout_detection",
+        "semantic_norm",
+    )
     pages = session.query(JobPage).filter(JobPage.status.in_(recoverable_states)).all()
 
     requeued = 0

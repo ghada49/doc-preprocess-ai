@@ -7,16 +7,18 @@ Job status derivation
 ---------------------
 Status is derived live from leaf page states on every request.
 
-  Leaf pages:  all job_pages rows where status != 'split'.
-               Split-parent records (status='split') are excluded; their
-               child sub-pages (sub_page_index IS NOT NULL) are included.
+  Leaf pages:  all job_pages rows except split parents that have child rows.
+               Split-parent records (status='split') are excluded once their
+               child sub-pages (sub_page_index IS NOT NULL) exist. A split
+               parent without children remains visible as an anomalous
+               in-progress leaf.
 
   Derivation (exact, deterministic — spec Section 9.1 / 13):
 
     queued:  all leaf pages are in 'queued' state (no processing started)
     running: at least one leaf page is in a non-worker-terminal state:
              {'queued', 'preprocessing', 'rectification', 'layout_detection',
-              'pending_human_correction'}
+              'semantic_norm', 'pending_human_correction', 'split'}
     done:    all leaf pages are worker-terminal AND at least one is not 'failed'
     failed:  all leaf pages are worker-terminal AND all are 'failed'
 

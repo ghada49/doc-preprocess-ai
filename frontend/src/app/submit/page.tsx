@@ -2,7 +2,7 @@
 
 import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
-import { useMutation } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import { Upload, X, FileType, PlusCircle, CheckCircle } from "lucide-react";
 import { UserShell } from "@/components/layout/user-shell";
@@ -34,6 +34,7 @@ interface FileUploadState {
 
 export default function SubmitJobPage() {
   const router = useRouter();
+  const queryClient = useQueryClient();
 
   // Form state
   const [collectionId, setCollectionId] = useState("");
@@ -128,6 +129,7 @@ export default function SubmitJobPage() {
     },
     onSuccess: (result) => {
       toast.success(`Job created — ${result.page_count} pages queued.`);
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
       router.push(`/jobs/${result.job_id}`);
     },
     onError: (err: unknown) => {

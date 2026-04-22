@@ -550,7 +550,6 @@ services:
         ENABLE_REAL_MODEL: "${IEP1E_ENABLE_REAL_MODEL:-false}"
     volumes:
       - .:/app
-      - paddleocr-cache:/root/.paddleocr
     environment:
       PYTHONPATH: /app
       PYTHONDONTWRITEBYTECODE: "1"
@@ -558,6 +557,7 @@ services:
       # Default to mock mode; set IEP1E_MOCK_MODE=false to use real PaddleOCR.
       IEP1E_MOCK_MODE: "${IEP1E_MOCK_MODE:-true}"
       IEP1E_USE_GPU: "${IEP1E_USE_GPU:-false}"
+      IEP1E_MODEL_DIR: "${IEP1E_MODEL_DIR:-/opt/models/iep1e}"
     env_file: .env
     ports:
       - "8007:8007"
@@ -684,7 +684,6 @@ volumes:
   prometheus_data:
   alertmanager_data:
   grafana_data:
-  paddleocr-cache:        # PaddleOCR model cache — persists across iep1e restarts
 
 # ── Networks ──────────────────────────────────────────────────────────────────
 

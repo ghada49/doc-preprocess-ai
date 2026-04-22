@@ -66,6 +66,7 @@ export type PageState =
   | "rectification"
   | "ptiff_qa_pending"
   | "layout_detection"
+  | "semantic_norm"
   | "pending_human_correction"
   | "accepted"
   | "review"
@@ -312,6 +313,7 @@ export interface CorrectionWorkspaceDetail {
   pipeline_mode: PipelineMode;
   review_reasons: string[];
   original_otiff_uri: string | null;
+  parent_source_uri: string | null;
   current_output_uri: string | null;
   current_output_role: LayoutArtifactRole | null;
   current_layout_uri: string | null;

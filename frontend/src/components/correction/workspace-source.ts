@@ -1,6 +1,6 @@
 import type { CorrectionWorkspaceDetail } from "../../types/api";
 
-export type SourceView = "original" | "current" | "normalized" | "rectified";
+export type SourceView = "parent" | "original" | "current" | "normalized" | "rectified";
 
 export interface WorkspaceInteractionState {
   isChildPage: boolean;
@@ -20,6 +20,8 @@ export function resolveWorkspaceSourceUri(
   if (!workspace) return null;
 
   switch (source) {
+    case "parent":
+      return workspace.parent_source_uri;
     case "original":
       return workspace.original_otiff_uri;
     case "current":
@@ -39,15 +41,15 @@ export function getDefaultWorkspaceSource(
 ): SourceView {
   if (!workspace) return "current";
 
-  // Child workspaces must open on their shared current review source, which is
-  // the parent artifact recorded in child correction state until submit time.
-  if (workspace.sub_page_index != null) {
-    return "current";
+  if (workspace.sub_page_index != null && workspace.parent_source_uri) {
+    if (previousSource === "current" || !resolveWorkspaceSourceUri(workspace, previousSource)) {
+      return "parent";
+    }
   }
-
   if (resolveWorkspaceSourceUri(workspace, previousSource)) {
     return previousSource;
   }
+  if (workspace.sub_page_index != null && workspace.parent_source_uri) return "parent";
   if (workspace.current_output_uri) return "current";
   if (workspace.branch_outputs.iep1c_normalized) return "normalized";
   if (workspace.branch_outputs.iep1d_rectified) return "rectified";
@@ -67,10 +69,8 @@ export function getWorkspaceInteractionState(
   const canChoosePageStructure = !isChildPage && !hasChildPages;
   const isSpreadSelection = canChoosePageStructure && pageStructure === "spread";
   const canEditGeometry = isChildPage || (!hasChildPages && pageStructure === "single");
-  const canEditOnDisplayedSource =
-    canEditGeometry && !!activeUri && (!isChildPage || activeSource === "current");
-  const canSubmitCorrection =
-    !!activeUri && !isParentLineageAnchor && (!isChildPage || activeSource === "current");
+  const canEditOnDisplayedSource = canEditGeometry && !!activeUri;
+  const canSubmitCorrection = !!activeUri && !isParentLineageAnchor;
 
   return {
     isChildPage,
@@ -91,6 +91,8 @@ export function getWorkspaceEmptyMessage(
   if (!workspace) return "No image selected.";
 
   switch (source) {
+    case "parent":
+      return "Original parent source unavailable for this child page.";
     case "current":
       return workspace.sub_page_index != null
         ? "Current child review source unavailable. This child page does not have a displayable image yet."
@@ -113,6 +115,8 @@ export function getWorkspacePreviewErrorMessage(
   if (!workspace) return "Failed to load the selected artifact preview.";
 
   switch (source) {
+    case "parent":
+      return "Failed to load the original parent source preview.";
     case "current":
       return workspace.sub_page_index != null
         ? "Failed to load the current child review source preview."

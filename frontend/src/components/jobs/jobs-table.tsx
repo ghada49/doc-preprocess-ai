@@ -50,7 +50,7 @@ export function JobsTable({ isAdmin = false, basePath = "/jobs" }: JobsTableProp
   const [page, setPage] = useState(1);
   const pageSize = 25;
 
-  const { data, isLoading, isFetching, refetch } = useQuery({
+  const { data, isLoading, isFetching, isError, refetch } = useQuery({
     queryKey: ["jobs", { search, statusFilter, pipelineFilter, page, pageSize }],
     queryFn: () =>
       listJobs({
@@ -62,6 +62,7 @@ export function JobsTable({ isAdmin = false, basePath = "/jobs" }: JobsTableProp
       }),
     staleTime: 15_000,
     refetchInterval: 20_000,
+    retry: 1,
   });
 
   const jobs = data?.items ?? [];
@@ -154,6 +155,15 @@ export function JobsTable({ isAdmin = false, basePath = "/jobs" }: JobsTableProp
                       ))}
                     </tr>
                   ))
+                ) : isError ? (
+                  <tr>
+                    <td colSpan={isAdmin ? 12 : 11} className="p-0">
+                      <EmptyState
+                        title="Could not load jobs"
+                        description="Check your connection and try refreshing."
+                      />
+                    </td>
+                  </tr>
                 ) : jobs.length === 0 ? (
                   <tr>
                     <td colSpan={isAdmin ? 12 : 11} className="p-0">

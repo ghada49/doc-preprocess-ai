@@ -34,7 +34,8 @@ WORKDIR /app
 
 ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    IEP1E_MODEL_DIR=/opt/models/iep1e
 
 RUN pip install --no-cache-dir --upgrade pip wheel "setuptools<81"
 
@@ -56,6 +57,23 @@ RUN if [ "$ENABLE_REAL_MODEL" = "true" ]; then \
         "paddlepaddle>=2.6,<3.0" \
         "paddleocr>=2.7.0,<3.0"; \
     fi
+
+# Bake Arabic OCR model weights into the image at build time so the container
+# starts instantly with no runtime internet dependency — mirrors the iep2a
+# convention of COPYing pre-downloaded weights under /opt/models/<service>.
+#
+# To refresh the weights:
+#   1. Delete models/iep1e/det/ and models/iep1e/rec/
+#   2. Re-run the one-time download script:
+#        docker run --rm -v "$PWD/models/iep1e:/opt/models/iep1e" \
+#          python:3.11-slim-bookworm bash -c "
+#            apt-get update -qq && apt-get install -y -qq curl tar;
+#            curl -L https://paddleocr.bj.bcebos.com/PP-OCRv3/multilingual/Multilingual_PP-OCRv3_det_infer.tar \
+#              | tar -xf - -C /opt/models/iep1e/det --strip-components=1;
+#            curl -L https://paddleocr.bj.bcebos.com/PP-OCRv3/multilingual/arabic_PP-OCRv3_rec_infer.tar \
+#              | tar -xf - -C /opt/models/iep1e/rec --strip-components=1"
+#   3. Rebuild: ENABLE_REAL_MODEL=true docker compose build iep1e
+COPY models/iep1e/ /opt/models/iep1e/
 
 EXPOSE 8007
 

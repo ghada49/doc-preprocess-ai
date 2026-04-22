@@ -1,6 +1,12 @@
 import { apiPost, getAccessToken, API_BASE_URL } from "./client";
 import type { PresignReadRequest, PresignReadResponse } from "@/types/api";
 
+export interface ArtifactPreviewBlob {
+  blobUrl: string;
+  originalWidth: number | null;
+  originalHeight: number | null;
+}
+
 export async function presignReadArtifact(
   uri: string,
   expiresIn = 300
@@ -46,6 +52,14 @@ export async function fetchArtifactPreviewBlobUrl(
   uri: string,
   options: { pageIndex?: number; maxWidth?: number } = {}
 ): Promise<string> {
+  const preview = await fetchArtifactPreviewBlob(uri, options);
+  return preview.blobUrl;
+}
+
+export async function fetchArtifactPreviewBlob(
+  uri: string,
+  options: { pageIndex?: number; maxWidth?: number } = {}
+): Promise<ArtifactPreviewBlob> {
   const token = getAccessToken();
   const headers: HeadersInit = { "Content-Type": "application/json" };
   if (token) headers["Authorization"] = `Bearer ${token}`;
@@ -69,5 +83,18 @@ export async function fetchArtifactPreviewBlobUrl(
     throw new Error(detail);
   }
 
-  return URL.createObjectURL(await response.blob());
+  const originalWidth = parsePositiveIntHeader(response.headers.get("X-Original-Width"));
+  const originalHeight = parsePositiveIntHeader(response.headers.get("X-Original-Height"));
+
+  return {
+    blobUrl: URL.createObjectURL(await response.blob()),
+    originalWidth,
+    originalHeight,
+  };
+}
+
+function parsePositiveIntHeader(value: string | null): number | null {
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }

@@ -283,6 +283,7 @@ def _resolve_current_output_role(
 
 def _params_from_gate(
     gate: QualityGateLog,
+    page_index: int = 0,
 ) -> tuple[list[int] | None, float | None, int | None]:
     """
     Derive current workspace defaults from the geometry gate log.
@@ -311,11 +312,13 @@ def _params_from_gate(
     if geo_jsonb is None:
         return None, None, None
 
-    # Derive crop_box from first detected page's bbox
+    # Derive crop_box from the selected detected page's bbox. Split children
+    # use sub_page_index so Page 1 does not inherit Page 0's region.
     crop_box: list[int] | None = None
     pages = geo_jsonb.get("pages", [])
-    if pages:
-        bbox = pages[0].get("bbox")
+    selected_page = pages[page_index] if 0 <= page_index < len(pages) else None
+    if selected_page:
+        bbox = selected_page.get("bbox")
         if bbox is not None and len(bbox) == 4:
             crop_box = [int(v) for v in bbox]
 
@@ -323,6 +326,20 @@ def _params_from_gate(
     # dimensions required to scale it to full-resolution are not stored in the
     # gate log, so the value cannot be used safely here.
     return crop_box, None, None
+
+
+def _default_child_crop_box_from_dims(
+    image_width: int | None,
+    image_height: int | None,
+    sub_page_index: int,
+) -> list[int] | None:
+    """Return a conservative half-page crop when no child-specific geometry exists."""
+    if image_width is None or image_height is None or image_width < 2 or image_height < 1:
+        return None
+    midpoint = image_width // 2
+    if sub_page_index == 0:
+        return [0, 0, midpoint, image_height]
+    return [midpoint, 0, image_width, image_height]
 
 
 def _full_res_dims_from_lineage(
@@ -436,6 +453,12 @@ def assemble_correction_workspace(
     original_otiff_uri: str | None = (
         lineage.otiff_uri if lineage is not None else page.input_image_uri
     )
+    parent_source_uri: str | None = None
+    if page.sub_page_index is not None:
+        parent_source_uri = (
+            (lineage.otiff_uri if lineage is not None else None)
+            or page.input_image_uri
+        )
 
     correction_fields = (
         lineage.human_correction_fields
@@ -459,7 +482,7 @@ def assemble_correction_workspace(
     )
     current_layout_uri: str | None = page.output_layout_uri
     normalized_output_uri: str | None = None
-    if page.sub_page_index is None and prior_source_uri is not None:
+    if prior_source_uri is not None and prior_source_uri != original_otiff_uri:
         if current_output_uri is None or prior_source_uri != current_output_uri:
             normalized_output_uri = prior_source_uri
 
@@ -485,6 +508,23 @@ def assemble_correction_workspace(
         iep1d_rectified=iep1d_rectified_uri,
     )
 
+    # Dimensions are needed both for frontend scaling and for a conservative
+    # child-region fallback when a split child has no saved human correction.
+    page_image_width: int | None = None
+    page_image_height: int | None = None
+    raw_img_width = correction_fields.get("image_width")
+    if raw_img_width is not None:
+        page_image_width = int(raw_img_width)
+    raw_img_height = correction_fields.get("image_height")
+    if raw_img_height is not None:
+        page_image_height = int(raw_img_height)
+    if page_image_width is None or page_image_height is None:
+        lineage_w, lineage_h = _full_res_dims_from_lineage(lineage)
+        if page_image_width is None:
+            page_image_width = lineage_w
+        if page_image_height is None:
+            page_image_height = lineage_h
+
     # ── Step 8: Current correction parameters ─────────────────────────────────
     # Priority: prior human correction data > geometry-derived defaults
     current_crop_box: list[int] | None = None
@@ -502,31 +542,22 @@ def assemble_correction_workspace(
             current_quad_points,
         ) = _params_from_human_correction(lineage.human_correction_fields)
     elif gate is not None:
-        current_crop_box, current_deskew_angle, current_split_x = _params_from_gate(gate)
+        gate_page_index = page.sub_page_index if page.sub_page_index is not None else 0
+        current_crop_box, current_deskew_angle, current_split_x = _params_from_gate(
+            gate,
+            page_index=gate_page_index,
+        )
 
     if page.sub_page_index is not None:
         current_selection_mode = "quad"
+        if current_crop_box is None:
+            current_crop_box = _default_child_crop_box_from_dims(
+                page_image_width,
+                page_image_height,
+                page.sub_page_index,
+            )
         if current_quad_points is None:
             current_quad_points = _quad_points_from_crop_box(current_crop_box)
-
-    # ── Step 8b: Page image dimensions ────────────────────────────────────────
-    # Priority: stored correction_fields (exact, full-res) > downsample gate
-    # (original_width/height from lineage.gate_results, also full-res).
-    # Dimensions let the frontend scale split_x between preview and original pixels.
-    page_image_width: int | None = None
-    page_image_height: int | None = None
-    raw_img_width = correction_fields.get("image_width")
-    if raw_img_width is not None:
-        page_image_width = int(raw_img_width)
-    raw_img_height = correction_fields.get("image_height")
-    if raw_img_height is not None:
-        page_image_height = int(raw_img_height)
-    if page_image_width is None or page_image_height is None:
-        lineage_w, lineage_h = _full_res_dims_from_lineage(lineage)
-        if page_image_width is None:
-            page_image_width = lineage_w
-        if page_image_height is None:
-            page_image_height = lineage_h
 
     suggested_page_structure = _suggested_page_structure(
         child_pages=child_pages,
@@ -550,6 +581,7 @@ def assemble_correction_workspace(
         pipeline_mode=job.pipeline_mode,  # type: ignore[arg-type]
         review_reasons=list(page.review_reasons) if page.review_reasons else [],
         original_otiff_uri=original_otiff_uri,
+        parent_source_uri=parent_source_uri,
         current_output_uri=current_output_uri,
         current_output_role=current_output_role,
         current_layout_uri=current_layout_uri,

@@ -96,8 +96,17 @@ def build_ocr_engine(*, use_gpu: bool = True) -> Any:
         - lang="arabic" covers Arabic + Latin text in a single model.
         - angle_cls is disabled; we decide orientation ourselves.
         - use_gpu should be False on CPU-only hosts.
+        - IEP1E_MODEL_DIR (default /opt/models/iep1e) controls where PaddleOCR
+          loads its det/rec weights from.  Set at build time so the baked-in
+          weights under /opt/models/iep1e/{det,rec} are used without re-downloading.
     """
+    import os
+
     from paddleocr import PaddleOCR  # type: ignore[import]
+
+    model_dir = os.environ.get("IEP1E_MODEL_DIR", "/opt/models/iep1e")
+    det_model_dir = os.path.join(model_dir, "det")
+    rec_model_dir = os.path.join(model_dir, "rec")
 
     ocr = PaddleOCR(
         use_angle_cls=False,
@@ -106,8 +115,14 @@ def build_ocr_engine(*, use_gpu: bool = True) -> Any:
         rec=True,
         use_gpu=use_gpu,
         show_log=False,
+        det_model_dir=det_model_dir,
+        rec_model_dir=rec_model_dir,
     )
-    logger.info("iep1e: PaddleOCR engine initialised (lang=arabic, use_gpu=%s)", use_gpu)
+    logger.info(
+        "iep1e: PaddleOCR engine initialised (lang=arabic, use_gpu=%s, model_dir=%s)",
+        use_gpu,
+        model_dir,
+    )
     return ocr
 
 

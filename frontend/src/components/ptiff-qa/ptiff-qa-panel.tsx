@@ -211,8 +211,6 @@ export default function PtiffQaPanel({ jobId }: PtiffQaPanelProps) {
                     variant={
                       page.approval_status === "approved"
                         ? "success"
-                        : page.approval_status === "in_correction"
-                        ? "purple"
                         : "warning"
                     }
                     dot
