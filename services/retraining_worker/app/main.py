@@ -126,8 +126,10 @@ app = FastAPI(
     version="0.1.0",
     description=(
         "Background worker that polls retraining_triggers for pending events, "
-        "executes stub training and offline evaluation, and writes gate_results "
-        "to model_versions so promotion gates can be re-checked."
+        "runs training (stub by default; LIBRARYAI_RETRAINING_TRAIN=live for real runs) "
+        "and offline evaluation, and writes gate_results to model_versions. "
+        "Set LIBRARYAI_RETRAINING_GOLDEN_EVAL=live for real golden-dataset evaluation "
+        "(default: stub)."
     ),
     lifespan=_lifespan,
 )

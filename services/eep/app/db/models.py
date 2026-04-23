@@ -382,7 +382,7 @@ class RetrainingJob(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     result_model_version: Mapped[str | None] = mapped_column(Text(), nullable=True)
-    result_mAP: Mapped[float | None] = mapped_column(Float(), nullable=True)
+    result_mAP: Mapped[float | None] = mapped_column("result_map", Float(), nullable=True)
     promotion_decision: Mapped[str | None] = mapped_column(Text(), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(

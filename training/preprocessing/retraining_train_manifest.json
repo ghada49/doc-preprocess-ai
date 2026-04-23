@@ -1,0 +1,15 @@
+{
+    "iep1a":  {
+                  "book":  "/app/data preparation/data augmentation/initial_augmentation/data.yaml",
+                  "newspaper":  "/app/data preparation/data augmentation/initial_augmentation/data.yaml",
+                  "microfilm":  "/app/data preparation/data augmentation/initial_augmentation/data.yaml"
+              },
+    "iep1b":  {
+                  "book":  "/app/data preparation/data augmentation/initial_augmentation/data.yaml",
+                  "newspaper":  "/app/data preparation/data augmentation/initial_augmentation/data.yaml",
+                  "microfilm":  "/app/data preparation/data augmentation/initial_augmentation/data.yaml"
+              },
+    "iep0":  {
+                 "data_root":  "/app/data preparation/data augmentation/initial_augmentation"
+             }
+}

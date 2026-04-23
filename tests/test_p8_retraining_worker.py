@@ -7,10 +7,10 @@ Worker task (execute_retraining_task) tests:
   - preprocessing trigger creates a RetrainingJob with status='running' then 'completed'
   - trigger.retraining_job_id is set to the created job's job_id
   - trigger.status transitions to 'completed'
-  - ModelVersion rows created for iep1a and iep1b with stage='staging'
-  - gate_results written in the format promotion_api._check_gates expects:
-      each gate has 'pass' key; geometry_iou, split_precision,
-      structural_agreement_rate, golden_dataset, latency_p95 all present
+  - ModelVersion rows created for iep0, iep1a, and iep1b with stage='staging'
+  - gate_results written in the format promotion_api._check_gates expects
+      (each gate has 'pass' key): iep1a/iep1b use the five preprocessing gates;
+      iep0 uses classification_confidence + golden_dataset
   - all gate_results have pass=True (stub evaluation always passes)
   - job.promotion_decision = 'pending_gate_review'
   - job.mlflow_run_id is a non-empty string
@@ -166,7 +166,7 @@ class TestExecuteRetrainingTaskPreprocessing:
         execute_retraining_task(trigger, db)
         assert trigger.resolved_at is not None
 
-    def test_creates_model_version_for_iep1a_and_iep1b(self) -> None:
+    def test_creates_model_version_for_iep0_iep1a_and_iep1b(self) -> None:
         trigger = _make_trigger()
         db = _make_task_session()
         execute_retraining_task(trigger, db)
@@ -177,7 +177,7 @@ class TestExecuteRetrainingTaskPreprocessing:
             if isinstance(c[0][0], ModelVersion)
         ]
         service_names = {mv.service_name for mv in mv_rows}
-        assert service_names == {"iep1a", "iep1b"}
+        assert service_names == {"iep0", "iep1a", "iep1b"}
 
     def test_model_version_stage_is_staging(self) -> None:
         trigger = _make_trigger()
@@ -208,32 +208,39 @@ class TestExecuteRetrainingTaskPreprocessing:
         db = _make_task_session()
         execute_retraining_task(trigger, db)
         from services.eep.app.db.models import ModelVersion
-        mv = next(
+        mv_rows = [
             c[0][0]
             for c in db.add.call_args_list
             if isinstance(c[0][0], ModelVersion)
-        )
-        required_gates = {
+        ]
+        by_service = {mv.service_name: mv for mv in mv_rows}
+        iep1_required = {
             "geometry_iou",
             "split_precision",
             "structural_agreement_rate",
             "golden_dataset",
             "latency_p95",
         }
-        assert set(mv.gate_results.keys()) == required_gates
+        assert set(by_service["iep1a"].gate_results.keys()) == iep1_required
+        assert set(by_service["iep1b"].gate_results.keys()) == iep1_required
+        assert set(by_service["iep0"].gate_results.keys()) == {
+            "classification_confidence",
+            "golden_dataset",
+        }
 
     def test_gate_results_all_pass_true(self) -> None:
         trigger = _make_trigger()
         db = _make_task_session()
         execute_retraining_task(trigger, db)
         from services.eep.app.db.models import ModelVersion
-        mv = next(
+        mv_rows = [
             c[0][0]
             for c in db.add.call_args_list
             if isinstance(c[0][0], ModelVersion)
-        )
-        for gate_name, result in mv.gate_results.items():
-            assert result["pass"] is True, f"{gate_name} should pass"
+        ]
+        for mv in mv_rows:
+            for gate_name, result in mv.gate_results.items():
+                assert result["pass"] is True, f"{mv.service_name}/{gate_name} should pass"
 
     def test_gate_results_each_gate_has_pass_key(self) -> None:
         """Format must match promotion_api._check_gates expectations."""
@@ -241,13 +248,14 @@ class TestExecuteRetrainingTaskPreprocessing:
         db = _make_task_session()
         execute_retraining_task(trigger, db)
         from services.eep.app.db.models import ModelVersion
-        mv = next(
+        mv_rows = [
             c[0][0]
             for c in db.add.call_args_list
             if isinstance(c[0][0], ModelVersion)
-        )
-        for gate_name, result in mv.gate_results.items():
-            assert "pass" in result, f"gate {gate_name!r} missing 'pass' key"
+        ]
+        for mv in mv_rows:
+            for gate_name, result in mv.gate_results.items():
+                assert "pass" in result, f"gate {gate_name!r} missing 'pass' key"
 
     def test_mlflow_run_id_set_on_model_version(self) -> None:
         trigger = _make_trigger()
@@ -359,8 +367,8 @@ class TestTriggerPipelineMapping:
         }
         assert set(_TRIGGER_PIPELINE.keys()) == known
 
-    def test_preprocessing_services_are_iep1a_and_iep1b(self) -> None:
-        assert set(_PREPROCESSING_SERVICES) == {"iep1a", "iep1b"}
+    def test_preprocessing_services_are_iep0_iep1a_and_iep1b(self) -> None:
+        assert set(_PREPROCESSING_SERVICES) == {"iep0", "iep1a", "iep1b"}
 
 
 # ── reconcile_once ────────────────────────────────────────────────────────────
