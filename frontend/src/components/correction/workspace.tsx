@@ -23,9 +23,8 @@ import type {
   PageStructure,
   QuadPoint,
 } from "@/types/api";
-import { reviewReasonLabel, snakeToTitle, truncateId } from "@/lib/utils";
+import { pageStateLabel, reviewReasonLabel, truncateId } from "@/lib/utils";
 import { cn } from "@/lib/utils";
-import { getApiErrorMessage } from "@/lib/api/client";
 import { useArtifactPreview } from "@/lib/artifacts";
 import { ConfirmModal } from "@/components/shared/confirm-modal";
 import { ErrorBanner } from "@/components/shared/error-banner";
@@ -40,6 +39,7 @@ import { ImageViewer } from "./image-viewer";
 import { LayoutOverlay } from "@/components/jobs/layout-overlay";
 import {
   type SourceView,
+  getWorkspaceFallbackSource,
   getDefaultWorkspaceSource,
   getWorkspaceEmptyMessage,
   getWorkspaceInteractionState,
@@ -163,7 +163,7 @@ export function CorrectionWorkspace({
         }
       ),
     onSuccess: () => {
-      toast.success("Correction submitted.");
+      toast.success("Review saved.");
       queryClient.invalidateQueries({ queryKey: ["correction-queue"] });
       queryClient.invalidateQueries({ queryKey: ["jobs"] });
       if (subPageIndex == null && pageStructure === "spread") {
@@ -185,16 +185,11 @@ export function CorrectionWorkspace({
     onError: (err: unknown) => {
       const status = (err as { status?: number })?.status;
       if (status === 409) {
-        toast.error("Page is no longer pending correction.");
+        toast.error("This page no longer needs review.");
       } else if (status === 422) {
-        toast.error(
-          getApiErrorMessage(
-            err,
-            "Correction could not be submitted. Check the correction fields."
-          )
-        );
+        toast.error("We could not save this review. Check the page outline and try again.");
       } else {
-        toast.error(getApiErrorMessage(err, "Failed to submit correction."));
+        toast.error("We could not save this review. Please try again.");
       }
     },
   });
@@ -205,13 +200,13 @@ export function CorrectionWorkspace({
         subPageIndex,
         notes: reviewerNotes,
       }),
-    onSuccess: (result) => {
-      toast.success(`Page rejected -> ${snakeToTitle(result.new_state)}`);
+    onSuccess: () => {
+      toast.success("Page marked as an issue.");
       queryClient.invalidateQueries({ queryKey: ["correction-queue"] });
       router.push(backPath);
     },
-    onError: (err) => {
-      toast.error(getApiErrorMessage(err, "Failed to reject page."));
+    onError: () => {
+      toast.error("We could not mark this page as an issue.");
     },
   });
 
@@ -231,10 +226,10 @@ export function CorrectionWorkspace({
         title={status === 409 ? "Page Not Available" : "Failed to Load"}
         message={
           status === 409
-            ? "This page is no longer in pending_human_correction state."
+            ? "This page no longer needs review."
             : status === 404
-              ? "Page not found in the correction queue."
-              : "An error occurred loading the correction workspace."
+              ? "This page was not found in the review list."
+              : "There was a problem loading this page for review."
         }
       />
     );
@@ -281,6 +276,7 @@ export function CorrectionWorkspace({
   const canEditOnDisplayedSource = interactionState.canEditOnDisplayedSource;
   const viewerEmptyMessage = getWorkspaceEmptyMessage(workspace, activeSource);
   const viewerErrorMessage = getWorkspacePreviewErrorMessage(workspace, activeSource);
+  const fallbackSource = getWorkspaceFallbackSource(workspace, activeSource);
 
   return (
     <div className="flex h-full flex-col bg-slate-50/80">
@@ -294,18 +290,23 @@ export function CorrectionWorkspace({
               className="gap-1.5 text-slate-500 hover:text-slate-900"
             >
               <ChevronLeft className="h-3.5 w-3.5" />
-              Queue
+              {isAdmin ? "Queue" : "Needs review"}
             </Button>
             <Separator orientation="vertical" className="h-4" />
             <div className="flex items-center gap-2">
-              <span className="text-xs text-slate-500">Job</span>
-              <code className="font-mono text-xs text-indigo-600">
-                {truncateId(jobId, 8)}...
-              </code>
-              <span className="text-xs text-slate-300">|</span>
+              {isAdmin && (
+                <>
+                  <span className="text-xs text-slate-500">Job</span>
+                  <code className="font-mono text-xs text-indigo-600">
+                    {truncateId(jobId, 8)}...
+                  </code>
+                  <span className="text-xs text-slate-300">|</span>
+                </>
+              )}
               <span className="text-xs text-slate-700">
                 Page {pageNumber}
-                {workspace.sub_page_index != null && ` / Page ${workspace.sub_page_index}`}
+                {workspace.sub_page_index != null &&
+                  ` / ${workspace.sub_page_index === 0 ? "Left page" : "Right page"}`}
               </span>
               <Badge variant="warning" className="capitalize">
                 {workspace.material_type}
@@ -353,8 +354,8 @@ export function CorrectionWorkspace({
           <div className="flex flex-col gap-1 p-2">
             {workspace.parent_source_uri && (
               <SourceButton
-                label="Original Parent"
-                description="Parent scan"
+                label={isAdmin ? "Original Parent" : "Original page"}
+                description={isAdmin ? "Parent scan" : "Full scan"}
                 active={activeSource === "parent"}
                 available={!!workspace.parent_source_uri}
                 onClick={() => setActiveSource("parent")}
@@ -362,7 +363,7 @@ export function CorrectionWorkspace({
               />
             )}
             <SourceButton
-              label="Current"
+              label={isAdmin ? "Current" : "Page preview"}
               description={currentArtifactLabel(workspace.current_output_role)}
               active={activeSource === "current"}
               available={!!workspace.current_output_uri}
@@ -372,8 +373,8 @@ export function CorrectionWorkspace({
             {(!workspace.parent_source_uri ||
               workspace.original_otiff_uri !== workspace.parent_source_uri) && (
               <SourceButton
-                label="Original OTIFF"
-                description="Raw scan"
+                label={isAdmin ? "Original OTIFF" : "Original scan"}
+                description={isAdmin ? "Raw scan" : "Uploaded file"}
                 active={activeSource === "original"}
                 available={!!workspace.original_otiff_uri}
                 onClick={() => setActiveSource("original")}
@@ -381,16 +382,16 @@ export function CorrectionWorkspace({
               />
             )}
             <SourceButton
-              label="Normalized"
-              description="Normalized"
+              label={isAdmin ? "Normalized" : "Cleaned page"}
+              description={isAdmin ? "Normalized" : "Cleaned version"}
               active={activeSource === "normalized"}
               available={!!workspace.branch_outputs.iep1c_normalized}
               onClick={() => setActiveSource("normalized")}
               icon={<GitBranch className="h-3.5 w-3.5" />}
             />
             <SourceButton
-              label="Rectified"
-              description="Rectified"
+              label={isAdmin ? "Rectified" : "Enhanced page"}
+              description={isAdmin ? "Rectified" : "Enhanced version"}
               active={activeSource === "rectified"}
               available={!!workspace.branch_outputs.iep1d_rectified}
               onClick={() => setActiveSource("rectified")}
@@ -398,6 +399,7 @@ export function CorrectionWorkspace({
             />
           </div>
 
+          {isAdmin && (
           <div className="mt-auto space-y-2 border-t border-slate-200 p-3">
             <p className="mb-2 text-2xs font-semibold uppercase tracking-wider text-slate-500">
               Metadata
@@ -414,6 +416,7 @@ export function CorrectionWorkspace({
               />
             )}
           </div>
+          )}
         </div>
 
         <div className="min-w-0 flex-1 bg-slate-50/70 p-4">
@@ -458,15 +461,31 @@ export function CorrectionWorkspace({
             />
             {canEditGeometry && !activeUri && (
               <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
-                No displayable artifact is available for the selected source. Choose another source before submitting a correction.
+                No image is available for this view. Choose another view before saving.
               </div>
             )}
             {canEditGeometry && activeUri && activeSource !== "current" && (
               <div className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
-                Edits will be applied using the selected <strong>{sourceViewLabel(activeSource)}</strong> artifact and the result will become the new current artifact.
+                Changes will be saved using the selected <strong>{sourceViewLabel(activeSource)}</strong>.
               </div>
             )}
-            {workspace.current_output_uri && workspace.current_layout_uri && (
+            {viewerIsError && fallbackSource && (
+              <div className="flex items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
+                <span>
+                  We could not show <strong>{sourceViewLabel(activeSource).toLowerCase()}</strong>.
+                  {" "}Try <strong>{sourceViewLabel(fallbackSource).toLowerCase()}</strong> instead.
+                </span>
+                <Button
+                  size="xs"
+                  variant="secondary"
+                  onClick={() => setActiveSource(fallbackSource)}
+                  className="shrink-0"
+                >
+                  Show {sourceViewLabel(fallbackSource)}
+                </Button>
+              </div>
+            )}
+            {isAdmin && workspace.current_output_uri && workspace.current_layout_uri && (
               <LayoutOverlay
                 imageUri={workspace.current_output_uri}
                 layoutUri={workspace.current_layout_uri}
@@ -481,7 +500,7 @@ export function CorrectionWorkspace({
         <div className="flex w-64 shrink-0 flex-col overflow-y-auto border-l border-slate-200 bg-white shadow-sm">
           <div className="border-b border-slate-200 p-3">
             <p className="text-2xs font-semibold uppercase tracking-wider text-slate-500">
-              Correction Controls
+              {isAdmin ? "Correction Controls" : "Review tools"}
             </p>
           </div>
 
@@ -489,7 +508,7 @@ export function CorrectionWorkspace({
             {canChoosePageStructure && (
               <>
                 <div className="space-y-2">
-                  <Label className="text-xs text-slate-600">Page Structure</Label>
+                  <Label className="text-xs text-slate-600">{isAdmin ? "Page Structure" : "Page type"}</Label>
                   <div className="grid grid-cols-2 gap-2">
                     <button
                       type="button"
@@ -503,7 +522,7 @@ export function CorrectionWorkspace({
                     >
                       <div className="text-xs font-semibold">Single page</div>
                       <div className="mt-1 text-2xs text-slate-500">
-                        Review this artifact as one page.
+                        Review this scan as one page.
                       </div>
                     </button>
                     <button
@@ -518,26 +537,25 @@ export function CorrectionWorkspace({
                     >
                       <div className="text-xs font-semibold">Two-page spread</div>
                       <div className="mt-1 text-2xs text-slate-500">
-                        Create Page 0 and Page 1 child workspaces.
+                        Split into left and right pages.
                       </div>
                     </button>
                   </div>
                   {workspace.branch_outputs.iep1a_geometry?.split_required ? (
                     <p className="flex items-center gap-1 text-2xs text-amber-600">
                       <AlertTriangle className="h-3 w-3" />
-                      IEP1 suggests this artifact is a two-page spread.
+                      This scan may contain two pages.
                     </p>
                   ) : (
                     <p className="text-2xs text-slate-400">
-                      Confirm the page structure before reviewing crop and deskew.
+                      Confirm whether this scan has one page or two.
                     </p>
                   )}
                   {isSpreadSelection && (
                     <div className="flex items-start gap-1.5 rounded border border-cyan-200 bg-cyan-50 p-2 text-2xs text-cyan-700">
                       <GitBranch className="mt-0.5 h-3 w-3 shrink-0" />
                       <span>
-                        Submitting this choice creates or reuses child pages, then opens
-                        Page 0 and Page 1 for separate correction.
+                        Saving this choice creates left and right pages for separate review.
                       </span>
                     </div>
                   )}
@@ -551,10 +569,14 @@ export function CorrectionWorkspace({
               <>
                 <div className="space-y-2">
                   <div className="flex items-center justify-between">
-                    <Label className="text-xs text-slate-600">Child Pages</Label>
-                    <span className="text-2xs text-slate-400">
-                      Parent stays as lineage anchor
-                    </span>
+                    <Label className="text-xs text-slate-600">
+                      {isAdmin ? "Child Pages" : "Split pages"}
+                    </Label>
+                    {isAdmin && (
+                      <span className="text-2xs text-slate-400">
+                        Parent stays as lineage anchor
+                      </span>
+                    )}
                   </div>
                   <div className="grid grid-cols-2 gap-2">
                     {workspace.child_pages.map((child) => (
@@ -570,10 +592,14 @@ export function CorrectionWorkspace({
                         )}
                       >
                         <div className="text-xs font-semibold text-slate-700">
-                          Page {child.sub_page_index}
+                          {isAdmin
+                            ? `Page ${child.sub_page_index}`
+                            : child.sub_page_index === 0
+                              ? "Left page"
+                              : "Right page"}
                         </div>
                         <div className="mt-1 text-2xs text-slate-500">
-                          {snakeToTitle(child.status)}
+                          {pageStateLabel(child.status)}
                         </div>
                       </button>
                     ))}
@@ -588,12 +614,16 @@ export function CorrectionWorkspace({
               <>
                 <div className="rounded-lg border border-slate-200 bg-slate-50 p-3">
                   <p className="text-xs font-medium text-slate-700">
-                    {isParentLineageAnchor ? "Parent already split" : "Spread structure confirmed"}
+                    {isParentLineageAnchor
+                      ? isAdmin ? "Parent already split" : "Split pages created"
+                      : "Two-page scan confirmed"}
                   </p>
                   <p className="mt-1 text-2xs leading-relaxed text-slate-500">
                     {isParentLineageAnchor
-                      ? "This parent is lineage-only now. Continue correction in Page 0 and Page 1."
-                      : "Crop and deskew are applied on Page 0 and Page 1 separately after the child pages are created."}
+                      ? isAdmin
+                        ? "This parent is lineage-only now. Continue correction in Page 0 and Page 1."
+                        : "Continue review in the left and right pages above."
+                      : "Left and right pages can be reviewed separately after they are created."}
                   </p>
                 </div>
 
@@ -605,34 +635,38 @@ export function CorrectionWorkspace({
               <>
                 <div className="space-y-2">
                   <Label className="text-xs text-slate-600">
-                    Page Quad{" "}
-                    <span className="font-normal text-slate-400">
-                      {isChildPage ? "[x, y] in parent image" : "[x, y] in image"}
-                    </span>
+                    {isAdmin ? "Page Quad" : "Page outline"}{" "}
+                    {isAdmin && (
+                      <span className="font-normal text-slate-400">
+                        {isChildPage ? "[x, y] in parent image" : "[x, y] in image"}
+                      </span>
+                    )}
                   </Label>
-                  <div className="grid grid-cols-2 gap-2">
-                    {(quadPoints ?? []).map((point, index) => (
-                      <div key={`quad-${index}`} className="space-y-0.5">
-                        <span className="text-2xs text-slate-500">
-                          {["TL", "TR", "BR", "BL"][index]}
-                        </span>
-                        <div className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-2xs tabular-nums text-slate-600">
-                          [{Math.round(point[0])}, {Math.round(point[1])}]
+                  {isAdmin && (
+                    <div className="grid grid-cols-2 gap-2">
+                      {(quadPoints ?? []).map((point, index) => (
+                        <div key={`quad-${index}`} className="space-y-0.5">
+                          <span className="text-2xs text-slate-500">
+                            {["TL", "TR", "BR", "BL"][index]}
+                          </span>
+                          <div className="rounded border border-slate-200 bg-slate-50 px-2 py-1 text-2xs tabular-nums text-slate-600">
+                            [{Math.round(point[0])}, {Math.round(point[1])}]
+                          </div>
                         </div>
-                      </div>
-                    ))}
-                  </div>
+                      ))}
+                    </div>
+                  )}
                   {!quadPoints && (
                     <p className="flex items-center gap-1 text-2xs text-slate-400">
                       <Info className="h-3 w-3" />
-                      No geometry. Drag on the image to set it.
+                      No outline selected. Drag on the image to set one.
                     </p>
                   )}
                   <p className="flex items-start gap-1 text-2xs text-slate-400">
                     <Info className="mt-0.5 h-3 w-3 shrink-0" />
                     {isChildPage
-                      ? "Drag each corner handle on the parent image, or drag to draw a new region. The child artifact is rectified from this quad when you submit."
-                      : "Drag each corner handle to adjust, or drag anywhere to draw a new region. Perspective correction is applied on submit."}
+                      ? "Drag each corner handle on the original page, or drag to draw a new outline."
+                      : "Drag each corner handle to adjust the page outline, or drag anywhere to draw a new one."}
                   </p>
                 </div>
 
@@ -641,72 +675,80 @@ export function CorrectionWorkspace({
             )}
 
             <div className="space-y-2">
-              <Label className="text-xs text-slate-600">Reviewer Notes</Label>
+              <Label className="text-xs text-slate-600">{isAdmin ? "Reviewer Notes" : "Notes"}</Label>
               <Textarea
                 value={reviewerNotes}
                 onChange={(event) => setReviewerNotes(event.target.value)}
-                placeholder="Optional notes for audit trail..."
+                placeholder="Optional notes..."
                 className="min-h-[80px] text-xs"
               />
             </div>
 
-            <div className="space-y-1.5 rounded-lg border border-slate-200 bg-slate-50 p-3">
-              <p className="mb-2 text-2xs font-semibold uppercase tracking-wider text-slate-500">
-                Will Submit
-              </p>
-              <SubmitRow
-                label="Source"
-                value={activeUri ? sourceViewLabel(activeSource) : "Unavailable"}
-              />
-              <SubmitRow
-                label="Structure"
-                value={
-                  isChildPage
-                    ? `Page ${workspace.sub_page_index}`
-                    : pageStructure === "spread"
-                      ? "Two-page spread"
-                      : "Single page"
-                }
-              />
-              <SubmitRow
-                label="Quad"
-                value={
-                  canEditGeometry
-                    ? quadPoints
-                      ? quadPoints
-                          .map(([x, y], index) => `${["TL", "TR", "BR", "BL"][index]}(${Math.round(x)},${Math.round(y)})`)
-                          .join(" ")
-                      : "null"
-                    : "child workflow"
-                }
-              />
-              <SubmitRow
-                label="Rectify"
-                value={
-                  canEditGeometry
-                    ? quadPoints ? "perspective warp" : "none"
-                    : "child workflow"
-                }
-              />
-              {isSpreadSelection && (
+            {isAdmin ? (
+              <div className="space-y-1.5 rounded-lg border border-slate-200 bg-slate-50 p-3">
+                <p className="mb-2 text-2xs font-semibold uppercase tracking-wider text-slate-500">
+                  Will Submit
+                </p>
                 <SubmitRow
-                  label="Split X"
-                  value={splitX != null ? `${Math.round(splitX)}px` : "center (default)"}
+                  label="Source"
+                  value={activeUri ? sourceViewLabel(activeSource) : "Unavailable"}
                 />
-              )}
-              {isSpreadSelection && (
-                <div className="flex items-center gap-1 text-2xs text-cyan-600">
-                  <GitBranch className="h-2.5 w-2.5 shrink-0" />
-                  <span>Creates or reuses Page 0 and Page 1</span>
-                </div>
-              )}
-            </div>
+                <SubmitRow
+                  label="Structure"
+                  value={
+                    isChildPage
+                      ? `Page ${workspace.sub_page_index}`
+                      : pageStructure === "spread"
+                        ? "Two-page spread"
+                        : "Single page"
+                  }
+                />
+                <SubmitRow
+                  label="Quad"
+                  value={
+                    canEditGeometry
+                      ? quadPoints
+                        ? quadPoints
+                            .map(([x, y], index) => `${["TL", "TR", "BR", "BL"][index]}(${Math.round(x)},${Math.round(y)})`)
+                            .join(" ")
+                        : "null"
+                      : "child workflow"
+                  }
+                />
+                <SubmitRow
+                  label="Rectify"
+                  value={
+                    canEditGeometry
+                      ? quadPoints ? "perspective warp" : "none"
+                      : "child workflow"
+                  }
+                />
+                {isSpreadSelection && (
+                  <SubmitRow
+                    label="Split X"
+                    value={splitX != null ? `${Math.round(splitX)}px` : "center (default)"}
+                  />
+                )}
+                {isSpreadSelection && (
+                  <div className="flex items-center gap-1 text-2xs text-cyan-600">
+                    <GitBranch className="h-2.5 w-2.5 shrink-0" />
+                    <span>Creates or reuses Page 0 and Page 1</span>
+                  </div>
+                )}
+              </div>
+            ) : (
+              <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-2xs leading-relaxed text-slate-500">
+                Your review will be saved and this page will continue processing.
+              </div>
+            )}
           </div>
 
           <div className="shrink-0 space-y-2 border-t border-slate-200 p-3">
             {isParentLineageAnchor ? (
               <div className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-2xs text-slate-500">
-                Parent split is already committed. Open a child page above to continue editing.
+                {isAdmin
+                  ? "Parent split is already committed. Open a child page above to continue editing."
+                  : "Split pages are ready. Open the left or right page above to continue."}
               </div>
             ) : (
               <>
@@ -717,11 +759,13 @@ export function CorrectionWorkspace({
                   disabled={!canSubmitCorrection}
                 >
                   <CheckCircle className="h-4 w-4" />
-                  {isSpreadSelection ? "Create Child Pages" : "Submit Correction"}
+                  {isSpreadSelection
+                    ? isAdmin ? "Create Child Pages" : "Create split pages"
+                    : isAdmin ? "Submit Correction" : "Save review"}
                 </Button>
                 {!activeUri && (
                   <p className="text-2xs text-amber-600">
-                    Select a displayable source artifact before submitting a correction.
+                    Choose a view with an image before saving.
                   </p>
                 )}
                 <Button
@@ -731,7 +775,7 @@ export function CorrectionWorkspace({
                   disabled={submitMut.isPending || rejectMut.isPending}
                 >
                   <XCircle className="h-4 w-4" />
-                  Reject Page
+                  {isAdmin ? "Reject Page" : "Mark as issue"}
                 </Button>
               </>
             )}
@@ -742,9 +786,13 @@ export function CorrectionWorkspace({
       <ConfirmModal
         open={showRejectModal}
         onOpenChange={setShowRejectModal}
-        title="Reject Page?"
-        description="This will route the page to the review state. This action cannot be undone from this screen."
-        confirmLabel="Reject Page"
+        title={isAdmin ? "Reject Page?" : "Mark this page as an issue?"}
+        description={
+          isAdmin
+            ? "This will route the page to the review state. This action cannot be undone from this screen."
+            : "This marks the page for follow-up review. You can add notes before confirming."
+        }
+        confirmLabel={isAdmin ? "Reject Page" : "Mark as issue"}
         variant="danger"
         loading={rejectMut.isPending}
         onConfirm={() => {
@@ -759,13 +807,13 @@ export function CorrectionWorkspace({
 function currentArtifactLabel(role: CorrectionWorkspaceDetail["current_output_role"]): string {
   switch (role) {
     case "human_corrected":
-      return "Human corrected";
+      return "Reviewed image";
     case "split_child":
-      return "Split child";
+      return "Split page";
     case "normalized_output":
-      return "Normalized output";
+      return "Cleaned page";
     case "original_upload":
-      return "Original upload";
+      return "Original scan";
     default:
       return "Unavailable";
   }
@@ -774,16 +822,16 @@ function currentArtifactLabel(role: CorrectionWorkspaceDetail["current_output_ro
 function sourceViewLabel(source: SourceView): string {
   switch (source) {
     case "parent":
-      return "Original Parent";
+      return "Original page";
     case "original":
-      return "Original OTIFF";
+      return "Original scan";
     case "normalized":
-      return "Normalized";
+      return "Cleaned page";
     case "rectified":
-      return "Rectified";
+      return "Enhanced page";
     case "current":
     default:
-      return "Current";
+      return "Page preview";
   }
 }
 

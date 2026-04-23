@@ -48,7 +48,7 @@ const healthRateMeta: Array<{
     informational: true,
     subtitle:
       "Of pages that failed first-pass quality, how many were sent to IEP1D rescue. " +
-      "Drops to 0 % when the rectification policy is set to "Disable and send directly to review".",
+      'Drops to 0 % when the rectification policy is set to "Disable and send directly to review".',
   },
   {
     key: "layout_success_rate",

@@ -11,9 +11,9 @@ export interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElemen
 
 const variantClasses: Record<NonNullable<ButtonProps["variant"]>, string> = {
   default:
-    "bg-indigo-600 text-white hover:bg-indigo-500 active:bg-indigo-700 focus-visible:ring-indigo-500",
+    "bg-slate-950 text-white shadow-sm shadow-slate-900/20 hover:bg-slate-800 active:bg-slate-950 focus-visible:ring-slate-700",
   secondary:
-    "bg-slate-100 text-slate-700 hover:bg-slate-200 active:bg-slate-300 focus-visible:ring-slate-400",
+    "bg-white text-slate-700 border border-slate-200 shadow-sm shadow-slate-200/70 hover:bg-slate-50 hover:text-slate-950 active:bg-slate-100 focus-visible:ring-slate-400",
   ghost:
     "bg-transparent text-slate-500 hover:bg-slate-100 hover:text-slate-900 focus-visible:ring-slate-400",
   danger:
@@ -51,7 +51,7 @@ export const Button = React.forwardRef<HTMLButtonElement, ButtonProps>(
       <Comp
         ref={ref}
         className={cn(
-          "inline-flex items-center justify-center font-medium rounded-lg transition-colors duration-100",
+          "inline-flex items-center justify-center rounded-lg font-semibold transition-all duration-150",
           "focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-offset-1 focus-visible:ring-offset-white",
           "disabled:opacity-40 disabled:pointer-events-none",
           variantClasses[variant],

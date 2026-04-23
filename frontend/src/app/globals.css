@@ -20,6 +20,8 @@
   body {
     @apply bg-slate-50 text-slate-900;
     font-family: var(--font-inter);
+    background:
+      linear-gradient(180deg, rgb(248 250 252) 0%, rgb(241 245 249) 42%, rgb(248 250 252) 100%);
   }
 
   /* Scrollbar */
@@ -51,7 +53,15 @@
 
   /* Card */
   .card {
-    @apply bg-white border border-slate-200 rounded-xl shadow-sm;
+    @apply rounded-xl border border-slate-200 bg-white shadow-sm shadow-slate-200/70;
+  }
+
+  .surface-panel {
+    @apply rounded-xl border border-white/80 bg-white/95 shadow-[0_18px_50px_-36px_rgba(15,23,42,0.35)] ring-1 ring-slate-200/70;
+  }
+
+  .soft-panel {
+    @apply rounded-xl border border-slate-200/80 bg-white/90 shadow-sm shadow-slate-200/70;
   }
 
   /* Muted label */
@@ -66,7 +76,7 @@
 
   /* Table */
   .data-table th {
-    @apply px-4 py-3 text-left text-2xs font-semibold text-slate-400 uppercase tracking-wider border-b border-slate-200;
+    @apply border-b border-slate-200 bg-slate-50/70 px-4 py-3 text-left text-2xs font-semibold uppercase tracking-wider text-slate-500;
   }
   .data-table td {
     @apply px-4 py-3.5 text-sm border-b border-slate-100;
@@ -87,22 +97,22 @@
   }
 
   /* Page state badge colors */
-  .state-queued        { @apply bg-slate-100 text-slate-600 border border-slate-200; }
-  .state-preprocessing { @apply bg-blue-50 text-blue-700 border border-blue-200; }
-  .state-rectification { @apply bg-purple-50 text-purple-700 border border-purple-200; }
-  .state-ptiff_qa_pending { @apply bg-indigo-50 text-indigo-700 border border-indigo-200; }
-  .state-layout_detection { @apply bg-cyan-50 text-cyan-700 border border-cyan-200; }
-  .state-pending_human_correction { @apply bg-orange-50 text-orange-700 border border-orange-200; }
-  .state-accepted      { @apply bg-emerald-50 text-emerald-700 border border-emerald-200; }
-  .state-review        { @apply bg-yellow-50 text-yellow-700 border border-yellow-200; }
-  .state-failed        { @apply bg-red-50 text-red-700 border border-red-200; }
-  .state-split         { @apply bg-violet-50 text-violet-700 border border-violet-200; }
+  .state-queued        { @apply border border-slate-200 bg-slate-100 text-slate-600; }
+  .state-preprocessing { @apply border border-sky-200 bg-sky-50 text-sky-700; }
+  .state-rectification { @apply border border-sky-200 bg-sky-50 text-sky-700; }
+  .state-ptiff_qa_pending { @apply border border-amber-200 bg-amber-50 text-amber-800; }
+  .state-layout_detection { @apply border border-sky-200 bg-sky-50 text-sky-700; }
+  .state-pending_human_correction { @apply border border-amber-200 bg-amber-50 text-amber-800; }
+  .state-accepted      { @apply border border-emerald-200 bg-emerald-50 text-emerald-700; }
+  .state-review        { @apply border border-teal-200 bg-teal-50 text-teal-700; }
+  .state-failed        { @apply border border-rose-200 bg-rose-50 text-rose-700; }
+  .state-split         { @apply border border-indigo-200 bg-indigo-50 text-indigo-700; }
 
   /* Job status colors */
-  .job-queued  { @apply bg-slate-100 text-slate-600 border border-slate-200; }
-  .job-running { @apply bg-blue-50 text-blue-700 border border-blue-200; }
-  .job-done    { @apply bg-emerald-50 text-emerald-700 border border-emerald-200; }
-  .job-failed  { @apply bg-red-50 text-red-700 border border-red-200; }
+  .job-queued  { @apply border border-slate-200 bg-slate-100 text-slate-600; }
+  .job-running { @apply border border-sky-200 bg-sky-50 text-sky-700; }
+  .job-done    { @apply border border-emerald-200 bg-emerald-50 text-emerald-700; }
+  .job-failed  { @apply border border-rose-200 bg-rose-50 text-rose-700; }
 }
 
 @layer utilities {

@@ -57,6 +57,27 @@ export function getDefaultWorkspaceSource(
   return "current";
 }
 
+export function getWorkspaceFallbackSource(
+  workspace: CorrectionWorkspaceDetail | undefined,
+  currentSource: SourceView
+): SourceView | null {
+  if (!workspace) return null;
+
+  const candidates: SourceView[] =
+    workspace.sub_page_index != null
+      ? ["parent", "current", "normalized", "rectified", "original"]
+      : ["current", "normalized", "rectified", "original", "parent"];
+
+  for (const candidate of candidates) {
+    if (candidate === currentSource) continue;
+    if (resolveWorkspaceSourceUri(workspace, candidate)) {
+      return candidate;
+    }
+  }
+
+  return null;
+}
+
 export function getWorkspaceInteractionState(
   workspace: CorrectionWorkspaceDetail | undefined,
   pageStructure: "single" | "spread",
@@ -92,17 +113,17 @@ export function getWorkspaceEmptyMessage(
 
   switch (source) {
     case "parent":
-      return "Original parent source unavailable for this child page.";
+      return "The original page is unavailable for this split page.";
     case "current":
       return workspace.sub_page_index != null
-        ? "Current child review source unavailable. This child page does not have a displayable image yet."
-        : "Current artifact unavailable. This page does not have a displayable image yet.";
+        ? "This split page does not have a displayable image yet."
+        : "This page does not have a displayable image yet.";
     case "normalized":
-      return "Normalized artifact unavailable for this page.";
+      return "The cleaned page image is unavailable.";
     case "rectified":
-      return "Rectified artifact unavailable for this page.";
+      return "The enhanced page image is unavailable.";
     case "original":
-      return "Original upload unavailable for this page.";
+      return "The original scan is unavailable.";
     default:
       return "No image selected.";
   }
@@ -112,22 +133,22 @@ export function getWorkspacePreviewErrorMessage(
   workspace: CorrectionWorkspaceDetail | undefined,
   source: SourceView
 ): string {
-  if (!workspace) return "Failed to load the selected artifact preview.";
+  if (!workspace) return "We could not load the selected image.";
 
   switch (source) {
     case "parent":
-      return "Failed to load the original parent source preview.";
+      return "We could not load the original page preview.";
     case "current":
       return workspace.sub_page_index != null
-        ? "Failed to load the current child review source preview."
-        : "Failed to load the current artifact preview.";
+        ? "We could not load this split page preview."
+        : "We could not load this page preview.";
     case "normalized":
-      return "Failed to load the normalized artifact preview.";
+      return "We could not load the cleaned page preview.";
     case "rectified":
-      return "Failed to load the rectified artifact preview.";
+      return "We could not load the enhanced page preview.";
     case "original":
-      return "Failed to load the original upload preview.";
+      return "We could not load the original scan preview.";
     default:
-      return "Failed to load the selected artifact preview.";
+      return "We could not load the selected image.";
   }
 }

@@ -33,8 +33,8 @@ export default function UserWorkspacePage() {
   return (
     <UserShell
       breadcrumbs={[
-        { label: "Queue", href: "/queue" },
-        { label: "Workspace" },
+        { label: "Needs Review", href: "/queue" },
+        { label: "Review page" },
       ]}
       className="p-0 overflow-hidden"
     >

@@ -21,20 +21,20 @@ export function PageHeader({
   badge,
 }: PageHeaderProps) {
   return (
-    <div className={cn("flex items-start justify-between gap-4", className)}>
+    <div className={cn("flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between", className)}>
       <div className="flex items-start gap-3">
         {Icon && (
-          <div className="flex h-9 w-9 items-center justify-center rounded-xl bg-slate-100 border border-slate-200 mt-0.5">
+          <div className="mt-0.5 flex h-10 w-10 items-center justify-center rounded-xl border border-white bg-white shadow-sm shadow-slate-200/80 ring-1 ring-slate-200/70">
             <Icon className={cn("h-4.5 w-4.5", iconColor)} />
           </div>
         )}
         <div>
-          <div className="flex items-center gap-2">
-            <h1 className="text-base font-semibold text-slate-900">{title}</h1>
+          <div className="flex flex-wrap items-center gap-2">
+            <h1 className="text-xl font-semibold tracking-tight text-slate-950">{title}</h1>
             {badge}
           </div>
           {description && (
-            <p className="text-xs text-slate-500 mt-0.5 leading-relaxed">
+            <p className="mt-1 max-w-2xl text-sm leading-relaxed text-slate-500">
               {description}
             </p>
           )}

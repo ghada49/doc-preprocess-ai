@@ -22,7 +22,6 @@ export default function SignupPage() {
   const [error, setError] = useState<string | null>(null);
   const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
 
-  // If already authenticated, redirect to the appropriate landing page
   useEffect(() => {
     if (isLoading) return;
     if (isAuthenticated) {
@@ -55,7 +54,6 @@ export default function SignupPage() {
     setSubmitting(true);
     try {
       await signup({ username: username.trim(), password });
-      // Signal to login page that account creation succeeded
       sessionStorage.setItem("signup_success", "true");
       router.replace("/login");
     } catch (err: unknown) {
@@ -73,8 +71,7 @@ export default function SignupPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-      {/* Background grid */}
+    <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(180deg,rgb(248,250,252)_0%,rgb(241,245,249)_52%,rgb(248,250,252)_100%)] p-4">
       <div
         className="fixed inset-0 opacity-[0.4] pointer-events-none"
         style={{
@@ -85,9 +82,8 @@ export default function SignupPage() {
       />
 
       <div className="w-full max-w-sm relative z-10">
-        {/* Logo */}
         <div className="flex flex-col items-center mb-8">
-          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-600 mb-4 shadow-lg shadow-indigo-500/20">
+          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-950 shadow-lg shadow-slate-900/20">
             <svg
               viewBox="0 0 24 24"
               fill="none"
@@ -101,11 +97,10 @@ export default function SignupPage() {
             </svg>
           </div>
           <h1 className="text-xl font-semibold text-slate-900 tracking-tight">LibraryAI</h1>
-          <p className="text-sm text-slate-500 mt-1">Document AI Operations Console</p>
+          <p className="text-sm text-slate-500 mt-1">Clean document processing</p>
         </div>
 
-        {/* Card */}
-        <div className="bg-white border border-slate-200 rounded-2xl p-8 shadow-sm">
+        <div className="surface-panel p-8">
           <h2 className="text-sm font-semibold text-slate-800 mb-6">Create your account</h2>
 
           {error && (
@@ -144,7 +139,7 @@ export default function SignupPage() {
                   setPassword(e.target.value);
                   if (fieldErrors.password) setFieldErrors((p) => ({ ...p, password: "" }));
                 }}
-                placeholder="••••••••"
+                placeholder="Enter at least 8 characters"
                 required
               />
               {fieldErrors.password && (
@@ -164,7 +159,7 @@ export default function SignupPage() {
                   if (fieldErrors.confirmPassword)
                     setFieldErrors((p) => ({ ...p, confirmPassword: "" }));
                 }}
-                placeholder="••••••••"
+                placeholder="Re-enter your password"
                 required
               />
               {fieldErrors.confirmPassword && (
@@ -183,17 +178,15 @@ export default function SignupPage() {
           </form>
         </div>
 
-        {/* Sign-in link */}
         <p className="text-center text-sm text-slate-500 mt-6">
           Already have an account?{" "}
-          <Link href="/login" className="text-indigo-600 hover:text-indigo-500 transition-colors">
+          <Link href="/login" className="font-medium text-slate-800 transition-colors hover:text-slate-950">
             Sign in
           </Link>
         </p>
 
-        {/* Footer */}
         <p className="text-center text-2xs text-slate-400 mt-3">
-          LibraryAI v2.0 — Regular user accounts only
+          Secure document workspace
         </p>
       </div>
     </div>

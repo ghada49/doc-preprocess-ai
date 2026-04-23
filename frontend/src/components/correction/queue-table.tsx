@@ -3,12 +3,11 @@
 import { useEffect, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
-import { Clock, AlertTriangle, ChevronRight, RefreshCw } from "lucide-react";
+import { Clock, AlertTriangle, ChevronRight, RefreshCw, FileSearch } from "lucide-react";
 import { getCorrectionQueue } from "@/lib/api/correction";
-import type { MaterialType } from "@/types/api";
+import type { CorrectionQueueItem, MaterialType } from "@/types/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { StatusBadge } from "@/components/shared/status-badge";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Pagination } from "@/components/shared/pagination";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -31,7 +30,7 @@ import { cn } from "@/lib/utils";
 
 interface CorrectionQueueTableProps {
   isAdmin?: boolean;
-  workspacePath?: string; // base path for workspace links
+  workspacePath?: string;
 }
 
 export function CorrectionQueueTable({
@@ -76,29 +75,33 @@ export function CorrectionQueueTable({
   return (
     <TooltipProvider>
       <div className="flex flex-col gap-4">
-        {/* Toolbar */}
-        <div className="flex items-center gap-3 flex-wrap">
+        <div className="flex flex-wrap items-center gap-3">
           <Input
             value={jobIdFilter}
             onChange={(event) => {
               setJobIdFilter(event.target.value);
               setPage(1);
             }}
-            placeholder="Filter by job ID"
+            placeholder={isAdmin ? "Filter by job ID" : "Filter by upload"}
             className="w-[220px]"
           />
-          <Input
-            value={reviewReasonFilter}
-            onChange={(event) => {
-              setReviewReasonFilter(event.target.value);
-              setPage(1);
-            }}
-            placeholder="Review reason"
-            className="w-[180px]"
-          />
+          {isAdmin && (
+            <Input
+              value={reviewReasonFilter}
+              onChange={(event) => {
+                setReviewReasonFilter(event.target.value);
+                setPage(1);
+              }}
+              placeholder="Review reason code"
+              className="w-[180px]"
+            />
+          )}
           <Select
             value={materialFilter}
-            onValueChange={(v) => { setMaterialFilter(v as MaterialType | "all"); setPage(1); }}
+            onValueChange={(v) => {
+              setMaterialFilter(v as MaterialType | "all");
+              setPage(1);
+            }}
           >
             <SelectTrigger className="w-44">
               <SelectValue placeholder="Material type" />
@@ -112,9 +115,11 @@ export function CorrectionQueueTable({
           </Select>
 
           {total > 0 && (
-            <div className="flex items-center gap-1.5 text-xs text-orange-700 bg-orange-50 border border-orange-200 rounded-lg px-3 py-1.5">
+            <div className="flex items-center gap-1.5 rounded-full border border-orange-200 bg-orange-50 px-3 py-1.5 text-xs text-orange-700">
               <AlertTriangle className="h-3.5 w-3.5" />
-              <span className="font-medium">{total} page{total !== 1 ? "s" : ""} awaiting review</span>
+              <span className="font-medium">
+                {total} page{total !== 1 ? "s" : ""} need review
+              </span>
             </div>
           )}
 
@@ -122,21 +127,79 @@ export function CorrectionQueueTable({
             variant="ghost"
             size="icon"
             onClick={() => refetch()}
-            className="h-9 w-9 text-slate-500 ml-auto"
+            className="ml-auto h-9 w-9 text-slate-500"
+            aria-label="Refresh"
           >
             <RefreshCw className={cn("h-4 w-4", isFetching && "animate-spin")} />
           </Button>
         </div>
 
-        {/* Table */}
-        <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+        {!isAdmin && (
+          <div className="space-y-4">
+            {isLoading ? (
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {Array.from({ length: 6 }).map((_, index) => (
+                  <div key={index} className="surface-panel grid grid-cols-[72px_1fr] gap-4 p-4">
+                    <Skeleton className="h-24 w-[72px] rounded-xl" />
+                    <div className="space-y-3 py-1">
+                      <Skeleton className="h-5 w-24" />
+                      <Skeleton className="h-4 w-40" />
+                      <Skeleton className="h-4 w-full" />
+                      <Skeleton className="h-8 w-28" />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            ) : items.length === 0 ? (
+              <div className="surface-panel">
+                <EmptyState
+                  icon={FileSearch}
+                  title="No pages need review"
+                  description="Pages that need attention will appear here with a clear next step."
+                />
+              </div>
+            ) : (
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {items.map((item) => {
+                  const subPageQuery =
+                    item.sub_page_index != null
+                      ? `?sub_page_index=${item.sub_page_index}`
+                      : "";
+                  const workspaceHref = `${workspacePath}/${item.job_id}/${item.page_number}/workspace${subPageQuery}`;
+
+                  return (
+                    <ReviewCard
+                      key={`${item.job_id}-${item.page_number}-${item.sub_page_index ?? 0}`}
+                      item={item}
+                      onClick={() => router.push(workspaceHref)}
+                    />
+                  );
+                })}
+              </div>
+            )}
+
+            {total > 0 && (
+              <div className="surface-panel px-4 py-3">
+                <Pagination
+                  page={page}
+                  pageSize={pageSize}
+                  total={total}
+                  onPageChange={setPage}
+                />
+              </div>
+            )}
+          </div>
+        )}
+
+        {isAdmin && (
+        <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm shadow-slate-200/70">
           <table className="w-full data-table">
             <thead>
               <tr>
                 <th className="w-16">Preview</th>
-                <th>Job / Page</th>
+                <th>{isAdmin ? "Job / Page" : "Upload / Page"}</th>
                 <th>Material</th>
-                <th>Review Reasons</th>
+                <th>Issue</th>
                 <th>Waiting</th>
                 <th></th>
               </tr>
@@ -147,7 +210,7 @@ export function CorrectionQueueTable({
                   <tr key={i} className="border-b border-slate-100">
                     {[16, 180, 80, 220, 100, 40].map((w, j) => (
                       <td key={j} className="px-4 py-3.5">
-                        <Skeleton className={`h-4`} style={{ width: w }} />
+                        <Skeleton className="h-4" style={{ width: w }} />
                       </td>
                     ))}
                   </tr>
@@ -156,8 +219,8 @@ export function CorrectionQueueTable({
                 <tr>
                   <td colSpan={6} className="p-0">
                     <EmptyState
-                      title="Queue is empty"
-                      description="No pages currently awaiting human correction."
+                      title="No pages need review"
+                      description="When a page needs attention, it will appear here with a clear next step."
                     />
                   </td>
                 </tr>
@@ -172,9 +235,8 @@ export function CorrectionQueueTable({
                     <tr
                       key={`${item.job_id}-${item.page_number}-${item.sub_page_index ?? 0}`}
                       onClick={() => router.push(workspaceHref)}
-                      className="cursor-pointer hover:bg-slate-50 transition-colors"
+                      className="cursor-pointer transition-colors hover:bg-slate-50"
                     >
-                      {/* Thumbnail */}
                       <td className="px-3 py-2">
                         <ArtifactImage
                           uri={item.output_image_uri}
@@ -184,50 +246,50 @@ export function CorrectionQueueTable({
                         />
                       </td>
 
-                      {/* Job / Page */}
                       <td>
                         <div className="flex flex-col gap-0.5">
-                          <code className="text-xs text-indigo-600 font-mono">
-                            {truncateId(item.job_id, 8)}…
-                          </code>
+                          <span className="text-xs font-medium text-slate-700">
+                            {isAdmin ? truncateId(item.job_id, 8) : `Upload ${truncateId(item.job_id, 6)}`}
+                          </span>
                           <span className="text-xs text-slate-500">
                             Page {item.page_number}
                             {item.sub_page_index != null && (
-                              <span className="ml-1 text-2xs font-medium text-indigo-400">
-                                {item.sub_page_index === 0 ? "Left" : "Right"}
+                              <span className="ml-1 text-2xs font-medium text-indigo-500">
+                                {item.sub_page_index === 0 ? "Left page" : "Right page"}
                               </span>
                             )}
                           </span>
                         </div>
                       </td>
 
-                      {/* Material */}
                       <td>
-                        <span className="text-xs text-slate-500 capitalize">
+                        <span className="text-xs capitalize text-slate-500">
                           {item.material_type}
                         </span>
                       </td>
 
-                      {/* Reasons */}
                       <td>
                         <div className="flex flex-wrap gap-1">
-                          {item.review_reasons.map((r) => (
-                            <span
-                              key={r}
-                              className="inline-flex items-center rounded px-1.5 py-0.5 text-2xs font-medium bg-orange-50 text-orange-700 border border-orange-200"
-                            >
-                              {reviewReasonLabel(r)}
-                            </span>
-                          ))}
+                          {item.review_reasons.length > 0 ? (
+                            item.review_reasons.map((r) => (
+                              <span
+                                key={r}
+                                className="inline-flex items-center rounded-full border border-orange-200 bg-orange-50 px-2 py-0.5 text-2xs font-medium text-orange-700"
+                              >
+                                {reviewReasonLabel(r)}
+                              </span>
+                            ))
+                          ) : (
+                            <span className="text-xs text-slate-500">Please review this page</span>
+                          )}
                         </div>
                       </td>
 
-                      {/* Waiting */}
                       <td>
                         {item.waiting_since ? (
                           <Tooltip>
                             <TooltipTrigger asChild>
-                              <span className="flex items-center gap-1.5 text-xs text-slate-500 cursor-default">
+                              <span className="flex cursor-default items-center gap-1.5 text-xs text-slate-500">
                                 <Clock className="h-3 w-3" />
                                 {formatRelative(item.waiting_since)}
                               </span>
@@ -235,11 +297,10 @@ export function CorrectionQueueTable({
                             <TooltipContent>{formatDate(item.waiting_since)}</TooltipContent>
                           </Tooltip>
                         ) : (
-                          <span className="text-xs text-slate-300">—</span>
+                          <span className="text-xs text-slate-300">-</span>
                         )}
                       </td>
 
-                      {/* CTA */}
                       <td>
                         <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
                       </td>
@@ -261,7 +322,83 @@ export function CorrectionQueueTable({
             </div>
           )}
         </div>
+        )}
       </div>
     </TooltipProvider>
+  );
+}
+
+function ReviewCard({
+  item,
+  onClick,
+}: {
+  item: CorrectionQueueItem;
+  onClick: () => void;
+}) {
+  const splitLabel =
+    item.sub_page_index == null ? null : item.sub_page_index === 0 ? "Left page" : "Right page";
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="surface-panel group grid min-h-[176px] grid-cols-[72px_1fr] gap-4 p-4 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-amber-200 hover:shadow-[0_24px_70px_-42px_rgba(180,83,9,0.35)]"
+    >
+      <ArtifactImage
+        uri={item.output_image_uri}
+        containerClassName="h-24 w-[72px] rounded-xl border border-slate-200 bg-slate-50 shadow-sm"
+        className="rounded-xl object-cover"
+        fallbackText=""
+      />
+
+      <div className="flex min-w-0 flex-col">
+        <div className="mb-2 flex items-start justify-between gap-2">
+          <div className="min-w-0">
+            <p className="truncate text-sm font-semibold text-slate-950">
+              Upload {truncateId(item.job_id, 6)}
+            </p>
+            <p className="mt-0.5 text-xs text-slate-500">
+              Page {item.page_number}
+              {splitLabel ? ` - ${splitLabel}` : ""}
+            </p>
+          </div>
+          <span className="inline-flex shrink-0 items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-2xs font-semibold text-amber-700 shadow-sm shadow-amber-100/60">
+            <AlertTriangle className="h-3 w-3" />
+            Review
+          </span>
+        </div>
+
+        <div className="mb-3 flex flex-wrap gap-1.5">
+          {item.review_reasons.length > 0 ? (
+            item.review_reasons.slice(0, 3).map((reason) => (
+              <span
+                key={reason}
+                className="rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-2xs font-medium text-slate-600"
+              >
+                {reviewReasonLabel(reason)}
+              </span>
+            ))
+          ) : (
+            <span className="text-xs text-slate-500">Please review this page.</span>
+          )}
+        </div>
+
+        <div className="mt-auto flex items-center justify-between gap-3">
+          <div className="min-w-0 text-xs text-slate-500">
+            <span className="capitalize">{item.material_type}</span>
+            {item.waiting_since && (
+              <span className="ml-2 inline-flex items-center gap-1.5">
+                <Clock className="h-3 w-3 text-slate-400" />
+                {formatRelative(item.waiting_since)}
+              </span>
+            )}
+          </div>
+          <span className="inline-flex items-center gap-1 text-xs font-semibold text-slate-700 transition-colors group-hover:text-slate-950">
+            Open review
+            <ChevronRight className="h-3.5 w-3.5" />
+          </span>
+        </div>
+      </div>
+    </button>
   );
 }

@@ -11,7 +11,7 @@ import { Badge } from "@/components/ui/badge";
 import { Spinner } from "@/components/ui/spinner";
 import { ErrorBanner } from "@/components/shared/error-banner";
 import { cn } from "@/lib/utils";
-import { getApiErrorMessage, isApiError } from "@/lib/api/client";
+import { isApiError } from "@/lib/api/client";
 
 interface PtiffQaPanelProps {
   jobId: string;
@@ -36,12 +36,14 @@ export default function PtiffQaPanel({ jobId }: PtiffQaPanelProps) {
     mutationFn: () => approveAllPtiffQa(jobId),
     onSuccess: (res) => {
       toast.success(
-        `${res.approved_count} pages approved.${res.gate_released ? " Gate released!" : ""}`
+        `${res.approved_count} page${res.approved_count !== 1 ? "s" : ""} approved.${
+          res.gate_released ? " Processing can continue." : ""
+        }`
       );
       queryClient.invalidateQueries({ queryKey: ["ptiff-qa", jobId] });
       queryClient.invalidateQueries({ queryKey: ["job", jobId] });
     },
-    onError: () => toast.error("Failed to approve all pages."),
+    onError: () => toast.error("We could not approve all pages. Please try again."),
   });
 
   const approvePageMut = useMutation({
@@ -49,14 +51,14 @@ export default function PtiffQaPanel({ jobId }: PtiffQaPanelProps) {
       approvePtiffQaPage(jobId, page.pageNumber, page.subPageIndex ?? undefined),
     onSuccess: (res) => {
       toast.success(
-        `Page ${res.page_number} approved.${res.gate_released ? " Gate released!" : ""}`
+        `Page ${res.page_number} approved.${res.gate_released ? " Processing can continue." : ""}`
       );
       queryClient.invalidateQueries({ queryKey: ["ptiff-qa", jobId] });
     },
     onError: (err: unknown) => {
       const status = isApiError(err) ? err.status : null;
-      if (status === 409) toast.error("Page is not in ptiff_qa_pending state.");
-      else toast.error(getApiErrorMessage(err, "Failed to approve page."));
+      if (status === 409) toast.error("This page is no longer waiting for review.");
+      else toast.error("We could not approve this page.");
     },
   });
 
@@ -64,14 +66,14 @@ export default function PtiffQaPanel({ jobId }: PtiffQaPanelProps) {
     mutationFn: (page: { pageNumber: number; subPageIndex?: number | null }) =>
       editPtiffQaPage(jobId, page.pageNumber, page.subPageIndex ?? undefined),
     onSuccess: (res) => {
-      toast.success(`Page ${res.page_number} → ${res.new_state}`);
+      toast.success(`Page ${res.page_number} moved to review.`);
       queryClient.invalidateQueries({ queryKey: ["ptiff-qa", jobId] });
       queryClient.invalidateQueries({ queryKey: ["correction-queue"] });
     },
     onError: (err: unknown) => {
       const status = isApiError(err) ? err.status : null;
-      if (status === 409) toast.error("Page is not in ptiff_qa_pending state.");
-      else toast.error(getApiErrorMessage(err, "Failed to send page to correction."));
+      if (status === 409) toast.error("This page is no longer waiting for review.");
+      else toast.error("We could not send this page for review.");
     },
   });
 
@@ -88,43 +90,44 @@ export default function PtiffQaPanel({ jobId }: PtiffQaPanelProps) {
       <div className="p-6">
         <ErrorBanner
           variant="fullscreen"
-          title="Failed to Load"
-          message="Could not load PTIFF QA data."
+          title="Could not load review"
+          message="There was a problem loading these pages. Please try again."
         />
       </div>
     );
   }
 
-  const allApproved = data.pages.every((p) => p.approval_status === "approved");
+  const overview = summarizeOverview(data.pages);
+  const reviewBadge =
+    overview.needsReviewCount > 0
+      ? { label: "Needs review", variant: "warning" as const }
+      : overview.toReviewCount > 0
+        ? { label: "To review", variant: "warning" as const }
+        : { label: "Ready", variant: "success" as const };
 
   return (
-    <div className="p-6 max-w-4xl space-y-5">
+    <div className="max-w-4xl space-y-5 p-6">
       <PageHeader
-        title="PTIFF Quality Assurance"
-        description="Review and approve pages before the gate releases."
+        title="Review results"
+        description="Approve pages that look correct or send pages that need attention to review."
         icon={Shield}
         badge={
-          data.is_gate_ready ? (
-            <Badge variant="success">Gate Ready</Badge>
-          ) : (
-            <Badge variant="warning">Gate Pending</Badge>
-          )
+          <Badge variant={reviewBadge.variant}>{reviewBadge.label}</Badge>
         }
         actions={
           <Button
             onClick={() => approveAllMut.mutate()}
             loading={approveAllMut.isPending}
-            disabled={allApproved || approveAllMut.isPending}
+            disabled={overview.toReviewCount === 0 || approveAllMut.isPending}
             className="gap-1.5"
           >
             <CheckCircle className="h-4 w-4" />
-            Approve All ({data.pages_pending})
+            Approve all ({overview.toReviewCount})
           </Button>
         }
       />
 
-      {/* Summary */}
-      <div className="grid grid-cols-4 gap-3">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
         {[
           {
             label: "Total",
@@ -133,30 +136,27 @@ export default function PtiffQaPanel({ jobId }: PtiffQaPanelProps) {
             surface: "bg-white border-slate-200",
           },
           {
-            label: "Pending",
-            value: data.pages_pending,
+            label: "To review",
+            value: overview.toReviewCount,
             color: "text-amber-600",
             surface: "bg-amber-50 border-amber-200",
           },
           {
-            label: "Approved",
-            value: data.pages_approved,
+            label: "Reviewed",
+            value: overview.reviewedCount,
             color: "text-emerald-600",
             surface: "bg-emerald-50 border-emerald-200",
           },
           {
-            label: "In Correction",
-            value: data.pages_in_correction,
+            label: "Needs review",
+            value: overview.needsReviewCount,
             color: "text-orange-600",
             surface: "bg-orange-50 border-orange-200",
           },
         ].map(({ label, value, color, surface }) => (
           <div
             key={label}
-            className={cn(
-              "rounded-xl border p-4 text-center shadow-sm",
-              surface
-            )}
+            className={cn("rounded-2xl border p-4 text-center shadow-sm", surface)}
           >
             <p className={cn("text-2xl font-semibold tabular-nums", color)}>{value}</p>
             <p className="mt-1 text-2xs text-slate-500">{label}</p>
@@ -164,106 +164,180 @@ export default function PtiffQaPanel({ jobId }: PtiffQaPanelProps) {
         ))}
       </div>
 
-      {data.ptiff_qa_mode === "manual" && !data.is_gate_ready && (
-        <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 p-4 shadow-sm">
+      {data.ptiff_qa_mode === "manual" &&
+        (overview.toReviewCount > 0 || overview.needsReviewCount > 0) && (
+        <div className="flex items-start gap-3 rounded-2xl border border-amber-200 bg-amber-50 p-4 shadow-sm">
           <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-600" />
           <div>
-            <p className="text-xs font-semibold text-amber-900">Manual gate mode</p>
+            <p className="text-xs font-semibold text-amber-900">
+              {overview.needsReviewCount > 0 ? "Review in progress" : "Review required"}
+            </p>
             <p className="mt-0.5 text-xs leading-relaxed text-amber-700">
-              All pages must be approved before the pipeline gate releases.
+              {overview.needsReviewCount > 0
+                ? "Finish reviewing the flagged pages before processing can continue."
+                : "Approve each page before processing continues."}
             </p>
           </div>
         </div>
       )}
 
-      {/* Pages */}
-      <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+      <div className="overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm shadow-slate-200/70">
         <table className="w-full data-table">
           <thead>
             <tr>
               <th>Page</th>
-              <th>State</th>
-              <th>Approval</th>
-              <th>Needs Correction</th>
+              <th>Status</th>
+              <th>Review</th>
+              <th>Needs review</th>
               <th className="text-right">Actions</th>
             </tr>
           </thead>
           <tbody>
-            {data.pages.map((page) => (
-              <tr
-                key={`${page.page_number}-${page.sub_page_index ?? 0}`}
-                className={cn(
-                  page.approval_status === "pending" && "hover:bg-amber-50/60",
-                  page.approval_status === "approved" && "bg-slate-50/60"
-                )}
-              >
-                <td>
-                  <span className="font-mono text-xs tabular-nums text-slate-700">
-                    {page.page_number}
-                    {page.sub_page_index != null && `/${page.sub_page_index}`}
-                  </span>
-                </td>
-                <td>
-                  <StatusBadge status={page.current_state} type="page" />
-                </td>
-                <td>
-                  <Badge
-                    variant={
-                      page.approval_status === "approved"
-                        ? "success"
-                        : "warning"
-                    }
-                    dot
-                  >
-                    {page.approval_status}
-                  </Badge>
-                </td>
-                <td>
-                  {page.needs_correction ? (
-                    <Badge variant="danger">Yes</Badge>
-                  ) : (
-                    <span className="text-xs text-slate-500">No</span>
+            {data.pages.map((page) => {
+              const qaState = getQaOverviewState(page);
+              return (
+                <tr
+                  key={`${page.page_number}-${page.sub_page_index ?? 0}`}
+                  className={cn(
+                    qaState.rowClass,
+                    !qaState.rowClass && "hover:bg-slate-50"
                   )}
-                </td>
-                <td className="text-right">
-                  {page.approval_status === "pending" && (
-                    <div className="flex items-center justify-end gap-1.5">
-                      <Button
-                        size="xs"
-                        variant="success"
-                        onClick={() =>
-                          approvePageMut.mutate({
-                            pageNumber: page.page_number,
-                            subPageIndex: page.sub_page_index,
-                          })
-                        }
-                        loading={approvePageMut.isPending}
-                        className="gap-1"
-                      >
-                        <CheckCircle className="h-3 w-3" />
-                        Approve
-                      </Button>
-                      <Button
-                        size="xs"
-                        variant="outline"
-                        onClick={() =>
-                          editPageMut.mutate({
-                            pageNumber: page.page_number,
-                            subPageIndex: page.sub_page_index,
-                          })
-                        }
-                        loading={editPageMut.isPending}
-                      >
-                        Send to Correction
-                      </Button>
-                    </div>
-                  )}
-                </td>
-              </tr>
-            ))}
+                >
+                  <td>
+                    <span className="font-mono text-xs tabular-nums text-slate-700">
+                      {page.page_number}
+                      {page.sub_page_index != null &&
+                        ` ${page.sub_page_index === 0 ? "Left" : "Right"}`}
+                    </span>
+                  </td>
+                  <td>
+                    <StatusBadge status={page.current_state} type="page" />
+                  </td>
+                  <td>
+                    <Badge variant={qaState.reviewVariant} dot>
+                      {qaState.reviewLabel}
+                    </Badge>
+                  </td>
+                  <td>
+                    {qaState.needsReview ? (
+                      <Badge variant="danger">Yes</Badge>
+                    ) : (
+                      <span className="text-xs text-slate-500">No</span>
+                    )}
+                  </td>
+                  <td className="text-right">
+                    {qaState.showActions && (
+                      <div className="flex items-center justify-end gap-1.5">
+                        <Button
+                          size="xs"
+                          variant="success"
+                          onClick={() =>
+                            approvePageMut.mutate({
+                              pageNumber: page.page_number,
+                              subPageIndex: page.sub_page_index,
+                            })
+                          }
+                          loading={approvePageMut.isPending}
+                          className="gap-1"
+                        >
+                          <CheckCircle className="h-3 w-3" />
+                          Approve
+                        </Button>
+                        <Button
+                          size="xs"
+                          variant="outline"
+                          onClick={() =>
+                            editPageMut.mutate({
+                              pageNumber: page.page_number,
+                              subPageIndex: page.sub_page_index,
+                            })
+                          }
+                          loading={editPageMut.isPending}
+                        >
+                          Needs review
+                        </Button>
+                      </div>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
       </div>
     </div>
   );
+}
+
+function summarizeOverview(
+  pages: Array<{
+    current_state: string;
+    approval_status: "approved" | "pending";
+    needs_correction: boolean;
+  }>
+) {
+  let toReviewCount = 0;
+  let needsReviewCount = 0;
+  let reviewedCount = 0;
+
+  for (const page of pages) {
+    const qaState = getQaOverviewState(page);
+    if (qaState.kind === "to_review") {
+      toReviewCount += 1;
+    } else if (qaState.kind === "needs_review") {
+      needsReviewCount += 1;
+    } else {
+      reviewedCount += 1;
+    }
+  }
+
+  return { toReviewCount, needsReviewCount, reviewedCount };
+}
+
+function getQaOverviewState(page: {
+  current_state: string;
+  approval_status: "approved" | "pending";
+  needs_correction: boolean;
+}) {
+  if (page.current_state === "pending_human_correction" || page.needs_correction) {
+    return {
+      kind: "needs_review" as const,
+      reviewLabel: "In review",
+      reviewVariant: "warning" as const,
+      needsReview: true,
+      showActions: false,
+      rowClass: "bg-orange-50/60 hover:bg-orange-50/80",
+    };
+  }
+
+  if (page.current_state === "ptiff_qa_pending") {
+    if (page.approval_status === "approved") {
+      return {
+        kind: "reviewed" as const,
+        reviewLabel: "Approved",
+        reviewVariant: "success" as const,
+        needsReview: false,
+        showActions: false,
+        rowClass: "bg-slate-50/60",
+      };
+    }
+
+    return {
+      kind: "to_review" as const,
+      reviewLabel: "To review",
+      reviewVariant: "warning" as const,
+      needsReview: false,
+      showActions: true,
+      rowClass: "hover:bg-amber-50/60",
+    };
+  }
+
+  return {
+    kind: "reviewed" as const,
+    reviewLabel: "Reviewed",
+    reviewVariant: "success" as const,
+    needsReview: false,
+    showActions: false,
+    rowClass: "bg-slate-50/60",
+  };
 }

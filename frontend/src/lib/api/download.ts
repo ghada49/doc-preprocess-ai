@@ -30,7 +30,7 @@ export async function downloadJobOutputZip(jobId: string): Promise<void> {
   });
 
   if (!response.ok) {
-    throw new Error(`Download failed: ${response.status} ${response.statusText}`);
+    throw new Error("Download failed.");
   }
 
   const blob = await response.blob();
@@ -38,7 +38,7 @@ export async function downloadJobOutputZip(jobId: string): Promise<void> {
 
   const anchor = document.createElement("a");
   anchor.href = objectUrl;
-  anchor.download = `job_${jobId}_output.zip`;
+  anchor.download = `libraryai_results_${jobId}.zip`;
   document.body.appendChild(anchor);
   anchor.click();
   document.body.removeChild(anchor);

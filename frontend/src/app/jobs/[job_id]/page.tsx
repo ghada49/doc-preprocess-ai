@@ -1,11 +1,9 @@
 "use client";
 
-import { Fragment, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { useQuery } from "@tanstack/react-query";
 import {
-  ChevronDown,
-  ChevronRight,
   RefreshCw,
   FileSearch,
   CheckCircle,
@@ -14,17 +12,19 @@ import {
   Clock,
   Download,
   Eye,
+  LayoutGrid,
+  ChevronDown,
+  ChevronRight,
 } from "lucide-react";
 import { getJob } from "@/lib/api/jobs";
 import { downloadJobOutputZip } from "@/lib/api/download";
 import { UserShell } from "@/components/layout/user-shell";
+import { LayoutOverlay } from "@/components/jobs/layout-overlay";
 import { PageHeader } from "@/components/shared/page-header";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ArtifactImage } from "@/components/shared/artifact-image";
 import { ArtifactLinkButton } from "@/components/shared/artifact-link-button";
-import { LayoutOverlay } from "@/components/jobs/layout-overlay";
 import { Button } from "@/components/ui/button";
-import { Badge } from "@/components/ui/badge";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorBanner } from "@/components/shared/error-banner";
 import { Spinner } from "@/components/ui/spinner";
@@ -36,13 +36,10 @@ import {
 } from "@/components/ui/tooltip";
 import {
   formatDate,
-  formatRelative,
   formatDuration,
-  formatScore,
   truncateId,
   hasActivePages,
   isJobActive,
-  pageStateLabel,
   reviewReasonLabel,
 } from "@/lib/utils";
 import { cn } from "@/lib/utils";
@@ -51,8 +48,10 @@ import type { JobPage } from "@/types/api";
 export default function JobDetailPage() {
   const { job_id } = useParams<{ job_id: string }>();
   const router = useRouter();
-  const [expandedLayoutKey, setExpandedLayoutKey] = useState<string | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
+  const [expandedLayoutKey, setExpandedLayoutKey] = useState<string | null | undefined>(
+    undefined
+  );
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["job", job_id],
@@ -69,13 +68,32 @@ export default function JobDetailPage() {
     },
   });
 
+  const pages = data?.pages ?? [];
+  const operationalPages = filterOperationalPages(pages);
+  const supportsLayoutResults = data?.summary?.pipeline_mode !== "preprocess";
+
+  useEffect(() => {
+    setExpandedLayoutKey(undefined);
+  }, [job_id]);
+
+  useEffect(() => {
+    if (!supportsLayoutResults || expandedLayoutKey !== undefined) return;
+    const firstLayoutPage = operationalPages.find(
+      (page) => page.output_layout_uri && (page.output_image_uri ?? page.input_image_uri)
+    );
+    if (!firstLayoutPage) {
+      setExpandedLayoutKey(null);
+      return;
+    }
+    setExpandedLayoutKey(`${firstLayoutPage.page_number}-${firstLayoutPage.sub_page_index ?? 0}`);
+  }, [expandedLayoutKey, operationalPages, supportsLayoutResults]);
+
   async function handleDownloadZip() {
     setIsDownloading(true);
     try {
       await downloadJobOutputZip(job_id);
     } catch {
-      // toast is not imported here; use alert as fallback
-      alert("Download failed. Please try again.");
+      alert("There was a problem downloading results. Please try again.");
     } finally {
       setIsDownloading(false);
     }
@@ -83,7 +101,7 @@ export default function JobDetailPage() {
 
   if (isLoading) {
     return (
-      <UserShell breadcrumbs={[{ label: "My Jobs", href: "/jobs" }, { label: "Loading…" }]}>
+      <UserShell breadcrumbs={[{ label: "Documents", href: "/jobs" }, { label: "Loading..." }]}>
         <div className="flex items-center justify-center py-20">
           <Spinner size="lg" />
         </div>
@@ -93,24 +111,28 @@ export default function JobDetailPage() {
 
   if (isError || !data) {
     return (
-      <UserShell breadcrumbs={[{ label: "My Jobs", href: "/jobs" }, { label: "Error" }]}>
+      <UserShell breadcrumbs={[{ label: "Documents", href: "/jobs" }, { label: "Not found" }]}>
         <div className="p-6">
-          <ErrorBanner variant="fullscreen" title="Job Not Found" message="This job could not be loaded." />
+          <ErrorBanner
+            variant="fullscreen"
+            title="Upload not found"
+            message="This upload could not be loaded."
+          />
         </div>
       </UserShell>
     );
   }
 
-  const { summary, pages } = data;
-  const operationalPages = filterOperationalPages(pages);
+  const summary = data.summary;
   const isActive = isJobActive(summary.status) || hasActivePages(operationalPages);
+  const hasSplitPages = operationalPages.some((page) => page.sub_page_index != null);
 
   return (
     <UserShell
-      breadcrumbs={[
-        { label: "My Jobs", href: "/jobs" },
-        { label: truncateId(summary.job_id, 8) + "…" },
-      ]}
+        breadcrumbs={[
+          { label: "Documents", href: "/jobs" },
+          { label: summary.collection_id || `Upload ${truncateId(summary.job_id, 6)}` },
+        ]}
       headerRight={
         <Button
           variant="ghost"
@@ -119,19 +141,23 @@ export default function JobDetailPage() {
           className="gap-1.5 text-slate-500"
         >
           <RefreshCw className={cn("h-3.5 w-3.5", isFetching && "animate-spin")} />
-          {isActive && <span className="text-xs text-indigo-600">Live</span>}
+          {isActive && <span className="text-xs text-sky-600">Updating</span>}
         </Button>
       }
     >
       <TooltipProvider>
-        <div className="p-6 space-y-6 max-w-6xl">
-          {/* Header */}
+        <div className="relative z-10 max-w-6xl space-y-6 p-6">
           <PageHeader
-            title={`Job ${truncateId(summary.job_id, 12)}…`}
+            title={summary.collection_id || `Upload ${truncateId(summary.job_id, 8)}`}
+            description={
+              supportsLayoutResults
+                ? "Review progress, open finished pages, inspect page layout, and download results when they are ready."
+                : "Review progress, open finished pages, and download results when they are ready."
+            }
             icon={FileSearch}
             badge={<StatusBadge status={summary.status} type="job" />}
             actions={
-              <div className="flex items-center gap-2 flex-wrap">
+              <div className="flex flex-wrap items-center gap-2">
                 {summary.pending_human_correction_count > 0 && (
                   <Button
                     size="sm"
@@ -139,17 +165,18 @@ export default function JobDetailPage() {
                     className="gap-1.5"
                   >
                     <AlertTriangle className="h-3.5 w-3.5" />
-                    {summary.pending_human_correction_count} pages need review
+                    Review {summary.pending_human_correction_count} page
+                    {summary.pending_human_correction_count !== 1 ? "s" : ""}
                   </Button>
                 )}
                 <Button
                   size="sm"
                   variant="outline"
-                  onClick={() => router.push(`/jobs/${summary.job_id}/ptiff-qa`)}
+                    onClick={() => router.push(`/jobs/${summary.job_id}/ptiff-qa`)}
                   className="gap-1.5"
                 >
                   <Eye className="h-3.5 w-3.5" />
-                  QA Viewer
+                  Review results
                 </Button>
                 <Button
                   size="sm"
@@ -159,92 +186,76 @@ export default function JobDetailPage() {
                   className="gap-1.5"
                 >
                   <Download className="h-3.5 w-3.5" />
-                  {isDownloading ? "Downloading…" : "Download ZIP"}
+                  {isDownloading ? "Downloading..." : "Download results"}
                 </Button>
               </div>
             }
           />
 
-          {/* Summary cards */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+          {summary.status === "failed" && (
+            <div className="flex items-start gap-3 rounded-2xl border border-red-200 bg-red-50 p-4 text-sm text-red-700">
+              <XCircle className="mt-0.5 h-4 w-4 shrink-0" />
+              <div>
+                <p className="font-semibold">There was a problem processing this upload.</p>
+                <p className="mt-1 text-xs leading-relaxed">
+                  Please try again or review the pages marked below.
+                </p>
+              </div>
+            </div>
+          )}
+
+          <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+            <SummaryCard label="Pages" value={summary.page_count} color="text-slate-900" />
             <SummaryCard
-              label="Total Pages"
-              value={summary.page_count}
-              color="text-slate-900"
-            />
-            <SummaryCard
-              label="Accepted"
+              label="Ready"
               value={summary.accepted_count}
               color="text-emerald-600"
               icon={<CheckCircle className="h-3.5 w-3.5" />}
             />
             <SummaryCard
-              label="Review"
-              value={summary.review_count}
-              color="text-yellow-600"
-              icon={<Clock className="h-3.5 w-3.5" />}
+              label="Needs review"
+              value={summary.pending_human_correction_count}
+              color="text-orange-600"
+              icon={<AlertTriangle className="h-3.5 w-3.5" />}
             />
             <SummaryCard
-              label="Failed"
+              label="Issues"
               value={summary.failed_count}
               color="text-red-500"
               icon={<XCircle className="h-3.5 w-3.5" />}
             />
           </div>
 
-          {/* Job metadata */}
-          <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 text-xs">
+          <div className="surface-panel p-5">
+            <div className="grid grid-cols-2 gap-4 text-xs sm:grid-cols-4">
               <MetaField label="Collection" value={summary.collection_id} />
               <MetaField label="Material" value={summary.material_type} />
-              <MetaField label="Pipeline" value={summary.pipeline_mode} />
-              <MetaField label="Policy" value={summary.policy_version} />
-              <MetaField
-                label="Shadow"
-                value={
-                  <Badge variant={summary.shadow_mode ? "warning" : "muted"}>
-                    {summary.shadow_mode ? "On" : "Off"}
-                  </Badge>
-                }
-              />
-              <MetaField
-                label="Reading Direction"
-                value={
-                  summary.reading_direction ? (
-                    <ReadingDirectionBadge direction={summary.reading_direction} />
-                  ) : (
-                    <span className="text-slate-400">—</span>
-                  )
-                }
-              />
-              <MetaField label="Created" value={formatDate(summary.created_at)} />
+              <MetaField label="Started" value={formatDate(summary.created_at)} />
               <MetaField
                 label="Completed"
-                value={summary.completed_at ? formatDate(summary.completed_at) : "—"}
+                value={summary.completed_at ? formatDate(summary.completed_at) : "Still processing"}
               />
             </div>
 
-            {/* Progress bar */}
             {summary.page_count > 0 && (
-              <div className="mt-5 pt-4 border-t border-slate-200">
-                <div className="flex items-center justify-between mb-2">
-                  <span className="text-2xs text-slate-500">Pipeline progress</span>
+              <div className="mt-5 border-t border-slate-200 pt-4">
+                <div className="mb-2 flex items-center justify-between">
+                  <span className="text-2xs text-slate-500">Progress</span>
                   <span className="text-2xs text-slate-500">
-                    {summary.accepted_count + summary.review_count + summary.failed_count} / {summary.page_count} terminal
+                    {Math.min(
+                      summary.page_count,
+                      summary.accepted_count +
+                        summary.review_count +
+                        summary.failed_count +
+                        summary.pending_human_correction_count
+                    )}{" "}
+                    / {summary.page_count} pages
                   </span>
                 </div>
-                <div className="h-2 bg-slate-200 rounded-full overflow-hidden flex">
+                <div className="flex h-2 overflow-hidden rounded-full bg-slate-200">
                   <div
                     className="bg-emerald-500 transition-all"
                     style={{ width: `${(summary.accepted_count / summary.page_count) * 100}%` }}
-                  />
-                  <div
-                    className="bg-yellow-500 transition-all"
-                    style={{ width: `${(summary.review_count / summary.page_count) * 100}%` }}
-                  />
-                  <div
-                    className="bg-red-500 transition-all"
-                    style={{ width: `${(summary.failed_count / summary.page_count) * 100}%` }}
                   />
                   <div
                     className="bg-orange-400 transition-all"
@@ -252,93 +263,104 @@ export default function JobDetailPage() {
                       width: `${(summary.pending_human_correction_count / summary.page_count) * 100}%`,
                     }}
                   />
+                  <div
+                    className="bg-red-500 transition-all"
+                    style={{ width: `${(summary.failed_count / summary.page_count) * 100}%` }}
+                  />
                 </div>
-                <div className="flex items-center gap-3 mt-2">
-                  <LegendDot color="bg-emerald-500" label={`${summary.accepted_count} accepted`} />
-                  <LegendDot color="bg-yellow-500" label={`${summary.review_count} review`} />
-                  <LegendDot color="bg-red-500" label={`${summary.failed_count} failed`} />
+                <div className="mt-2 flex flex-wrap items-center gap-3">
+                  <LegendDot color="bg-emerald-500" label={`${summary.accepted_count} ready`} />
                   {summary.pending_human_correction_count > 0 && (
-                    <LegendDot color="bg-orange-400" label={`${summary.pending_human_correction_count} correction`} />
+                    <LegendDot color="bg-orange-400" label={`${summary.pending_human_correction_count} need review`} />
+                  )}
+                  {summary.failed_count > 0 && (
+                    <LegendDot color="bg-red-500" label={`${summary.failed_count} issue${summary.failed_count !== 1 ? "s" : ""}`} />
                   )}
                 </div>
               </div>
             )}
           </div>
 
-          {/* Pages table */}
           <div>
-            <h2 className="text-sm font-semibold text-slate-800 mb-3">
+            <h2 className="mb-3 text-sm font-semibold text-slate-800">
               Pages
-              <span className="ml-2 text-xs text-slate-400 font-normal">({operationalPages.length})</span>
+              <span className="ml-2 text-xs font-normal text-slate-400">
+                ({operationalPages.length})
+              </span>
             </h2>
-            <div className="bg-white border border-slate-200 rounded-xl overflow-hidden shadow-sm">
+            <div className="surface-panel overflow-hidden p-0">
               <table className="w-full data-table">
-                {(() => {
-                  const hasSplitPages = operationalPages.some(p => p.sub_page_index != null);
-                  return (
-                    <>
-                      <thead>
-                        <tr>
-                          <th className="w-12">#</th>
-                          {hasSplitPages && <th className="w-10">Order</th>}
-                          <th>State</th>
-                          <th>Routing</th>
-                          <th>Review Reasons</th>
-                          <th>Quality</th>
-                          <th>Time</th>
-                          <th>Output</th>
-                          <th></th>
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {operationalPages.map((page) => {
-                          const pageKey = `${page.page_number}-${page.sub_page_index ?? 0}`;
-                          const isLayoutOpen = expandedLayoutKey === pageKey;
-                          const displayImageUri = page.output_image_uri ?? page.input_image_uri;
-
-                          return (
-                            <Fragment key={pageKey}>
-                              <PageRow
-                                page={page}
-                                showOrderColumn={hasSplitPages}
-                                isLayoutOpen={isLayoutOpen}
-                                onToggleLayout={() =>
-                                  setExpandedLayoutKey((current) =>
-                                    current === pageKey ? null : pageKey
-                                  )
-                                }
-                                onOpenWorkspace={() =>
-                                  router.push(
-                                    `/queue/${summary.job_id}/${page.page_number}/workspace${
-                                      page.sub_page_index != null
-                                        ? `?sub_page_index=${page.sub_page_index}`
-                                        : ""
-                                    }`
-                                  )
-                                }
-                              />
-                              {isLayoutOpen && (
-                                <tr className="bg-slate-50/80">
-                                  <td colSpan={hasSplitPages ? 9 : 8} className="px-4 py-4">
-                                    <LayoutOverlay
-                                      imageUri={displayImageUri}
-                                      layoutUri={page.output_layout_uri}
-                                      pageLabel={`Page ${page.page_number}${
-                                        page.sub_page_index != null
-                                          ? ` ${page.sub_page_index === 0 ? "Left" : "Right"}`
-                                          : ""
-                                      }`}
-                                    />
-                                  </td>
-                                </tr>
-                              )}
-                            </Fragment>
-                          );
-                        })}
-                      </tbody>
-                    </>
-                  );
-                })()}
+                <thead>
+                  <tr>
+                    <th className="w-14">Page</th>
+                    {hasSplitPages && <th className="w-24">Split</th>}
+                    <th>Status</th>
+                    <th>Message</th>
+                    <th>Time</th>
+                    <th>Result</th>
+                    <th>Actions</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {isFetching && operationalPages.length === 0 ? (
+                    Array.from({ length: 6 }).map((_, index) => (
+                      <tr key={index}>
+                        {Array.from({ length: hasSplitPages ? 7 : 6 }).map((__, cell) => (
+                          <td key={cell} className="px-4 py-3.5">
+                            <Skeleton className="h-4 w-full" />
+                          </td>
+                        ))}
+                      </tr>
+                    ))
+                  ) : (
+                      operationalPages.map((page) => (
+                      <Fragment key={`${page.page_number}-${page.sub_page_index ?? 0}`}>
+                        <PageRow
+                          page={page}
+                          showSplitColumn={hasSplitPages}
+                          isLayoutOpen={
+                            expandedLayoutKey ===
+                            `${page.page_number}-${page.sub_page_index ?? 0}`
+                          }
+                          onToggleLayout={() =>
+                            setExpandedLayoutKey((current) => {
+                              const nextKey = `${page.page_number}-${page.sub_page_index ?? 0}`;
+                              return current === nextKey ? null : nextKey;
+                            })
+                          }
+                          onOpenWorkspace={() =>
+                            router.push(
+                              `/queue/${summary.job_id}/${page.page_number}/workspace${
+                                page.sub_page_index != null
+                                  ? `?sub_page_index=${page.sub_page_index}`
+                                  : ""
+                              }`
+                            )
+                          }
+                        />
+                        {expandedLayoutKey ===
+                          `${page.page_number}-${page.sub_page_index ?? 0}` &&
+                          page.output_layout_uri &&
+                          (page.output_image_uri ?? page.input_image_uri) && (
+                            <tr className="bg-slate-50/80">
+                              <td colSpan={hasSplitPages ? 7 : 6} className="px-4 py-4">
+                                <LayoutOverlay
+                                  imageUri={page.output_image_uri ?? page.input_image_uri}
+                                  layoutUri={page.output_layout_uri}
+                                  pageLabel={`Page ${page.page_number}${
+                                    page.sub_page_index != null
+                                      ? ` ${page.sub_page_index === 0 ? "Left" : "Right"}`
+                                      : ""
+                                  }`}
+                                  userMode
+                                />
+                              </td>
+                            </tr>
+                          )}
+                      </Fragment>
+                    ))
+                  )}
+                </tbody>
               </table>
             </div>
           </div>
@@ -359,8 +381,6 @@ function filterOperationalPages(pages: JobPage[]): JobPage[] {
     return true;
   });
 
-  // Sort by (page_number, reading_order, sub_page_index) so reading_order is honoured
-  // when available. Pages without reading_order fall back to physical sub_page_index order.
   return filtered.sort((a, b) => {
     if (a.page_number !== b.page_number) return a.page_number - b.page_number;
     const aOrder = a.reading_order ?? (a.sub_page_index != null ? a.sub_page_index + 1 : 0);
@@ -369,68 +389,45 @@ function filterOperationalPages(pages: JobPage[]): JobPage[] {
   });
 }
 
-function ReadingDirectionBadge({ direction }: { direction: "ltr" | "rtl" | "unresolved" }) {
-  if (direction === "ltr") {
-    return (
-      <span className="inline-flex items-center gap-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded px-1.5 py-0.5">
-        LTR →
-      </span>
-    );
-  }
-  if (direction === "rtl") {
-    return (
-      <span className="inline-flex items-center gap-1 text-xs font-medium text-purple-700 bg-purple-50 border border-purple-200 rounded px-1.5 py-0.5">
-        ← RTL
-      </span>
-    );
-  }
-  return (
-    <span className="inline-flex items-center gap-1 text-xs font-medium text-slate-500 bg-slate-100 border border-slate-200 rounded px-1.5 py-0.5">
-      ?
-    </span>
-  );
-}
-
 function PageRow({
   page,
-  showOrderColumn,
+  showSplitColumn,
   isLayoutOpen,
   onToggleLayout,
   onOpenWorkspace,
 }: {
   page: JobPage;
-  showOrderColumn: boolean;
+  showSplitColumn: boolean;
   isLayoutOpen: boolean;
   onToggleLayout: () => void;
   onOpenWorkspace: () => void;
 }) {
-  const isAttention = page.status === "pending_human_correction";
+  const needsReview = page.status === "pending_human_correction";
+  const hasIssue = page.status === "failed";
   const displayImageUri = page.output_image_uri ?? page.input_image_uri;
-  const canInspectLayout = Boolean(displayImageUri && page.output_layout_uri);
+  const canInspectLayout = Boolean(page.output_layout_uri && displayImageUri);
 
   return (
     <tr
       className={cn(
-        isAttention && "bg-orange-50/70 hover:bg-orange-50",
-        !isAttention && "hover:bg-slate-50"
+        needsReview && "bg-orange-50/70 hover:bg-orange-50",
+        hasIssue && "bg-red-50/60 hover:bg-red-50",
+        !needsReview && !hasIssue && "hover:bg-slate-50"
       )}
     >
       <td>
-        <span className="text-xs text-slate-400 tabular-nums font-mono">
+        <span className="font-mono text-xs tabular-nums text-slate-500">
           {page.page_number}
-          {page.sub_page_index != null && (
-            <span className="ml-1 text-2xs font-sans font-medium text-indigo-400">
-              {page.sub_page_index === 0 ? "Left" : "Right"}
-            </span>
-          )}
         </span>
       </td>
-      {showOrderColumn && (
+      {showSplitColumn && (
         <td>
-          <span className="text-xs text-slate-400 tabular-nums font-mono">
-            {page.sub_page_index != null && page.reading_order != null
-              ? page.reading_order
-              : "—"}
+          <span className="text-xs font-medium text-slate-500">
+            {page.sub_page_index == null
+              ? "-"
+              : page.sub_page_index === 0
+                ? "Left page"
+                : "Right page"}
           </span>
         </td>
       )}
@@ -438,68 +435,52 @@ function PageRow({
         <StatusBadge status={page.status} type="page" />
       </td>
       <td>
-        <span className="text-xs text-slate-500">{page.routing_path ?? "—"}</span>
+        <p className="max-w-sm text-xs leading-relaxed text-slate-600">
+          {pageMessage(page)}
+        </p>
       </td>
       <td>
-        <div className="flex flex-wrap gap-1">
-          {page.review_reasons?.map((r) => (
-            <span
-              key={r}
-              className="text-2xs bg-orange-50 text-orange-700 border border-orange-200 rounded px-1.5 py-0.5"
-            >
-              {reviewReasonLabel(r)}
+        <Tooltip>
+          <TooltipTrigger asChild>
+            <span className="cursor-default text-xs tabular-nums text-slate-500">
+              {formatDuration(page.processing_time_ms)}
             </span>
-          ))}
-        </div>
+          </TooltipTrigger>
+          <TooltipContent>Processing time</TooltipContent>
+        </Tooltip>
       </td>
       <td>
-        {page.quality_summary ? (
-          <div className="flex gap-2 text-2xs text-slate-500">
-            {page.quality_summary.blur_score != null && (
-              <span>blur: {formatScore(page.quality_summary.blur_score, 2)}</span>
-            )}
-            {page.quality_summary.skew_residual != null && (
-              <span>skew: {formatScore(page.quality_summary.skew_residual, 2)}</span>
-            )}
-          </div>
-        ) : (
-          <span className="text-slate-300 text-xs">—</span>
-        )}
-      </td>
-      <td>
-        <span className="text-xs text-slate-500 tabular-nums">
-          {formatDuration(page.processing_time_ms)}
-        </span>
-      </td>
-      <td>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-3">
           <ArtifactImage
-            uri={displayImageUri}
+            uri={page.output_image_uri}
+            fallbackUri={page.input_image_uri}
             containerClassName="h-9 w-8 rounded border border-slate-200"
             className="rounded object-cover"
             fallbackText=""
           />
-          <ArtifactLinkButton uri={displayImageUri} label="Open" size="xs" />
+          <div className="flex flex-wrap items-center gap-1.5">
+            <ArtifactLinkButton uri={displayImageUri} label="Open page" size="xs" />
+            {canInspectLayout && (
+              <Button
+                size="xs"
+                variant={isLayoutOpen ? "secondary" : "ghost"}
+                onClick={onToggleLayout}
+                className="gap-1"
+              >
+                {isLayoutOpen ? (
+                  <ChevronDown className="h-3 w-3" />
+                ) : (
+                  <LayoutGrid className="h-3 w-3" />
+                )}
+                Layout
+              </Button>
+            )}
+          </div>
         </div>
       </td>
       <td>
         <div className="flex flex-wrap items-center gap-1.5">
-          {canInspectLayout && (
-            <Button
-              size="xs"
-              variant={isLayoutOpen ? "secondary" : "ghost"}
-              onClick={onToggleLayout}
-              className="gap-1"
-            >
-              {isLayoutOpen ? (
-                <ChevronDown className="h-3 w-3" />
-              ) : (
-                <ChevronRight className="h-3 w-3" />
-              )}
-              Layout
-            </Button>
-          )}
-          {isAttention && (
+          {needsReview && (
             <Button size="xs" onClick={onOpenWorkspace} className="gap-1">
               <ChevronRight className="h-3 w-3" />
               Review
@@ -509,6 +490,24 @@ function PageRow({
       </td>
     </tr>
   );
+}
+
+function pageMessage(page: JobPage): string {
+  if (page.status === "failed") {
+    return "We could not process this page automatically.";
+  }
+  if (page.status === "pending_human_correction") {
+    return page.review_reasons?.length
+      ? page.review_reasons.map(reviewReasonLabel).join(", ")
+      : "Please review this page.";
+  }
+  if (page.status === "accepted") {
+    return "Ready to use.";
+  }
+  if (page.status === "review") {
+    return "Reviewed.";
+  }
+  return "Processing this page.";
 }
 
 function SummaryCard({
@@ -523,8 +522,8 @@ function SummaryCard({
   icon?: React.ReactNode;
 }) {
   return (
-    <div className="bg-white border border-slate-200 rounded-xl p-4 shadow-sm">
-      <p className="text-2xs text-slate-500 uppercase tracking-wider mb-2">{label}</p>
+    <div className="surface-panel p-4">
+      <p className="mb-2 text-2xs uppercase tracking-wider text-slate-500">{label}</p>
       <div className={cn("flex items-center gap-1.5 text-xl font-semibold tabular-nums", color)}>
         {icon}
         {value}
@@ -536,8 +535,8 @@ function SummaryCard({
 function MetaField({ label, value }: { label: string; value: React.ReactNode }) {
   return (
     <div>
-      <p className="text-2xs text-slate-400 mb-0.5">{label}</p>
-      <p className="text-xs text-slate-700 capitalize">{value}</p>
+      <p className="mb-0.5 text-2xs text-slate-400">{label}</p>
+      <p className="text-xs capitalize text-slate-700">{value}</p>
     </div>
   );
 }

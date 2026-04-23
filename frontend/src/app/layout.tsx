@@ -5,9 +5,9 @@ import { Providers } from "./providers";
 export const metadata: Metadata = {
   title: {
     template: "%s | LibraryAI",
-    default: "LibraryAI — Document AI Operations",
+    default: "LibraryAI - Document Processing",
   },
-  description: "Production console for the LibraryAI document digitization pipeline",
+  description: "Upload, review, and download clean document scans with LibraryAI.",
 };
 
 export default function RootLayout({
