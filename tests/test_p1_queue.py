@@ -34,6 +34,7 @@ Invariants verified
 from __future__ import annotations
 
 import json
+import types
 import uuid
 from datetime import datetime
 
@@ -498,19 +499,57 @@ class TestRequeueTask:
 # ---------------------------------------------------------------------------
 
 
-class TestRebuildQueueFromDb:
-    def test_stub_does_not_raise(self, r: fakeredis.FakeRedis) -> None:
-        rebuild_queue_from_db(r, get_queued_pages_fn=None)
+def _fake_page(
+    page_id: str,
+    job_id: str = "job-001",
+    page_number: int = 1,
+    sub_page_index: int | None = None,
+) -> object:
+    """Minimal DB-row stub for rebuild_queue_from_db tests."""
+    return types.SimpleNamespace(
+        page_id=page_id,
+        job_id=job_id,
+        page_number=page_number,
+        sub_page_index=sub_page_index,
+    )
 
-    def test_stub_does_not_modify_main_queue(self, r: fakeredis.FakeRedis) -> None:
+
+class TestRebuildQueueFromDb:
+    def test_returns_zero_when_no_pages(self, r: fakeredis.FakeRedis) -> None:
+        """Empty DB result → nothing enqueued, returns 0."""
+        assert rebuild_queue_from_db(r, get_queued_pages_fn=lambda: []) == 0
+        assert r.llen(QUEUE_PAGE_TASKS) == 0
+
+    def test_existing_tasks_unaffected_when_no_pages(self, r: fakeredis.FakeRedis) -> None:
+        """Existing main-queue entries are untouched when no pages need requeuing."""
         enqueue_page_task(r, _task())
-        rebuild_queue_from_db(r, get_queued_pages_fn=None)
+        rebuild_queue_from_db(r, get_queued_pages_fn=lambda: [])
         assert r.llen(QUEUE_PAGE_TASKS) == 1
 
-    def test_stub_does_not_modify_processing_list(self, r: fakeredis.FakeRedis) -> None:
+    def test_processing_list_unaffected_when_no_pages(self, r: fakeredis.FakeRedis) -> None:
+        """Processing list is untouched when no pages need requeuing."""
         _enqueue_and_claim(r)
-        rebuild_queue_from_db(r, get_queued_pages_fn=None)
+        rebuild_queue_from_db(r, get_queued_pages_fn=lambda: [])
         assert r.llen(QUEUE_PAGE_TASKS_PROCESSING) == 1
+
+    def test_enqueues_orphaned_page(self, r: fakeredis.FakeRedis) -> None:
+        """Page absent from Redis gets enqueued with retry_count=0."""
+        page = _fake_page("orphan-page-1")
+        count = rebuild_queue_from_db(r, get_queued_pages_fn=lambda: [page])
+        assert count == 1
+        assert r.llen(QUEUE_PAGE_TASKS) == 1
+        enqueued = PageTask.model_validate_json(r.lrange(QUEUE_PAGE_TASKS, 0, -1)[0])  # type: ignore[index]
+        assert enqueued.page_id == "orphan-page-1"
+        assert enqueued.retry_count == 0
+
+    def test_skips_page_already_in_main_queue(self, r: fakeredis.FakeRedis) -> None:
+        """Page already present in the main queue is not re-enqueued."""
+        existing = _task()  # page_id defaults to "page-001"
+        enqueue_page_task(r, existing)
+        page = _fake_page(existing.page_id)
+        count = rebuild_queue_from_db(r, get_queued_pages_fn=lambda: [page])
+        assert count == 0
+        assert r.llen(QUEUE_PAGE_TASKS) == 1
 
 
 # ---------------------------------------------------------------------------

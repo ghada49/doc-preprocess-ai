@@ -25,5 +25,9 @@ RUN uv pip install --system \
     "prometheus-client>=0.20.0" \
     -r /tmp/requirements-real.txt
 
-# Source code is volume-mounted in development (see docker-compose.yml)
-# CMD is supplied by docker-compose.yml
+COPY shared/ ./shared/
+COPY services/iep1d/ ./services/iep1d/
+COPY models/iep1d/ /opt/models/iep1d/
+
+EXPOSE 8003
+CMD ["uvicorn", "services.iep1d.app.main:app", "--host", "0.0.0.0", "--port", "8003"]

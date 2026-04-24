@@ -285,8 +285,10 @@ class TestServiceHealthSchema:
         return session
 
     def test_200_correct_schema(self, inject_admin: Any) -> None:
-        """Response must contain exactly the 6 documented fields."""
-        session = self._make_health_session(10, 9, 5, 5, 20, 18, 2, 8, 6)
+        """Response must contain exactly the 8 documented fields."""
+        # scalar order: 3 stages × 2 scalars (total/success) + human_reviewed
+        # + total_with_agreement_window + agreed_window + rescue_attempted + policy_skips_count
+        session = self._make_health_session(10, 9, 5, 5, 20, 18, 2, 8, 6, 0, 0)
         client = inject_admin(session, _make_redis())
         resp = client.get("/v1/admin/service-health")
         assert resp.status_code == 200
@@ -297,20 +299,22 @@ class TestServiceHealthSchema:
             "layout_success_rate",
             "human_review_throughput_rate",
             "structural_agreement_rate",
+            "rescue_rate",
+            "policy_skips_count",
             "window_hours",
         }
         assert set(data.keys()) == expected_keys
 
     def test_default_window_hours_echoed(self, inject_admin: Any) -> None:
         """window_hours must default to 24 and be echoed back."""
-        session = self._make_health_session(0, 0, 0, 0, 0, 0, 0, 0, 0)
+        session = self._make_health_session(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         client = inject_admin(session, _make_redis())
         data = client.get("/v1/admin/service-health").json()
         assert data["window_hours"] == 24
 
     def test_custom_window_hours_echoed(self, inject_admin: Any) -> None:
         """Custom window_hours=48 must be echoed back."""
-        session = self._make_health_session(0, 0, 0, 0, 0, 0, 0, 0, 0)
+        session = self._make_health_session(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         client = inject_admin(session, _make_redis())
         data = client.get("/v1/admin/service-health", params={"window_hours": 48}).json()
         assert data["window_hours"] == 48
@@ -332,14 +336,14 @@ class TestServiceHealthSchema:
     def test_preprocessing_success_rate(self, inject_admin: Any) -> None:
         """10 invocations, 8 success → 0.8."""
         # preprocessing total=10, success=8; rest zero
-        session = self._make_health_session(10, 8, 0, 0, 0, 0, 0, 0, 0)
+        session = self._make_health_session(10, 8, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         client = inject_admin(session, _make_redis())
         data = client.get("/v1/admin/service-health").json()
         assert data["preprocessing_success_rate"] == 0.8
 
     def test_zero_denominator_gives_zero_rate(self, inject_admin: Any) -> None:
         """All stages empty within window → all rates 0.0."""
-        session = self._make_health_session(0, 0, 0, 0, 0, 0, 0, 0, 0)
+        session = self._make_health_session(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
         client = inject_admin(session, _make_redis())
         data = client.get("/v1/admin/service-health").json()
         assert data["preprocessing_success_rate"] == 0.0
@@ -350,15 +354,15 @@ class TestServiceHealthSchema:
     def test_human_review_throughput_rate(self, inject_admin: Any) -> None:
         """48 human-corrected pages over 24h window → 2.0 pages/hour."""
         # preprocessing=0/0, rectification=0/0, layout=0/0, human_reviewed=48,
-        # total_with_agreement=0, agreed=0
-        session = self._make_health_session(0, 0, 0, 0, 0, 0, 48, 0, 0)
+        # total_with_agreement=0, agreed=0, rescue_attempted=0, policy_skips=0
+        session = self._make_health_session(0, 0, 0, 0, 0, 0, 48, 0, 0, 0, 0)
         client = inject_admin(session, _make_redis())
         data = client.get("/v1/admin/service-health").json()
         assert data["human_review_throughput_rate"] == 2.0
 
     def test_structural_agreement_rate_windowed(self, inject_admin: Any) -> None:
         """60 agreed / 80 with_agreement = 0.75."""
-        session = self._make_health_session(0, 0, 0, 0, 0, 0, 0, 80, 60)
+        session = self._make_health_session(0, 0, 0, 0, 0, 0, 0, 80, 60, 0, 0)
         client = inject_admin(session, _make_redis())
         data = client.get("/v1/admin/service-health").json()
         assert data["structural_agreement_rate"] == 0.75

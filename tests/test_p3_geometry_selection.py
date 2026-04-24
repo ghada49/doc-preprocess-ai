@@ -372,8 +372,11 @@ class TestSanityAreaFraction:
         assert "area_fraction_plausible" in result.failed_checks
 
     def test_fraction_above_max_fails(self) -> None:
+        # Use an explicit max so the check fires (default is 1.0, making max
+        # effectively unreachable since fractions are <= 1.0).
+        cfg = PreprocessingGateConfig(geometry_sanity_area_max_fraction=0.98)
         r = _region(page_area_fraction=0.99)
-        result = check_sanity(_response(pages=[r]), "book", PROXY_W, PROXY_H, CONFIG)
+        result = check_sanity(_response(pages=[r]), "book", PROXY_W, PROXY_H, cfg)
         assert "area_fraction_plausible" in result.failed_checks
 
     def test_custom_config_boundary(self) -> None:

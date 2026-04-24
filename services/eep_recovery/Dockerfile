@@ -33,5 +33,9 @@ RUN uv pip install --system \
     "PyYAML>=6.0" \
     "bcrypt>=4.0"
 
-# Source code is volume-mounted in development (see docker-compose.yml)
-# CMD is supplied by docker-compose.yml
+COPY shared/ ./shared/
+COPY services/eep/ ./services/eep/
+COPY services/eep_recovery/ ./services/eep_recovery/
+
+EXPOSE 9101
+CMD ["uvicorn", "services.eep_recovery.app.main:app", "--host", "0.0.0.0", "--port", "9101"]

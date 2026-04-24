@@ -558,6 +558,7 @@ class TestSplitCorrectionEndpoint:
 
     def test_split_uses_pillow_fallback_when_cv2_cannot_decode(self) -> None:
         """cv2.imdecode returns None for PTIFF/CCITT TIFFs; Pillow must be used instead."""
+        pytest.importorskip("PIL")
         from PIL import Image as _PILImage
 
         job = _make_job()

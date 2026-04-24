@@ -92,6 +92,9 @@ RUN if [ "$ENABLE_PADDLE_BACKEND" = "true" ]; then \
 # sidecar /opt/models/iep2a/paddle/PP-DocLayoutV2.version. Local development may
 # mount a replacement directory under /dev-models/iep2a and point
 # IEP2A_PADDLE_LOCAL_MODEL_DIR at it.
-#
-# Source code is volume-mounted in development (see docker-compose.yml).
-# CMD is supplied by docker-compose.yml.
+
+COPY shared/ ./shared/
+COPY services/iep2a/ ./services/iep2a/
+
+EXPOSE 8004
+CMD ["uvicorn", "services.iep2a.app.main:app", "--host", "0.0.0.0", "--port", "8004"]

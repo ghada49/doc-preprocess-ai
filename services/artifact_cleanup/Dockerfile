@@ -33,5 +33,8 @@ RUN uv pip install --system \
     "PyYAML>=6.0" \
     "bcrypt>=4.0"
 
-# Source code is volume-mounted in development (see docker-compose.yml)
-# CMD is supplied by docker-compose.yml
+COPY shared/ ./shared/
+COPY services/artifact_cleanup/ ./services/artifact_cleanup/
+
+EXPOSE 9106
+CMD ["uvicorn", "services.artifact_cleanup.app.main:app", "--host", "0.0.0.0", "--port", "9106"]

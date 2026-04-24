@@ -862,6 +862,7 @@ class TestStateTransitionGolden:
         assert allowed_next("queued") == frozenset({"preprocessing", "failed"})
 
     def test_allowed_next_accepted_flag_only(self) -> None:
-        """allowed_next('accepted') returns {pending_human_correction}.
-        Reviewers may flag an accepted page for re-correction from the PTIFF QA viewer."""
-        assert allowed_next("accepted") == frozenset({"pending_human_correction"})
+        """allowed_next('accepted') returns {pending_human_correction, semantic_norm}.
+        Reviewers may flag an accepted page for re-correction; sibling corrections
+        can also re-run pair-level IEP1E from accepted."""
+        assert allowed_next("accepted") == frozenset({"pending_human_correction", "semantic_norm"})

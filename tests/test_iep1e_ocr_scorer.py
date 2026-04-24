@@ -140,15 +140,16 @@ class TestScoreRotation:
         best_deg = max(scores, key=lambda d: scores[d][0])
         assert best_deg == 0
 
-    def test_early_exit_skips_180_and_270(self):
-        """When 0° score vastly dominates 90°, 180° and 270° are filled with 0."""
-        # 0° → many rich boxes; 90° → blank → gate triggered → skip 180/270
+    def test_all_rotations_always_scored(self):
+        """All four rotations are always tried — early-exit was removed for correctness."""
+        # 0° → many rich boxes; 90°/180°/270° → blank (mock returns [] for unset keys)
         big_lines = [_make_ocr_line("Hello world " * 10, 0.95)] * 20
-        ocr = _mock_ocr({0: big_lines, 1: []})
+        ocr = _mock_ocr({0: big_lines})
         img = _blank_image()
         scores = score_rotation(img, ocr)
-        # Should only have called OCR twice (0° and 90°)
-        assert ocr.ocr.call_count == 2
+        # All four rotations must be tried (no early exit)
+        assert ocr.ocr.call_count == 4
+        assert scores[0][0] > 0.0
         assert scores[180][0] == 0.0
         assert scores[270][0] == 0.0
 

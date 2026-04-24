@@ -21,7 +21,7 @@ Auto-continue mode with manual QA endpoints (no interference):
   - Gate is blocked by pending correction even in auto_continue mode
 
 Phase definition of done verification:
-  - Corrected page re-enters at ptiff_qa_pending stage
+  - Corrected page transitions to semantic_norm (automation-first refactor)
   - Rejection is terminal (review blocks further corrections and rejections)
   - PTIFF QA gate works before downstream stages in both pipeline modes
 """
@@ -38,10 +38,7 @@ from services.eep.app.db.session import get_session
 from services.eep.app.main import app
 from services.eep.app.redis_client import get_redis
 
-pytestmark = [
-    pytest.mark.skip(reason="ptiff_qa workflow removed in automation-first refactor"),
-    pytest.mark.usefixtures("_bypass_require_user"),
-]
+pytestmark = pytest.mark.usefixtures("_bypass_require_user")
 
 # ── Shared factories ───────────────────────────────────────────────────────────
 
@@ -480,20 +477,40 @@ class TestPhaseDefinitionOfDone:
             return_value=self.mock_backend,
         )
         self._storage_patcher.start()
+        # Image processing mocks — b"artifact" is not a valid TIFF so we bypass
+        # the decode/normalize/encode chain; the test only verifies the state transition.
+        self._decode_patcher = patch(
+            "services.eep.app.correction.apply._decode_split_source_image",
+            return_value=MagicMock(),
+        )
+        self._decode_patcher.start()
+        self._normalize_patcher = patch(
+            "services.eep.app.correction.apply._normalize_human_correction_image",
+            return_value=MagicMock(),
+        )
+        self._normalize_patcher.start()
+        self._encode_patcher = patch(
+            "services.eep.app.correction.apply._encode_tiff_image",
+            return_value=b"fake-tiff",
+        )
+        self._encode_patcher.start()
 
     def teardown_method(self) -> None:
         self._storage_patcher.stop()
+        self._decode_patcher.stop()
+        self._normalize_patcher.stop()
+        self._encode_patcher.stop()
         app.dependency_overrides.clear()
 
     def _inject(self, session: MagicMock) -> None:
         app.dependency_overrides[get_session] = lambda: session
 
-    def test_corrected_page_re_enters_at_ptiff_qa_pending(self) -> None:
+    def test_corrected_page_transitions_to_semantic_norm(self) -> None:
         """
-        DoD: corrected pages re-enter at the correct stage (ptiff_qa_pending).
+        DoD: corrected pages re-enter the pipeline at semantic_norm.
 
-        Submitting a correction transitions the page from pending_human_correction
-        to ptiff_qa_pending, as required before the PTIFF QA gate.
+        After the automation-first refactor, submitting a correction transitions
+        the page from pending_human_correction → semantic_norm (not ptiff_qa_pending).
         """
         job = _make_job(ptiff_qa_mode="manual")
         page = _make_page(status="pending_human_correction")
@@ -518,7 +535,7 @@ class TestPhaseDefinitionOfDone:
             session,
             page.page_id,
             from_state="pending_human_correction",
-            to_state="ptiff_qa_pending",
+            to_state="semantic_norm",
         )
 
     def test_rejection_is_terminal_cannot_correct_from_review(self) -> None:

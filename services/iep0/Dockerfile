@@ -28,5 +28,11 @@ RUN uv pip install --system \
     && pip uninstall -y opencv-python 2>/dev/null; \
     uv pip install --system "opencv-python-headless>=4.9.0" "numpy>=1.26,<2"
 
-# Source code is volume-mounted in development (see docker-compose.yml)
-# CMD is supplied by docker-compose.yml
+COPY shared/ ./shared/
+COPY services/iep0/ ./services/iep0/
+COPY models/iep0/ ./models/iep0/
+
+ENV IEP0_MODEL_PATH=/app/models/iep0/classifier.pt
+
+EXPOSE 8006
+CMD ["uvicorn", "services.iep0.app.main:app", "--host", "0.0.0.0", "--port", "8006"]

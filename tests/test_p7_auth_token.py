@@ -86,13 +86,13 @@ class TestAuthTokenEndpoint:
     def test_valid_credentials_returns_200(self) -> None:
         user = _make_user()
         client = _make_app(mock_user=user)
-        resp = client.post("/v1/auth/token", json={"username": "alice", "password": "secret"})
+        resp = client.post("/v1/auth/token", data={"username": "alice", "password": "secret"})
         assert resp.status_code == 200
 
     def test_response_has_access_token_and_token_type(self) -> None:
         user = _make_user()
         client = _make_app(mock_user=user)
-        resp = client.post("/v1/auth/token", json={"username": "alice", "password": "secret"})
+        resp = client.post("/v1/auth/token", data={"username": "alice", "password": "secret"})
         body = resp.json()
         assert "access_token" in body
         assert body["token_type"] == "bearer"
@@ -100,7 +100,7 @@ class TestAuthTokenEndpoint:
     def test_returned_token_contains_correct_sub(self) -> None:
         user = _make_user(user_id="u-xyz", username="alice", password="secret", role="user")
         client = _make_app(mock_user=user)
-        resp = client.post("/v1/auth/token", json={"username": "alice", "password": "secret"})
+        resp = client.post("/v1/auth/token", data={"username": "alice", "password": "secret"})
         token = resp.json()["access_token"]
         payload: dict[str, Any] = jwt.decode(token, _SECRET_KEY, algorithms=[_ALGORITHM])
         assert payload["sub"] == "u-xyz"
@@ -108,7 +108,7 @@ class TestAuthTokenEndpoint:
     def test_returned_token_contains_correct_role(self) -> None:
         user = _make_user(user_id="u-admin", role="admin", password="adminpass")
         client = _make_app(mock_user=user)
-        resp = client.post("/v1/auth/token", json={"username": "alice", "password": "adminpass"})
+        resp = client.post("/v1/auth/token", data={"username": "alice", "password": "adminpass"})
         token = resp.json()["access_token"]
         payload: dict[str, Any] = jwt.decode(token, _SECRET_KEY, algorithms=[_ALGORITHM])
         assert payload["role"] == "admin"
@@ -116,7 +116,7 @@ class TestAuthTokenEndpoint:
     def test_returned_token_has_exp_claim(self) -> None:
         user = _make_user()
         client = _make_app(mock_user=user)
-        resp = client.post("/v1/auth/token", json={"username": "alice", "password": "secret"})
+        resp = client.post("/v1/auth/token", data={"username": "alice", "password": "secret"})
         token = resp.json()["access_token"]
         payload: dict[str, Any] = jwt.decode(token, _SECRET_KEY, algorithms=[_ALGORITHM])
         assert "exp" in payload
@@ -124,40 +124,40 @@ class TestAuthTokenEndpoint:
     def test_wrong_password_returns_401(self) -> None:
         user = _make_user(password="correct-password")
         client = _make_app(mock_user=user)
-        resp = client.post("/v1/auth/token", json={"username": "alice", "password": "wrong"})
+        resp = client.post("/v1/auth/token", data={"username": "alice", "password": "wrong"})
         assert resp.status_code == 401
 
     def test_unknown_username_returns_401(self) -> None:
         client = _make_app(mock_user=None)  # DB returns None for unknown user
-        resp = client.post("/v1/auth/token", json={"username": "nobody", "password": "x"})
+        resp = client.post("/v1/auth/token", data={"username": "nobody", "password": "x"})
         assert resp.status_code == 401
 
     def test_inactive_user_returns_401(self) -> None:
         user = _make_user(is_active=False)
         client = _make_app(mock_user=user)
-        resp = client.post("/v1/auth/token", json={"username": "alice", "password": "secret"})
+        resp = client.post("/v1/auth/token", data={"username": "alice", "password": "secret"})
         assert resp.status_code == 401
 
     def test_missing_username_returns_422(self) -> None:
         client = _make_app()
-        resp = client.post("/v1/auth/token", json={"password": "secret"})
+        resp = client.post("/v1/auth/token", data={"password": "secret"})
         assert resp.status_code == 422
 
     def test_missing_password_returns_422(self) -> None:
         client = _make_app()
-        resp = client.post("/v1/auth/token", json={"username": "alice"})
+        resp = client.post("/v1/auth/token", data={"username": "alice"})
         assert resp.status_code == 422
 
     def test_empty_body_returns_422(self) -> None:
         client = _make_app()
-        resp = client.post("/v1/auth/token", json={})
+        resp = client.post("/v1/auth/token", data={})
         assert resp.status_code == 422
 
     def test_response_model_is_token_response(self) -> None:
         """Ensure the response is deserializable as TokenResponse."""
         user = _make_user()
         client = _make_app(mock_user=user)
-        resp = client.post("/v1/auth/token", json={"username": "alice", "password": "secret"})
+        resp = client.post("/v1/auth/token", data={"username": "alice", "password": "secret"})
         parsed = TokenResponse.model_validate(resp.json())
         assert parsed.token_type == "bearer"
         assert len(parsed.access_token) > 0

@@ -56,6 +56,7 @@ def _make_job_mock(created_by: str | None = "user-abc") -> MagicMock:
     job.created_at = _NOW
     job.updated_at = _NOW
     job.completed_at = None
+    job.reading_direction = "ltr"
     return job
 
 
