@@ -503,7 +503,6 @@ export interface PolicyRecord {
 export interface UpdatePolicyRequest {
   config_yaml: string;
   justification: string;
-  version: string;
 }
 
 // ---- Model Management -------------------------------------------------------

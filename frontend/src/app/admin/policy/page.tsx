@@ -77,13 +77,11 @@ export default function PolicyPage() {
 
   const [configYaml, setConfigYaml] = useState("");
   const [justification, setJustification] = useState("");
-  const [newVersion, setNewVersion] = useState("");
   const [isDirty, setIsDirty] = useState(false);
 
   useEffect(() => {
     if (policy) {
       setConfigYaml(policy.config_yaml);
-      setNewVersion(bumpVersion(policy.version));
       setIsDirty(false);
     }
   }, [policy]);
@@ -93,7 +91,6 @@ export default function PolicyPage() {
       updatePolicy({
         config_yaml: configYaml,
         justification: justification.trim(),
-        version: newVersion.trim(),
       }),
     onSuccess: (updated) => {
       toast.success(`Policy updated to ${updated.version}`);
@@ -139,7 +136,6 @@ export default function PolicyPage() {
     isDirty &&
     configYaml.trim().length > 0 &&
     justification.trim().length > 0 &&
-    newVersion.trim().length > 0 &&
     !saveMut.isPending;
 
   return (
@@ -241,26 +237,15 @@ export default function PolicyPage() {
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label>New Version Tag</Label>
-              <Input
-                value={newVersion}
-                onChange={(e) => setNewVersion(e.target.value)}
-                placeholder="e.g. v2"
-                className="font-mono"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>
-                Justification <span className="text-red-500">*</span>
-              </Label>
-              <Input
-                value={justification}
-                onChange={(e) => setJustification(e.target.value)}
-                placeholder="Reason for this policy change…"
-              />
-            </div>
+          <div className="space-y-1.5">
+            <Label>
+              Justification <span className="text-red-500">*</span>
+            </Label>
+            <Input
+              value={justification}
+              onChange={(e) => setJustification(e.target.value)}
+              placeholder="Reason for this policy change…"
+            />
           </div>
 
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
@@ -295,8 +280,3 @@ export default function PolicyPage() {
   );
 }
 
-function bumpVersion(version: string): string {
-  const match = version.match(/^v?(\d+)$/);
-  if (match) return `v${parseInt(match[1]) + 1}`;
-  return `${version}-new`;
-}
