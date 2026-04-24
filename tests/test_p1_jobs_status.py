@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 from services.eep.app.auth import CurrentUser, require_user
 from services.eep.app.db.models import Job, JobPage
 from services.eep.app.db.session import get_session
+from services.eep.app.jobs.summary import leaf_pages_from_pages
 from services.eep.app.jobs.status import _derive_job_status, router
 
 # ---------------------------------------------------------------------------
@@ -100,7 +101,9 @@ def _mock_db(job: Job | None, pages: list[JobPage]) -> MagicMock:
     """Return a mock Session that serves the given job and pages."""
     session = MagicMock(spec=Session)
     session.get.return_value = job
-    session.query.return_value.filter.return_value.all.return_value = pages
+    filtered = session.query.return_value.filter.return_value
+    filtered.all.return_value = pages
+    filtered.order_by.return_value.all.return_value = pages
     return session
 
 
@@ -225,7 +228,7 @@ class TestJobSummaryValues:
 
     def test_page_count(self, client_for: Any) -> None:
         r = client_for(_job(page_count=5), [_page()]).get("/v1/jobs/job-001")
-        assert r.json()["summary"]["page_count"] == 5
+        assert r.json()["summary"]["page_count"] == 1
 
     def test_accepted_count(self, client_for: Any) -> None:
         pages = [
@@ -377,6 +380,10 @@ class TestDeriveJobStatusUnit:
         ]
         assert _derive_job_status(pages) == "running"
 
+    def test_semantic_norm_returns_running(self) -> None:
+        pages = [_page(status="semantic_norm")]
+        assert _derive_job_status(pages) == "running"
+
     def test_all_failed_returns_failed(self) -> None:
         pages = [_page(status="failed"), _page(page_id="p2", status="failed")]
         assert _derive_job_status(pages) == "failed"
@@ -391,20 +398,20 @@ class TestDeriveJobStatusUnit:
 
     def test_split_pages_excluded(self) -> None:
         """Split-parent records must not affect derivation."""
-        # One split parent (excluded) + one accepted leaf → done
+        # One split parent (excluded) + one accepted leaf -> done
         pages = [
             _page(page_id="parent", status="split"),
             _page(page_id="child", sub_page_index=0, status="accepted"),
         ]
-        assert _derive_job_status(pages) == "done"
+        assert _derive_job_status(leaf_pages_from_pages(pages)) == "done"
 
-    def test_only_split_pages_returns_queued(self) -> None:
-        """If all pages are split parents (leaf list is empty) → queued.
+    def test_split_parent_without_children_returns_running(self) -> None:
+        """A split parent without child rows is anomalous but must stay visible."""
+        pages = [_page(status="split")]
+        leaf_pages = leaf_pages_from_pages(pages)
 
-        The endpoint filters split-parents before calling _derive_job_status,
-        so an all-split scenario reaches this function as an empty list.
-        """
-        assert _derive_job_status([]) == "queued"
+        assert leaf_pages == pages
+        assert _derive_job_status(leaf_pages) == "running"
 
 
 # ---------------------------------------------------------------------------
@@ -422,6 +429,11 @@ class TestJobStatusDerivationViaEndpoint:
 
     def test_processing_page_returns_running(self, client_for: Any) -> None:
         pages = [_page(status="preprocessing")]
+        r = client_for(_job(), pages).get("/v1/jobs/job-001")
+        assert r.json()["summary"]["status"] == "running"
+
+    def test_semantic_norm_page_returns_running(self, client_for: Any) -> None:
+        pages = [_page(status="semantic_norm")]
         r = client_for(_job(), pages).get("/v1/jobs/job-001")
         assert r.json()["summary"]["status"] == "running"
 
@@ -470,3 +482,15 @@ class TestJobStatusDerivationViaEndpoint:
         ]
         r = client_for(_job(page_count=2), pages).get("/v1/jobs/job-001")
         assert len(r.json()["pages"]) == 2
+
+    def test_split_parent_without_children_stays_visible_running(
+        self, client_for: Any
+    ) -> None:
+        """A split-only page should not collapse the job to an empty queued state."""
+        pages = [_page(page_id="parent", status="split")]
+        r = client_for(_job(page_count=1), pages).get("/v1/jobs/job-001")
+
+        body = r.json()
+        assert body["summary"]["status"] == "running"
+        assert body["summary"]["page_count"] == 1
+        assert body["pages"][0]["status"] == "split"

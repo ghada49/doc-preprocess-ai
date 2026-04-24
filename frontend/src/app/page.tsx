@@ -1,11 +1,11 @@
-"use client";
+﻿"use client";
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/lib/auth/auth-context";
 
-// ─── ICONS ────────────────────────────────────────────────────────────────────
+// â”€â”€â”€ ICONS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function LogoMark({ className }: { className?: string }) {
   return (
@@ -158,14 +158,14 @@ function IconArrowRight({ className }: { className?: string }) {
   );
 }
 
-// ─── PIPELINE PREVIEW ─────────────────────────────────────────────────────────
+// â”€â”€â”€ PIPELINE PREVIEW â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const PREVIEW_PAGES = [
-  { label: "page_001.tiff", state: "accepted", colorKey: "emerald" },
-  { label: "page_002.tiff", state: "layout detection", colorKey: "cyan" },
-  { label: "page_003.tiff", state: "preprocessing", colorKey: "blue" },
-  { label: "page_004.tiff", state: "pending correction", colorKey: "orange" },
-  { label: "page_005.tiff", state: "queued", colorKey: "slate" },
+  { label: "page_001.tiff", state: "Ready", colorKey: "emerald" },
+  { label: "page_002.tiff", state: "Processing", colorKey: "cyan" },
+  { label: "page_003.tiff", state: "Processing", colorKey: "blue" },
+  { label: "page_004.tiff", state: "Needs review", colorKey: "orange" },
+  { label: "page_005.tiff", state: "Waiting", colorKey: "slate" },
 ];
 
 const STATE_COLORS: Record<string, string> = {
@@ -185,7 +185,7 @@ const STATE_ACCENTS: Record<string, string> = {
 };
 
 const PRIMARY_BUTTON_CLASS =
-  "group inline-flex items-center justify-center gap-2 rounded-xl bg-gradient-to-r from-indigo-600 via-indigo-600 to-violet-600 text-white ring-1 ring-indigo-500/20 shadow-[0_18px_40px_-20px_rgba(79,70,229,0.75)] transition-all duration-300 hover:-translate-y-0.5 hover:shadow-[0_24px_56px_-20px_rgba(79,70,229,0.55)]";
+  "group inline-flex items-center justify-center gap-2 rounded-xl bg-slate-950 text-white ring-1 ring-slate-900/10 shadow-[0_18px_40px_-22px_rgba(15,23,42,0.8)] transition-all duration-300 hover:-translate-y-0.5 hover:bg-slate-800 hover:shadow-[0_24px_56px_-24px_rgba(15,23,42,0.65)]";
 
 const SECONDARY_BUTTON_CLASS =
   "inline-flex items-center justify-center rounded-xl border border-slate-200 bg-white/95 text-slate-700 shadow-sm shadow-slate-200/70 transition-all duration-300 hover:-translate-y-0.5 hover:border-slate-300 hover:bg-white hover:text-slate-900 hover:shadow-lg hover:shadow-slate-200/70";
@@ -222,14 +222,14 @@ function PipelinePreview() {
               <div className="w-2.5 h-2.5 rounded-full bg-amber-300/90" />
               <div className="w-2.5 h-2.5 rounded-full bg-emerald-300/90" />
             </div>
-            <span className="text-xs font-mono text-slate-500">job_7f3a2b1e · col-2024-aub</span>
+            <span className="text-xs font-medium text-slate-500">April archive scans</span>
           </div>
           <div className="inline-flex items-center gap-2 rounded-full border border-slate-200 bg-white/90 px-2.5 py-1 shadow-sm shadow-slate-200/70">
             <span className="relative flex h-2.5 w-2.5">
               <span className="absolute inline-flex h-full w-full rounded-full bg-blue-400/[0.65] blur-[1px] homepage-live-dot" />
               <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-blue-500 homepage-live-dot" />
             </span>
-            <span className="text-xs text-blue-600 font-medium">running</span>
+            <span className="text-xs text-blue-600 font-medium">Processing</span>
           </div>
         </div>
 
@@ -322,9 +322,9 @@ function PipelinePreview() {
         {/* Summary footer */}
         <div className="px-4 py-3 border-t border-slate-100 bg-slate-50/75 flex items-center gap-5">
           <span className="text-2xs text-slate-500">5 pages</span>
-          <span className="text-2xs text-emerald-600">1 accepted</span>
+          <span className="text-2xs text-emerald-600">1 ready</span>
           <span className="text-2xs text-blue-600">3 processing</span>
-          <span className="text-2xs text-orange-600">1 flagged</span>
+          <span className="text-2xs text-orange-600">1 needs review</span>
         </div>
 
         {/* Quality gate strip */}
@@ -334,7 +334,7 @@ function PipelinePreview() {
             <path d="M8 14s6-2.667 6-6.667V3.333L8 1.333 2 3.333v4C2 11.333 8 14 8 14z" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
             <path d="M5.5 8l2 2 3-3" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round"/>
           </svg>
-          <span className="text-2xs text-slate-500">Quality gate active · policy v3 · pipeline: layout</span>
+          <span className="text-2xs text-slate-500">Every page is checked before results are ready</span>
         </div>
       </div>
 
@@ -345,7 +345,7 @@ function PipelinePreview() {
   );
 }
 
-// ─── NAV ──────────────────────────────────────────────────────────────────────
+// â”€â”€â”€ NAV â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function Nav() {
   const [scrolled, setScrolled] = useState(false);
@@ -409,7 +409,7 @@ function Nav() {
   );
 }
 
-// ─── HERO ─────────────────────────────────────────────────────────────────────
+// â”€â”€â”€ HERO â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function Hero() {
   return (
@@ -439,7 +439,7 @@ function Hero() {
                 <span className="absolute inline-flex h-full w-full rounded-full bg-indigo-400/80 homepage-live-dot" />
                 <span className="relative inline-flex rounded-full h-1.5 w-1.5 bg-indigo-500 homepage-live-dot" />
               </span>
-              Production-grade document AI pipeline
+              Clean document processing for scanned pages
             </div>
 
             {/* Headline */}
@@ -450,9 +450,8 @@ function Hero() {
 
             {/* Description */}
             <p className="mb-9 max-w-[31rem] text-[1.0625rem] leading-8 text-slate-600 sm:text-lg">
-              LibraryAI runs multi-stage AI processing with enforced quality gates,
-              structured human correction, and complete lineage on every page.
-              No silent failures. No lost work.
+              Upload scanned pages, let LibraryAI clean and organize them, and
+              review only the pages that need a second look.
             </p>
 
             {/* CTAs */}
@@ -469,9 +468,9 @@ function Hero() {
             {/* Social proof strip */}
             <div className="mt-10 flex flex-wrap items-center gap-4 border-t border-slate-200/80 pt-8">
               {[
-                ["No silent failures", "emerald"],
-                ["Full audit trail", "indigo"],
-                ["Human-in-the-loop", "violet"],
+                ["Clear issues", "emerald"],
+                ["Easy tracking", "indigo"],
+                ["Review when needed", "violet"],
               ].map(([label, color]) => (
                 <div key={label} className="flex items-center gap-2 rounded-full border border-slate-200/70 bg-white/80 px-3 py-1.5 shadow-sm shadow-slate-200/50">
                   <div
@@ -489,7 +488,7 @@ function Hero() {
             </div>
           </div>
 
-          {/* Right: pipeline preview */}
+          {/* Right: processing preview */}
           <div className="hidden lg:block lg:pl-4">
             <PipelinePreview />
           </div>
@@ -499,35 +498,35 @@ function Hero() {
   );
 }
 
-// ─── FEATURES ─────────────────────────────────────────────────────────────────
+// â”€â”€â”€ FEATURES â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const FEATURES = [
   {
     Icon: IconLayers,
-    title: "Multi-Stage Pipeline",
+    title: "Smart Processing",
     description:
-      "Preprocessing, geometry detection, normalization, rectification, and layout analysis run in coordinated branches. The system selects the best output or escalates when branches disagree.",
+      "Scanned pages are cleaned, straightened, checked, and prepared for review or download.",
     accent: "indigo",
   },
   {
     Icon: IconShield,
-    title: "Enforced Quality Gates",
+    title: "Built-in Quality Checks",
     description:
-      "Each page is evaluated against configurable quality thresholds. Pages below confidence bounds are never auto-accepted — they route to human review with the reason recorded.",
+      "Pages that need attention are clearly marked so people can review them before results are finalized.",
     accent: "violet",
   },
   {
     Icon: IconUsers,
-    title: "Structured Human Correction",
+    title: "Focused Review Tools",
     description:
-      "When the system flags a page, operators see all branch outputs, current geometry, and review reasons in one workspace. Corrections resubmit the page for reprocessing.",
+      "Reviewers get a focused workspace for fixing page edges, splitting spreads, and adding notes.",
     accent: "sky",
   },
   {
     Icon: IconAudit,
-    title: "Complete Lineage",
+    title: "Clear History",
     description:
-      "Every model invocation, quality score, gate decision, and correction is recorded. Any page can be fully audited from raw OTIFF input to accepted final output.",
+      "Each upload keeps a clear history from original scan to finished result.",
     accent: "emerald",
   },
 ];
@@ -545,12 +544,12 @@ function Features() {
       <div className="max-w-6xl mx-auto px-6">
         <div className="text-center mb-14">
           <p className="text-xs font-semibold text-indigo-600 uppercase tracking-[0.15em] mb-4">
-            Built differently
+            Simple workflow
           </p>
           <h2 className="text-3xl sm:text-4xl font-bold tracking-tight text-slate-900 mb-4 leading-tight">
-            Every decision is recorded.
+            Every page stays easy to track.
             <br />
-            Every page is accounted for.
+            Nothing gets lost in the process.
           </h2>
           <p className="text-slate-600 max-w-lg mx-auto leading-relaxed text-[0.9375rem]">
             Designed for workflows where losing a page or silently accepting a bad
@@ -579,32 +578,32 @@ function Features() {
   );
 }
 
-// ─── HOW IT WORKS ─────────────────────────────────────────────────────────────
+// â”€â”€â”€ HOW IT WORKS â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const STEPS = [
   {
     number: "01",
     title: "Upload",
     description:
-      "Submit scanned TIFF pages. The system creates a processing job and enqueues each page independently.",
+      "Upload scanned TIFF pages and group them into a collection.",
   },
   {
     number: "02",
     title: "Process",
     description:
-      "Multi-stage AI pipeline runs preprocessing, geometry detection, normalization, and layout analysis in parallel branches.",
+      "LibraryAI cleans each page, checks the result, and prepares it for review.",
   },
   {
     number: "03",
     title: "Review",
     description:
-      "Pages below quality thresholds route to the correction queue. Operators inspect branch outputs and resolve.",
+      "Pages that need attention appear in a short review list with clear next steps.",
   },
   {
     number: "04",
     title: "Verify",
     description:
-      "Accepted pages carry a complete lineage record — traceable from raw input to verified output.",
+      "Finished pages are ready to open or download with their history kept in the workspace.",
   },
 ];
 
@@ -620,7 +619,7 @@ function HowItWorks() {
             Workflow
           </p>
           <h2 className="text-3xl sm:text-4xl font-bold tracking-tight text-slate-900 leading-tight">
-            From raw scan to verified output
+            From scan to ready result
           </h2>
         </div>
 
@@ -652,14 +651,14 @@ function HowItWorks() {
   );
 }
 
-// ─── TRUST ────────────────────────────────────────────────────────────────────
+// â”€â”€â”€ TRUST â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const GUARANTEES = [
-  "Quality thresholds are policy-driven and configurable per material type",
-  "Every routing decision is logged with a reason code",
-  "Model versions are evaluated against golden datasets before promotion",
-  "Correction history is part of the permanent lineage record",
-  "No page transitions to a terminal state without an explicit decision",
+  "Each page is checked for clear, usable results",
+  "Issues are explained in plain language",
+  "Updates can be reviewed by administrators before rollout",
+  "Review history stays with the upload",
+  "Pages are never marked ready without a clear result",
 ];
 
 function Trust() {
@@ -673,10 +672,10 @@ function Trust() {
           {/* Left: statement */}
           <div>
             <p className="text-xs font-semibold text-indigo-600 uppercase tracking-[0.15em] mb-4">
-              Reliability
+              Confidence
             </p>
             <h2 className="text-3xl sm:text-4xl font-bold tracking-tight text-slate-900 leading-tight mb-5">
-              The system does not accept results it cannot justify.
+              The app tells you when a page needs attention.
             </h2>
             <p className="text-slate-600 leading-relaxed text-[0.9375rem] mb-8">
               LibraryAI was built for institutions where document accuracy is an
@@ -722,35 +721,35 @@ function Trust() {
   );
 }
 
-// ─── AUDIENCE ─────────────────────────────────────────────────────────────────
+// â”€â”€â”€ AUDIENCE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 const AUDIENCES = [
   {
     Icon: IconBuilding,
     title: "Libraries & Archives",
     description:
-      "Process large document collections with reproducible, auditable results that meet institutional standards.",
+      "Process large document collections with clear progress and reliable results.",
     accent: "indigo",
   },
   {
     Icon: IconGear,
-    title: "Digitization Teams",
+    title: "Scanning Teams",
     description:
-      "Manage high-throughput scanning workflows with built-in quality enforcement and human escalation paths.",
+      "Move large batches through upload, review, and download with fewer manual steps.",
     accent: "violet",
   },
   {
     Icon: IconChart,
-    title: "AI Operations",
+    title: "Project Teams",
     description:
-      "Monitor model performance, manage evaluation gates, and promote versions with full traceability.",
+      "Keep document work moving while administrators manage advanced settings separately.",
     accent: "sky",
   },
   {
     Icon: IconCheck,
-    title: "Quality Assurance",
+    title: "Review Teams",
     description:
-      "Review flagged pages in a structured workspace, inspect correction history, and trace routing decisions.",
+      "Review pages that need attention, fix page edges, and keep notes with the upload.",
     accent: "emerald",
   },
 ];
@@ -771,7 +770,7 @@ function Audience() {
             Who it&apos;s for
           </p>
           <h2 className="text-3xl sm:text-4xl font-bold tracking-tight text-slate-900">
-            Built for critical workflows
+            Built for everyday document work
           </h2>
         </div>
 
@@ -796,7 +795,7 @@ function Audience() {
   );
 }
 
-// ─── FINAL CTA ────────────────────────────────────────────────────────────────
+// â”€â”€â”€ FINAL CTA â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function FinalCTA() {
   return (
@@ -808,8 +807,8 @@ function FinalCTA() {
           Start processing with confidence.
         </h2>
         <p className="text-slate-600 text-[0.9375rem] leading-relaxed mb-8">
-          Create an account and run your first job. No configuration required to get
-          started — quality gates and correction workflows are built in from day one.
+          Create an account, upload scanned pages, and let LibraryAI guide you
+          through review and download.
         </p>
         <div className="flex flex-col sm:flex-row items-center justify-center gap-3">
           <Link
@@ -831,7 +830,7 @@ function FinalCTA() {
   );
 }
 
-// ─── FOOTER ───────────────────────────────────────────────────────────────────
+// â”€â”€â”€ FOOTER â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 function Footer() {
   return (
@@ -847,8 +846,7 @@ function Footer() {
               <span className="font-semibold text-slate-900 text-sm">LibraryAI</span>
             </div>
             <p className="text-xs text-slate-500 leading-relaxed">
-              Production-grade AI pipeline for archival document digitization.
-              Multi-stage processing, quality enforcement, and complete lineage.
+              Clean document processing for archives, libraries, and scanning teams.
             </p>
           </div>
 
@@ -888,7 +886,7 @@ function Footer() {
             &copy; {new Date().getFullYear()} LibraryAI. All rights reserved.
           </p>
           <p className="text-2xs text-slate-300">
-            Document AI Operations · v2.0
+            Document processing workspace
           </p>
         </div>
       </div>
@@ -896,7 +894,7 @@ function Footer() {
   );
 }
 
-// ─── ROOT PAGE ────────────────────────────────────────────────────────────────
+// â”€â”€â”€ ROOT PAGE â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export default function RootPage() {
   const { isAuthenticated, isAdmin, isLoading } = useAuth();
@@ -929,3 +927,4 @@ export default function RootPage() {
     </div>
   );
 }
+

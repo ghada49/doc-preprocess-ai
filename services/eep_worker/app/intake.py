@@ -135,6 +135,7 @@ class ProxyConfig:
             "book": 1024,
             "newspaper": 1024,
             "archival_document": 1024,
+            "microfilm": 1024,
         }
     )
 

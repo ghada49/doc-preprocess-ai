@@ -1,0 +1,529 @@
+# Inference service Deployments and ClusterIP Services.
+#
+# IMPORTANT — external dependencies:
+#   PostgreSQL: managed externally (RDS or equivalent).  Set DATABASE_URL in secret.yaml.
+#   Redis:      managed externally (ElastiCache or equivalent).  Set REDIS_URL in secret.yaml.
+#   S3:         AWS S3 (no MinIO manifest included).  S3_ENDPOINT_URL is absent in configmap.yaml
+#               so boto3 uses the standard AWS regional endpoint.  S3 credentials come from
+#               libraryai-secret via secretRef on each inference Deployment below.
+#   Neither Postgres nor Redis has a manifest in this k8s/ directory by design.
+#
+# GPU note (IEP1A, IEP1B):
+#   These services request nvidia.com/gpu: "1".  You must have the nvidia-device-plugin
+#   DaemonSet installed.  The nodeSelector below uses the standard
+#   accelerator=nvidia-gpu label; relabel your GPU node-pool to match, or replace
+#   the nodeSelector with whatever label your cluster assigns to GPU nodes.
+#   IEP0, IEP1D, IEP1E, IEP2A, IEP2B are CPU-capable and carry no GPU selector.
+
+---
+# ── IEP0 — material-type classifier (CPU) ─────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iep0
+  namespace: libraryai
+  labels:
+    app: iep0
+    app.kubernetes.io/part-of: libraryai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: iep0
+  template:
+    metadata:
+      labels:
+        app: iep0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8006"
+    spec:
+      containers:
+        - name: iep0
+          image: your-registry/libraryai-iep0:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8006
+          envFrom:
+            - configMapRef:
+                name: libraryai-config
+            - secretRef:
+                name: libraryai-secret
+          env:
+            - name: PYTHONPATH
+              value: /app
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "512Mi"
+            limits:
+              cpu: "1000m"
+              memory: "1Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8006
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8006
+            initialDelaySeconds: 15
+            periodSeconds: 10
+            failureThreshold: 3
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iep0
+  namespace: libraryai
+  labels:
+    app: iep0
+    app.kubernetes.io/part-of: libraryai
+spec:
+  selector:
+    app: iep0
+  ports:
+    - name: http
+      port: 8006
+      targetPort: 8006
+  type: ClusterIP
+
+---
+# ── IEP1A — YOLOv8-seg geometry (GPU required) ────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iep1a
+  namespace: libraryai
+  labels:
+    app: iep1a
+    app.kubernetes.io/part-of: libraryai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: iep1a
+  template:
+    metadata:
+      labels:
+        app: iep1a
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8001"
+    spec:
+      # Replace accelerator=nvidia-gpu with the label your cluster assigns to GPU nodes.
+      nodeSelector:
+        accelerator: nvidia-gpu
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: iep1a
+          image: your-registry/libraryai-iep1a:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8001
+          envFrom:
+            - configMapRef:
+                name: libraryai-config
+            - secretRef:
+                name: libraryai-secret
+          env:
+            - name: PYTHONPATH
+              value: /app
+            - name: IEP1A_MOCK_MODE
+              value: "false"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+              nvidia.com/gpu: "1"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8001
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8001
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 3
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iep1a
+  namespace: libraryai
+  labels:
+    app: iep1a
+    app.kubernetes.io/part-of: libraryai
+spec:
+  selector:
+    app: iep1a
+  ports:
+    - name: http
+      port: 8001
+      targetPort: 8001
+  type: ClusterIP
+
+---
+# ── IEP1B — YOLOv8-pose geometry (GPU required) ───────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iep1b
+  namespace: libraryai
+  labels:
+    app: iep1b
+    app.kubernetes.io/part-of: libraryai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: iep1b
+  template:
+    metadata:
+      labels:
+        app: iep1b
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8002"
+    spec:
+      # Replace accelerator=nvidia-gpu with the label your cluster assigns to GPU nodes.
+      nodeSelector:
+        accelerator: nvidia-gpu
+      tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+      containers:
+        - name: iep1b
+          image: your-registry/libraryai-iep1b:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8002
+          envFrom:
+            - configMapRef:
+                name: libraryai-config
+            - secretRef:
+                name: libraryai-secret
+          env:
+            - name: PYTHONPATH
+              value: /app
+            - name: IEP1B_MOCK_MODE
+              value: "false"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "2Gi"
+              nvidia.com/gpu: "1"
+            limits:
+              cpu: "2000m"
+              memory: "4Gi"
+              nvidia.com/gpu: "1"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8002
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8002
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 3
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iep1b
+  namespace: libraryai
+  labels:
+    app: iep1b
+    app.kubernetes.io/part-of: libraryai
+spec:
+  selector:
+    app: iep1b
+  ports:
+    - name: http
+      port: 8002
+      targetPort: 8002
+  type: ClusterIP
+
+---
+# ── IEP1D — UVDoc rectification (CPU, GPU optional) ───────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iep1d
+  namespace: libraryai
+  labels:
+    app: iep1d
+    app.kubernetes.io/part-of: libraryai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: iep1d
+  template:
+    metadata:
+      labels:
+        app: iep1d
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8003"
+    spec:
+      containers:
+        - name: iep1d
+          image: your-registry/libraryai-iep1d:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8003
+          envFrom:
+            - configMapRef:
+                name: libraryai-config
+            - secretRef:
+                name: libraryai-secret
+          env:
+            - name: PYTHONPATH
+              value: /app
+            - name: IEP1D_DEVICE
+              value: "cpu"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8003
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8003
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 3
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iep1d
+  namespace: libraryai
+  labels:
+    app: iep1d
+    app.kubernetes.io/part-of: libraryai
+spec:
+  selector:
+    app: iep1d
+  ports:
+    - name: http
+      port: 8003
+      targetPort: 8003
+  type: ClusterIP
+
+---
+# ── IEP2A — PaddleOCR layout detection (CPU) ──────────────────────────────────
+# Build with: docker build --build-arg ENABLE_PADDLE_BACKEND=true ...
+# IEP2A_LAYOUT_BACKEND=paddleocr is set in configmap.yaml.
+# IEP2A_USE_REAL_MODEL=true activates real inference (factory.py).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iep2a
+  namespace: libraryai
+  labels:
+    app: iep2a
+    app.kubernetes.io/part-of: libraryai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: iep2a
+  template:
+    metadata:
+      labels:
+        app: iep2a
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8004"
+    spec:
+      containers:
+        - name: iep2a
+          image: your-registry/libraryai-iep2a:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8004
+          envFrom:
+            - configMapRef:
+                name: libraryai-config
+            - secretRef:
+                name: libraryai-secret
+          env:
+            - name: PYTHONPATH
+              value: /app
+            - name: IEP2A_USE_REAL_MODEL
+              value: "true"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8004
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8004
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 3
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iep2a
+  namespace: libraryai
+  labels:
+    app: iep2a
+    app.kubernetes.io/part-of: libraryai
+spec:
+  selector:
+    app: iep2a
+  ports:
+    - name: http
+      port: 8004
+      targetPort: 8004
+  type: ClusterIP
+
+---
+# ── IEP2B — DocLayout-YOLO layout detection (CPU) ─────────────────────────────
+# No GPU env var exists in iep2b code; inference always runs on CPU.
+# IEP2B_USE_REAL_MODEL=true activates real inference (detect.py / model.py).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: iep2b
+  namespace: libraryai
+  labels:
+    app: iep2b
+    app.kubernetes.io/part-of: libraryai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: iep2b
+  template:
+    metadata:
+      labels:
+        app: iep2b
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "8005"
+    spec:
+      containers:
+        - name: iep2b
+          image: your-registry/libraryai-iep2b:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 8005
+          envFrom:
+            - configMapRef:
+                name: libraryai-config
+            - secretRef:
+                name: libraryai-secret
+          env:
+            - name: PYTHONPATH
+              value: /app
+            - name: IEP2B_USE_REAL_MODEL
+              value: "true"
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "1Gi"
+            limits:
+              cpu: "2000m"
+              memory: "2Gi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8005
+            initialDelaySeconds: 30
+            periodSeconds: 15
+            failureThreshold: 3
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8005
+            initialDelaySeconds: 20
+            periodSeconds: 10
+            failureThreshold: 3
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: iep2b
+  namespace: libraryai
+  labels:
+    app: iep2b
+    app.kubernetes.io/part-of: libraryai
+spec:
+  selector:
+    app: iep2b
+  ports:
+    - name: http
+      port: 8005
+      targetPort: 8005
+  type: ClusterIP

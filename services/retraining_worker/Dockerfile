@@ -17,7 +17,8 @@ WORKDIR /app
 
 ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    UV_HTTP_TIMEOUT=120
 
 # Prefer CPU wheels for Torch (Ultralytics dependency). The default PyPI torch builds
 # can pull very large CUDA-enabled wheels which are unnecessary for Step 7 CPU smoke.
@@ -47,5 +48,9 @@ RUN uv pip install --system \
     && uv pip uninstall --system opencv-python || true \
     && uv pip install --system --force-reinstall --no-deps "opencv-python-headless>=4.9"
 
-# Source code is volume-mounted in development (see docker-compose.yml)
-# CMD is supplied by docker-compose.yml
+COPY shared/ ./shared/
+COPY services/eep/ ./services/eep/
+COPY services/retraining_worker/ ./services/retraining_worker/
+
+EXPOSE 9104
+CMD ["uvicorn", "services.retraining_worker.app.main:app", "--host", "0.0.0.0", "--port", "9104"]

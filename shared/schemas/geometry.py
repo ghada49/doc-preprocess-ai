@@ -18,7 +18,7 @@ from typing import Annotated, Literal
 
 from pydantic import BaseModel, Field, model_validator
 
-MaterialType = Literal["book", "newspaper", "archival_document"]
+MaterialType = Literal["book", "newspaper", "archival_document", "microfilm"]
 
 
 class GeometryRequest(BaseModel):

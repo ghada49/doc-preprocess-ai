@@ -15,9 +15,9 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 
 const userNavItems: NavItem[] = [
-  { label: "My Jobs", href: "/jobs", icon: Briefcase },
-  { label: "Submit Job", href: "/submit", icon: PlusCircle },
-  { label: "Correction Queue", href: "/queue", icon: ClipboardList },
+  { label: "Documents", href: "/jobs", icon: Briefcase },
+  { label: "Upload", href: "/submit", icon: PlusCircle },
+  { label: "Needs Review", href: "/queue", icon: ClipboardList },
 ];
 
 interface UserShellProps {
@@ -52,13 +52,13 @@ export function UserShell({
   }
 
   return (
-    <div className="flex h-screen bg-slate-50 overflow-hidden">
+    <div className="flex h-screen overflow-hidden bg-slate-50">
       <Sidebar
         items={userNavItems}
         footer={
           <button
             onClick={() => { logout(); router.push("/login"); }}
-            className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors"
+            className="flex w-full items-center gap-3 rounded-xl px-3 py-2 text-sm text-slate-500 transition-colors hover:bg-slate-100 hover:text-slate-800"
           >
             <LogOut className="h-4 w-4 shrink-0" />
             <span>Sign out</span>
@@ -71,7 +71,13 @@ export function UserShell({
           breadcrumbs={breadcrumbs}
           right={headerRight}
         />
-        <main className={cn("flex-1 overflow-y-auto", className)}>
+        <main
+          className={cn(
+            "relative flex-1 overflow-y-auto bg-[linear-gradient(180deg,rgba(248,250,252,0.92)_0%,rgba(241,245,249,0.86)_44%,rgba(248,250,252,1)_100%)]",
+            className
+          )}
+        >
+          <div className="pointer-events-none absolute inset-x-0 top-0 h-56 bg-[linear-gradient(180deg,rgba(226,232,240,0.62),rgba(248,250,252,0))]" />
           {children}
         </main>
       </div>

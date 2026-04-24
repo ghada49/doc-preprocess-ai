@@ -8,31 +8,56 @@ import { cn } from "@/lib/utils";
 
 interface ArtifactImageProps {
   uri: string | null;
+  fallbackUri?: string | null;
   alt?: string;
   className?: string;
   containerClassName?: string;
   expiresIn?: number;
   fallbackText?: string;
+  maxWidth?: number;
 }
 
 export function ArtifactImage({
   uri,
+  fallbackUri = null,
   alt = "Artifact",
   className,
   containerClassName,
   expiresIn = 300,
   fallbackText,
+  maxWidth = 1800,
 }: ArtifactImageProps) {
   const [imgError, setImgError] = useState(false);
+  const [imgLoaded, setImgLoaded] = useState(false);
+  const [activeUri, setActiveUri] = useState(uri);
 
-  const { data, isLoading, isError } = useArtifactPreview(uri);
+  const { data, isLoading, isError } = useArtifactPreview(activeUri, { maxWidth });
+  const imageSrc = data?.blobUrl ?? null;
+  const canFallback =
+    Boolean(fallbackUri) &&
+    Boolean(uri) &&
+    fallbackUri !== uri &&
+    activeUri === uri;
 
-  // Reset img error when URI changes
+  useEffect(() => {
+    setActiveUri(uri);
+  }, [uri, fallbackUri]);
+
+  // Reset local load errors whenever the artifact itself changes or a fresh
+  // preview URL is generated for the same artifact.
   useEffect(() => {
     setImgError(false);
-  }, [uri]);
+    setImgLoaded(false);
+  }, [activeUri, imageSrc]);
 
-  if (!uri) {
+  useEffect(() => {
+    if (!canFallback) return;
+    if (!(isError || imgError) || imageSrc) return;
+    setImgError(false);
+    setActiveUri(fallbackUri);
+  }, [canFallback, fallbackUri, imageSrc, imgError, isError]);
+
+  if (!activeUri) {
     return (
       <div
         className={cn(
@@ -59,7 +84,20 @@ export function ArtifactImage({
     );
   }
 
-  if (isError || imgError) {
+  if (!imageSrc && !(isError || imgError)) {
+    return (
+      <div
+        className={cn(
+          "flex items-center justify-center bg-slate-50 rounded-lg border border-slate-200",
+          containerClassName
+        )}
+      >
+        <Spinner size="md" />
+      </div>
+    );
+  }
+
+  if (!imageSrc && (isError || imgError)) {
     return (
       <div
         className={cn(
@@ -74,13 +112,30 @@ export function ArtifactImage({
   }
 
   return (
-    <div className={cn("overflow-hidden", containerClassName)}>
+    <div className={cn("relative overflow-hidden", containerClassName)}>
+      {!imgLoaded && (
+        <div className="absolute inset-0 flex items-center justify-center bg-slate-50">
+          <Spinner size="md" />
+        </div>
+      )}
       {/* eslint-disable-next-line @next/next/no-img-element */}
       <img
-        src={data?.blobUrl}
+        key={imageSrc ?? activeUri ?? "empty"}
+        src={imageSrc ?? undefined}
         alt={alt}
-        className={cn("w-full h-full object-contain", className)}
-        onError={() => setImgError(true)}
+        className={cn(
+          "h-full w-full object-contain",
+          !imgLoaded && "invisible",
+          className
+        )}
+        onLoad={() => {
+          setImgLoaded(true);
+          setImgError(false);
+        }}
+        onError={() => {
+          setImgLoaded(false);
+          setImgError(true);
+        }}
       />
     </div>
   );

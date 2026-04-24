@@ -19,10 +19,10 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Integer, Text, UniqueConstraint
+from sqlalchemy import Boolean, DateTime, Float, ForeignKey, Index, Integer, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
-from sqlalchemy.sql import func
+from sqlalchemy.sql import func, text
 
 
 class Base(DeclarativeBase):
@@ -59,7 +59,7 @@ class Job(Base):
     Top-level processing job.
 
     material_type CHECK: 'book' | 'newspaper' | 'archival_document'
-    pipeline_mode CHECK: 'preprocess' | 'layout'
+    pipeline_mode CHECK: 'preprocess' | 'layout' | 'layout_with_ocr'
     ptiff_qa_mode CHECK: 'manual' | 'auto_continue'
     status CHECK: 'queued' | 'running' | 'done' | 'failed'
     """
@@ -82,6 +82,7 @@ class Job(Base):
     )
     shadow_mode: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
     created_by: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    reading_direction: Mapped[str | None] = mapped_column(Text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
     )
@@ -127,8 +128,18 @@ class JobPage(Base):
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     output_layout_uri: Mapped[str | None] = mapped_column(Text(), nullable=True)
     ptiff_qa_approved: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
+    reading_order: Mapped[int | None] = mapped_column(Integer(), nullable=True)
 
-    __table_args__ = (UniqueConstraint("job_id", "page_number", "sub_page_index"),)
+    __table_args__ = (
+        UniqueConstraint("job_id", "page_number", "sub_page_index"),
+        Index(
+            "uq_job_pages_original_page",
+            "job_id",
+            "page_number",
+            unique=True,
+            postgresql_where=text("sub_page_index IS NULL"),
+        ),
+    )
 
 
 # ── page_lineage ───────────────────────────────────────────────────────────────
@@ -189,7 +200,16 @@ class PageLineage(Base):
     )
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
-    __table_args__ = (UniqueConstraint("job_id", "page_number", "sub_page_index"),)
+    __table_args__ = (
+        UniqueConstraint("job_id", "page_number", "sub_page_index"),
+        Index(
+            "uq_page_lineage_original_page",
+            "job_id",
+            "page_number",
+            unique=True,
+            postgresql_where=text("sub_page_index IS NULL"),
+        ),
+    )
 
 
 # ── service_invocations ────────────────────────────────────────────────────────

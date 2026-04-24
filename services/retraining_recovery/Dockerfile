@@ -12,7 +12,8 @@ WORKDIR /app
 
 ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    UV_HTTP_TIMEOUT=120
 
 # Install the shared runtime dependency set needed by the retraining recovery
 # loop and shared DB helpers.
@@ -32,5 +33,9 @@ RUN uv pip install --system \
     "PyYAML>=6.0" \
     "bcrypt>=4.0"
 
-# Source code is volume-mounted in development (see docker-compose.yml)
-# CMD is supplied by docker-compose.yml
+COPY shared/ ./shared/
+COPY services/eep/ ./services/eep/
+COPY services/retraining_recovery/ ./services/retraining_recovery/
+
+EXPOSE 9105
+CMD ["uvicorn", "services.retraining_recovery.app.main:app", "--host", "0.0.0.0", "--port", "9105"]

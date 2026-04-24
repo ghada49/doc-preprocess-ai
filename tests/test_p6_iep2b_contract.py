@@ -262,7 +262,7 @@ class TestRegionTypeHistogram:
 
 
 class TestMaterialTypeAcceptance:
-    @pytest.mark.parametrize("material_type", ["book", "newspaper", "archival_document"])
+    @pytest.mark.parametrize("material_type", ["book", "newspaper", "archival_document", "microfilm"])
     def test_canonical_material_types_accepted(
         self, client: TestClient, material_type: str
     ) -> None:
@@ -270,8 +270,13 @@ class TestMaterialTypeAcceptance:
         resp = client.post("/v1/layout-detect", json=payload)
         assert resp.status_code == 200
 
-    def test_invalid_material_type_rejected(self, client: TestClient) -> None:
+    def test_valid_material_type_microfilm(self, client: TestClient) -> None:
         payload = {**_VALID_PAYLOAD, "material_type": "microfilm"}
+        resp = client.post("/v1/layout-detect", json=payload)
+        assert resp.status_code == 200
+
+    def test_invalid_material_type_rejected(self, client: TestClient) -> None:
+        payload = {**_VALID_PAYLOAD, "material_type": "scroll"}
         resp = client.post("/v1/layout-detect", json=payload)
         assert resp.status_code == 422
 

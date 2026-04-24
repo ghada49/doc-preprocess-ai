@@ -38,4 +38,21 @@ configure_observability(
     health_checks=[is_model_ready],
 )
 
+
+@app.on_event("startup")
+async def _preload_models() -> None:
+    """Eagerly load YOLO-seg models so the first request doesn't timeout."""
+    import logging as _log
+    from services.iep1a.app.inference import _load_model, _MODEL_FILES, _is_mock_mode
+    if _is_mock_mode():
+        return
+    _log.getLogger(__name__).info("iep1a: pre-loading models at startup...")
+    for material_type in _MODEL_FILES:
+        try:
+            _load_model(material_type)
+        except Exception as exc:
+            _log.getLogger(__name__).warning("iep1a: failed to pre-load %s: %s", material_type, exc)
+    _log.getLogger(__name__).info("iep1a: model pre-load complete")
+
+
 app.include_router(geometry_router)

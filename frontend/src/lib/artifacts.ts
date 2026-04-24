@@ -1,11 +1,12 @@
 "use client";
 
-import { useEffect, useRef } from "react";
+import { useEffect, useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
   presignReadArtifact,
-  fetchArtifactPreviewBlobUrl,
+  fetchArtifactPreviewBlob,
   fetchArtifactJson,
+  isRetryableArtifactPreviewError,
 } from "@/lib/api/artifacts";
 import {
   artifactPreviewQueryKey,
@@ -54,28 +55,51 @@ export function useArtifactPreview(
     staleTimeMs?: number;
     gcTimeMs?: number;
     refetchOnMount?: boolean | "always";
+    retry?: boolean | number | ((failureCount: number, error: unknown) => boolean);
+    retryDelayMs?: number;
   } = {}
 ) {
   const result = useQuery({
     queryKey: artifactPreviewQueryKey(uri, options, queryOptions.scopeKey),
-    queryFn: () => fetchArtifactPreviewBlobUrl(uri!, options),
+    queryFn: ({ signal }) => fetchArtifactPreviewBlob(uri!, options, signal),
     enabled: Boolean(uri),
     staleTime: queryOptions.staleTimeMs ?? 5 * 60 * 1000,
     gcTime: queryOptions.gcTimeMs ?? 10 * 60 * 1000,
     refetchOnMount: queryOptions.refetchOnMount,
+    retry:
+      queryOptions.retry ??
+      ((failureCount, error) =>
+        failureCount < 2 && isRetryableArtifactPreviewError(error)),
+    retryDelay: (attemptIndex) =>
+      queryOptions.retryDelayMs ?? Math.min(800 * 2 ** (attemptIndex - 1), 2500),
   });
 
-  // Revoke the blob URL when it changes or the component unmounts.
-  const blobUrlRef = useRef<string | null>(null);
+  // Keep Blob data in the query cache and create a fresh object URL locally.
+  // This avoids reusing revoked blob: URLs when the user switches between
+  // sources and later returns to a previously viewed image.
+  const blobUrl = useMemo(
+    () => (result.data?.blob ? URL.createObjectURL(result.data.blob) : null),
+    [result.data?.blob]
+  );
+
   useEffect(() => {
-    const prev = blobUrlRef.current;
-    blobUrlRef.current = result.data ?? null;
     return () => {
-      if (prev && prev !== blobUrlRef.current) {
-        URL.revokeObjectURL(prev);
+      if (blobUrl) {
+        URL.revokeObjectURL(blobUrl);
       }
     };
-  }, [result.data]);
+  }, [blobUrl]);
 
-  return { ...result, data: result.data ? { blobUrl: result.data } : undefined };
+  return {
+    ...result,
+    isLoading: result.isLoading || (!!result.data && !blobUrl),
+    data:
+      result.data && blobUrl
+        ? {
+            blobUrl,
+            originalWidth: result.data.originalWidth,
+            originalHeight: result.data.originalHeight,
+          }
+        : undefined,
+  };
 }

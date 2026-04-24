@@ -1,0 +1,275 @@
+# Background worker and recovery Deployments.
+# Includes: retraining-worker, retraining-recovery, shadow-worker,
+#           shadow-recovery, artifact-cleanup.
+#
+# None of these services expose a public endpoint — ClusterIP is omitted
+# intentionally (health scrape goes pod-direct via Prometheus annotations).
+
+---
+# ── retraining-worker ─────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: retraining-worker
+  namespace: libraryai
+  labels:
+    app: retraining-worker
+    app.kubernetes.io/part-of: libraryai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: retraining-worker
+  template:
+    metadata:
+      labels:
+        app: retraining-worker
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/path: "/metrics"
+        prometheus.io/port: "9104"
+    spec:
+      containers:
+        - name: retraining-worker
+          image: your-registry/libraryai-retraining-worker:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 9104
+              name: health
+          envFrom:
+            - configMapRef:
+                name: libraryai-config
+            - secretRef:
+                name: libraryai-secret
+          env:
+            - name: PYTHONPATH
+              value: /app
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9104
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            failureThreshold: 3
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+
+---
+# ── retraining-recovery ───────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: retraining-recovery
+  namespace: libraryai
+  labels:
+    app: retraining-recovery
+    app.kubernetes.io/part-of: libraryai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: retraining-recovery
+  template:
+    metadata:
+      labels:
+        app: retraining-recovery
+    spec:
+      containers:
+        - name: retraining-recovery
+          image: your-registry/libraryai-retraining-recovery:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 9105
+              name: health
+          envFrom:
+            - configMapRef:
+                name: libraryai-config
+            - secretRef:
+                name: libraryai-secret
+          env:
+            - name: PYTHONPATH
+              value: /app
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9105
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            failureThreshold: 3
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+
+---
+# ── shadow-worker ─────────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shadow-worker
+  namespace: libraryai
+  labels:
+    app: shadow-worker
+    app.kubernetes.io/part-of: libraryai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shadow-worker
+  template:
+    metadata:
+      labels:
+        app: shadow-worker
+    spec:
+      containers:
+        - name: shadow-worker
+          image: your-registry/libraryai-shadow-worker:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 9102
+              name: health
+          envFrom:
+            - configMapRef:
+                name: libraryai-config
+            - secretRef:
+                name: libraryai-secret
+          env:
+            - name: PYTHONPATH
+              value: /app
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9102
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            failureThreshold: 3
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+
+---
+# ── shadow-recovery ───────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: shadow-recovery
+  namespace: libraryai
+  labels:
+    app: shadow-recovery
+    app.kubernetes.io/part-of: libraryai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: shadow-recovery
+  template:
+    metadata:
+      labels:
+        app: shadow-recovery
+    spec:
+      containers:
+        - name: shadow-recovery
+          image: your-registry/libraryai-shadow-recovery:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 9103
+              name: health
+          envFrom:
+            - configMapRef:
+                name: libraryai-config
+            - secretRef:
+                name: libraryai-secret
+          env:
+            - name: PYTHONPATH
+              value: /app
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9103
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            failureThreshold: 3
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+
+---
+# ── artifact-cleanup ──────────────────────────────────────────────────────────
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: artifact-cleanup
+  namespace: libraryai
+  labels:
+    app: artifact-cleanup
+    app.kubernetes.io/part-of: libraryai
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: artifact-cleanup
+  template:
+    metadata:
+      labels:
+        app: artifact-cleanup
+    spec:
+      containers:
+        - name: artifact-cleanup
+          image: your-registry/libraryai-artifact-cleanup:latest
+          imagePullPolicy: Always
+          ports:
+            - containerPort: 9106
+              name: health
+          envFrom:
+            - configMapRef:
+                name: libraryai-config
+            - secretRef:
+                name: libraryai-secret
+          env:
+            - name: PYTHONPATH
+              value: /app
+          resources:
+            requests:
+              cpu: "50m"
+              memory: "128Mi"
+            limits:
+              cpu: "200m"
+              memory: "256Mi"
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 9106
+            initialDelaySeconds: 20
+            periodSeconds: 15
+            failureThreshold: 3
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000

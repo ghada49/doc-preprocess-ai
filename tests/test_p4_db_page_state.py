@@ -81,13 +81,14 @@ class TestTerminalPageStates:
 
 
 class TestValidTransitions:
-    def test_all_10_states_present_as_source(self) -> None:
+    def test_all_11_states_present_as_source(self) -> None:
         expected = {
             "queued",
             "preprocessing",
             "rectification",
             "ptiff_qa_pending",
             "layout_detection",
+            "semantic_norm",
             "pending_human_correction",
             "accepted",
             "review",
@@ -105,8 +106,9 @@ class TestValidTransitions:
             assert (
                 VALID_TRANSITIONS[state] == frozenset()
             ), f"Leaf-final state {state!r} must have no valid transitions"
-        # accepted has exactly one outgoing transition (reviewer flag action)
-        assert VALID_TRANSITIONS["accepted"] == frozenset({"pending_human_correction"})
+        assert VALID_TRANSITIONS["accepted"] == frozenset(
+            {"pending_human_correction", "semantic_norm"}
+        )
 
     def test_pending_human_correction_has_transitions_despite_being_worker_stop(self) -> None:
         """Worker-stop (automated processing halts) but not leaf-final or job-terminal.
@@ -143,10 +145,10 @@ class TestValidTransitions:
         )
 
     def test_pending_human_correction_targets(self) -> None:
-        # Automation-first: correction → layout_detection (layout) or accepted (preprocess).
+        # All corrections go through semantic_norm (iep1e for orientation + reading order).
         # review = correction-reject. split = human split.
         assert VALID_TRANSITIONS["pending_human_correction"] == frozenset(
-            {"layout_detection", "accepted", "review", "split"}
+            {"semantic_norm", "review", "split"}
         )
 
     def test_layout_detection_targets(self) -> None:

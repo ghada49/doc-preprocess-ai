@@ -127,6 +127,7 @@ class TestPageState:
         "rectification",
         "ptiff_qa_pending",
         "layout_detection",
+        "semantic_norm",
         "pending_human_correction",
         "accepted",
         "review",
@@ -134,8 +135,8 @@ class TestPageState:
         "split",
     ]
 
-    def test_ten_states_total(self) -> None:
-        assert len(self.ALL_PAGE_STATES) == 10
+    def test_eleven_states_total(self) -> None:
+        assert len(self.ALL_PAGE_STATES) == 11
 
     def test_page_status_accepts_all_states(self) -> None:
         for state in self.ALL_PAGE_STATES:
@@ -182,8 +183,8 @@ class TestJobCreateRequest:
         assert r.pipeline_mode == "layout"
         assert r.shadow_mode is False
 
-    def test_both_pipeline_modes_valid(self) -> None:
-        for mode in ["preprocess", "layout"]:
+    def test_all_pipeline_modes_valid(self) -> None:
+        for mode in ["preprocess", "layout", "layout_with_ocr"]:
             r = JobCreateRequest.model_validate(
                 {
                     "collection_id": "c1",
@@ -197,7 +198,7 @@ class TestJobCreateRequest:
             assert r.pipeline_mode == mode
 
     def test_all_material_types_valid(self) -> None:
-        for mt in ["book", "newspaper", "archival_document"]:
+        for mt in ["book", "newspaper", "archival_document", "microfilm"]:
             r = JobCreateRequest.model_validate(
                 {
                     "collection_id": "c1",
@@ -236,6 +237,18 @@ class TestJobCreateRequest:
         r = _create_request(n_pages=1)
         assert len(r.pages) == 1
 
+    def test_duplicate_page_numbers_rejected(self) -> None:
+        with pytest.raises(ValidationError):
+            JobCreateRequest(
+                collection_id="c1",
+                material_type="book",
+                pages=[
+                    PageInput(page_number=1, input_uri="s3://x/1.tiff"),
+                    PageInput(page_number=1, input_uri="s3://x/1-duplicate.tiff"),
+                ],
+                policy_version="v1.0",
+            )
+
     def test_invalid_pipeline_mode_rejected(self) -> None:
         with pytest.raises(ValidationError):
             JobCreateRequest.model_validate(
@@ -254,7 +267,7 @@ class TestJobCreateRequest:
             JobCreateRequest.model_validate(
                 {
                     "collection_id": "c1",
-                    "material_type": "microfilm",
+                    "material_type": "scroll",
                     "pages": [{"page_number": 1, "input_uri": "s3://x"}],
                     "pipeline_mode": "layout",
                     "policy_version": "v1.0",

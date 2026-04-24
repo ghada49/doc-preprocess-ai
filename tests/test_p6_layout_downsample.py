@@ -34,6 +34,7 @@ from shared.schemas.layout import (
     LayoutAdjudicationResult,
     LayoutConfSummary,
     LayoutDetectResponse,
+    LayoutInputMetadata,
     Region,
     RegionType,
 )
@@ -271,31 +272,32 @@ def _downsampled_metadata(
     input_h: int = 3000,
     canonical_w: int = 4000,
     canonical_h: int = 6000,
-    scale: float = 0.5,
-) -> dict[str, Any]:
-    return {
-        "layout_input_source": "downsampled",
-        "layout_input_artifact_uri": "s3://bucket/downsampled.tiff",
-        "layout_input_width": input_w,
-        "layout_input_height": input_h,
-        "canonical_output_width": canonical_w,
-        "canonical_output_height": canonical_h,
-        "coordinate_rescaled": True,
-        "coordinate_scale_factor": scale,
-    }
+) -> LayoutInputMetadata:
+    return LayoutInputMetadata(
+        source_page_artifact_uri="s3://bucket/canonical.tiff",
+        analyzed_artifact_uri="s3://bucket/downsampled.tiff",
+        artifact_role="normalized_output",
+        input_source="downsampled",
+        layout_input_width=input_w,
+        layout_input_height=input_h,
+        canonical_output_width=canonical_w,
+        canonical_output_height=canonical_h,
+        coordinate_rescaled=True,
+    )
 
 
-def _original_metadata(image_uri: str = "s3://bucket/canonical.tiff") -> dict[str, Any]:
-    return {
-        "layout_input_source": "original",
-        "layout_input_artifact_uri": image_uri,
-        "layout_input_width": None,
-        "layout_input_height": None,
-        "canonical_output_width": None,
-        "canonical_output_height": None,
-        "coordinate_rescaled": False,
-        "coordinate_scale_factor": 1.0,
-    }
+def _original_metadata(image_uri: str = "s3://bucket/canonical.tiff") -> LayoutInputMetadata:
+    return LayoutInputMetadata(
+        source_page_artifact_uri=image_uri,
+        analyzed_artifact_uri=image_uri,
+        artifact_role="original_upload",
+        input_source="page_output",
+        layout_input_width=4000,
+        layout_input_height=6000,
+        canonical_output_width=4000,
+        canonical_output_height=6000,
+        coordinate_rescaled=False,
+    )
 
 
 class TestCompleteLayoutDetectionWithDownsampleMetadata:
@@ -337,7 +339,7 @@ class TestCompleteLayoutDetectionWithDownsampleMetadata:
                 iep2a_result=iep2a,
                 iep2b_result=iep2b,
                 google_client=google_client,
-                downsample_metadata=meta,
+                layout_input=meta,
             )
 
         # scale_x = 4000 / 2000 = 2.0; scale_y = 6000 / 3000 = 2.0
@@ -383,7 +385,7 @@ class TestCompleteLayoutDetectionWithDownsampleMetadata:
                 iep2a_result=iep2a,
                 iep2b_result=iep2b,
                 google_client=None,
-                downsample_metadata=meta,
+                layout_input=meta,
             )
 
         assert result.adjudication.layout_decision_source == "local_agreement"
@@ -431,7 +433,7 @@ class TestCompleteLayoutDetectionWithDownsampleMetadata:
                 iep2a_result=iep2a,
                 iep2b_result=iep2b,
                 google_client=failing_client,
-                downsample_metadata=meta,
+                layout_input=meta,
             )
 
         assert result.adjudication.layout_decision_source == "local_fallback_unverified"
@@ -466,16 +468,16 @@ class TestCompleteLayoutDetectionWithDownsampleMetadata:
                 iep2a_result=iep2a,
                 iep2b_result=iep2b,
                 google_client=None,
-                downsample_metadata=meta,
+                layout_input=meta,
             )
 
         kwargs = mock_update.call_args.kwargs
         gate_results = kwargs["gate_results"]
         assert "layout_input" in gate_results
         li = gate_results["layout_input"]
-        assert li["layout_input_source"] == "downsampled"
+        assert li["input_source"] == "downsampled"
         assert li["coordinate_rescaled"] is True
-        assert li["coordinate_scale_factor"] == 0.5
+        assert li["canonical_output_width"] // li["layout_input_width"] == 2
 
     @pytest.mark.asyncio
     async def test_original_metadata_written_when_no_downsample(self) -> None:
@@ -502,14 +504,14 @@ class TestCompleteLayoutDetectionWithDownsampleMetadata:
                 iep2a_result=iep2a,
                 iep2b_result=iep2b,
                 google_client=None,
-                downsample_metadata=meta,
+                layout_input=meta,
             )
 
         kwargs = mock_update.call_args.kwargs
         gate_results = kwargs["gate_results"]
         assert "layout_input" in gate_results
         li = gate_results["layout_input"]
-        assert li["layout_input_source"] == "original"
+        assert li["input_source"] == "page_output"
         assert li["coordinate_rescaled"] is False
 
     @pytest.mark.asyncio
@@ -571,7 +573,7 @@ class TestCompleteLayoutDetectionWithDownsampleMetadata:
                 iep2a_result=iep2a,
                 iep2b_result=iep2b,
                 google_client=google_client,
-                downsample_metadata=meta,
+                layout_input=meta,
             )
 
         assert result.adjudication.layout_decision_source == "google_document_ai"
@@ -611,7 +613,7 @@ class TestCompleteLayoutDetectionWithDownsampleMetadata:
                 iep2a_result=iep2a,
                 iep2b_result=iep2b,
                 google_client=google_client,
-                downsample_metadata=meta,
+                layout_input=meta,
             )
 
         assert result.adjudication.layout_decision_source == "google_document_ai"

@@ -32,7 +32,7 @@ export function TopBar({ breadcrumbs, right, className }: TopBarProps) {
   return (
     <header
       className={cn(
-        "h-14 flex items-center justify-between px-5 border-b border-slate-200 bg-white/90 backdrop-blur-sm sticky top-0 z-20",
+        "sticky top-0 z-20 flex h-16 items-center justify-between border-b border-slate-200/80 bg-white/80 px-6 backdrop-blur-xl",
         className
       )}
     >
@@ -44,12 +44,12 @@ export function TopBar({ breadcrumbs, right, className }: TopBarProps) {
             {crumb.href ? (
               <button
                 onClick={() => crumb.href && router.push(crumb.href)}
-                className="text-slate-400 hover:text-slate-700 transition-colors"
+                className="text-slate-400 transition-colors hover:text-slate-700"
               >
                 {crumb.label}
               </button>
             ) : (
-              <span className="text-slate-700 font-medium">{crumb.label}</span>
+              <span className="font-semibold text-slate-800">{crumb.label}</span>
             )}
           </span>
         ))}
@@ -61,9 +61,9 @@ export function TopBar({ breadcrumbs, right, className }: TopBarProps) {
 
         {/* User menu */}
         <DropdownMenu>
-          <DropdownMenuTrigger className="flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-xs text-slate-500 hover:bg-slate-100 hover:text-slate-700 transition-colors outline-none">
-            <div className="flex h-6 w-6 items-center justify-center rounded-full bg-indigo-100 border border-indigo-200">
-              <User className="h-3 w-3 text-indigo-600" />
+          <DropdownMenuTrigger className="flex items-center gap-2 rounded-full border border-slate-200 bg-white px-2.5 py-1.5 text-xs text-slate-500 shadow-sm shadow-slate-200/70 outline-none transition-colors hover:bg-slate-50 hover:text-slate-700">
+            <div className="flex h-6 w-6 items-center justify-center rounded-full border border-slate-200 bg-slate-950">
+              <User className="h-3 w-3 text-white" />
             </div>
             <span className="text-slate-700 font-medium">
               {username ?? user?.sub ?? "User"}

@@ -24,7 +24,7 @@ import types
 from typing import Any
 
 import pytest
-from sqlalchemy import DateTime, UniqueConstraint
+from sqlalchemy import DateTime, Index, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 
 from services.eep.app.db.models import (
@@ -62,6 +62,10 @@ def _col_names(model: Any) -> list[str]:
 
 def _unique_constraints(model: Any) -> list[UniqueConstraint]:
     return [c for c in model.__table__.constraints if isinstance(c, UniqueConstraint)]
+
+
+def _indexes(model: Any) -> list[Index]:
+    return list(model.__table__.indexes)
 
 
 # ── Base ───────────────────────────────────────────────────────────────────────
@@ -220,6 +224,13 @@ class TestJobPageModel:
         col_sets = [frozenset(c.name for c in uc.columns) for uc in constraints]
         assert frozenset({"job_id", "page_number", "sub_page_index"}) in col_sets
 
+    def test_unique_index_on_original_page(self) -> None:
+        indexes = {idx.name: idx for idx in _indexes(JobPage)}
+        idx = indexes["uq_job_pages_original_page"]
+        assert idx.unique
+        assert [col.name for col in idx.columns] == ["job_id", "page_number"]
+        assert str(idx.dialect_options["postgresql"]["where"]) == "sub_page_index IS NULL"
+
     @pytest.mark.parametrize(
         "col", ["quality_summary", "layout_consensus_result", "review_reasons"]
     )
@@ -289,6 +300,13 @@ class TestPageLineageModel:
         constraints = _unique_constraints(PageLineage)
         col_sets = [frozenset(c.name for c in uc.columns) for uc in constraints]
         assert frozenset({"job_id", "page_number", "sub_page_index"}) in col_sets
+
+    def test_unique_index_on_original_page(self) -> None:
+        indexes = {idx.name: idx for idx in _indexes(PageLineage)}
+        idx = indexes["uq_page_lineage_original_page"]
+        assert idx.unique
+        assert [col.name for col in idx.columns] == ["job_id", "page_number"]
+        assert str(idx.dialect_options["postgresql"]["where"]) == "sub_page_index IS NULL"
 
     def test_artifact_state_columns_present(self) -> None:
         assert "preprocessed_artifact_state" in _col_names(PageLineage)

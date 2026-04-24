@@ -58,7 +58,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from services.eep.app.auth import CurrentUser, require_user
-from services.eep.app.db.models import Job, JobPage, PageLineage
+from services.eep.app.db.models import Job, JobPage, PageLineage, ServiceInvocation
 from services.eep.app.db.session import get_session
 from shared.io.storage import get_backend, rewrite_presigned_url_for_public_endpoint
 
@@ -221,6 +221,16 @@ def _resolve_job_id_for_uri(db: Session, uri: str) -> str | None:
     )
     if page is not None:
         return page.job_id
+
+    rectified_invocation: ServiceInvocation | None = (
+        db.query(ServiceInvocation)
+        .filter(ServiceInvocation.metrics["rectified_image_uri"].astext == uri)
+        .first()
+    )
+    if rectified_invocation is not None:
+        lineage = db.get(PageLineage, rectified_invocation.lineage_id)
+        if lineage is not None:
+            return lineage.job_id
 
     return None
 
@@ -418,6 +428,8 @@ def artifact_preview(
                 img.seek(body.page_index)
             except EOFError:
                 img.seek(0)
+        original_width = int(img.width)
+        original_height = int(img.height)
         if img.mode not in ("RGB", "RGBA", "L"):
             img = img.convert("RGB")
         if body.max_width and img.width > body.max_width:
@@ -435,5 +447,11 @@ def artifact_preview(
 
     logger.info("artifact_preview: user=%s uri=%s", user.user_id, uri)
     return StreamingResponse(
-        buf, media_type="image/png", headers={"Cache-Control": "private, max-age=300"}
+        buf,
+        media_type="image/png",
+        headers={
+            "Cache-Control": "private, max-age=300",
+            "X-Original-Width": str(original_width),
+            "X-Original-Height": str(original_height),
+        },
     )

@@ -14,7 +14,7 @@ export function StatusBadge({ status, type, className }: StatusBadgeProps) {
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-md px-2 py-0.5 text-xs font-medium border",
+        "inline-flex items-center gap-1.5 rounded-full px-2.5 py-1 text-xs font-medium border shadow-sm shadow-slate-200/40",
         cls,
         className
       )}
@@ -33,6 +33,7 @@ export function StatusDot({ status }: { status: string }) {
     rectification: "bg-purple-500",
     ptiff_qa_pending: "bg-indigo-500",
     layout_detection: "bg-cyan-500",
+    semantic_norm: "bg-blue-500",
     pending_human_correction: "bg-orange-500",
     accepted: "bg-emerald-500",
     review: "bg-yellow-500",

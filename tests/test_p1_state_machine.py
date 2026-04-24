@@ -39,6 +39,7 @@ ALL_PAGE_STATES = frozenset(
         "rectification",
         "ptiff_qa_pending",
         "layout_detection",
+        "semantic_norm",
         "pending_human_correction",
         "accepted",
         "review",
@@ -66,10 +67,12 @@ VALID_TRANSITIONS = [
     ("layout_detection", "review"),
     ("layout_detection", "failed"),
     ("layout_detection", "pending_human_correction"),
-    ("pending_human_correction", "layout_detection"),
-    ("pending_human_correction", "accepted"),
+    ("pending_human_correction", "semantic_norm"),
     ("pending_human_correction", "review"),
     ("pending_human_correction", "split"),
+    ("semantic_norm", "layout_detection"),
+    ("semantic_norm", "accepted"),
+    ("semantic_norm", "failed"),
 ]
 
 # A representative sample of explicitly prohibited transitions
@@ -106,8 +109,10 @@ INVALID_TRANSITIONS = [
     ("queued", "split"),
     # No direct preprocessing → review
     ("preprocessing", "review"),
-    # No pending_human_correction → failed
+    # No pending_human_correction → failed/accepted/layout_detection (all go via semantic_norm)
     ("pending_human_correction", "failed"),
+    ("pending_human_correction", "layout_detection"),
+    ("pending_human_correction", "accepted"),
     # Identical state self-transition
     ("queued", "queued"),
     ("preprocessing", "preprocessing"),
@@ -138,8 +143,9 @@ class TestAllowedTransitionsStructure:
             assert (
                 ALLOWED_TRANSITIONS[state] == frozenset()
             ), f"Leaf-final state '{state}' must have no outgoing transitions"
-        # accepted has exactly one outgoing transition (user-initiated re-correction)
-        assert ALLOWED_TRANSITIONS["accepted"] == frozenset({"pending_human_correction"})
+        assert ALLOWED_TRANSITIONS["accepted"] == frozenset(
+            {"pending_human_correction", "semantic_norm"}
+        )
 
     def test_split_has_no_transitions(self) -> None:
         assert ALLOWED_TRANSITIONS["split"] == frozenset()
@@ -148,7 +154,7 @@ class TestAllowedTransitionsStructure:
         assert ALLOWED_TRANSITIONS["queued"] == frozenset({"preprocessing", "failed"})
 
     def test_pending_human_correction_transitions(self) -> None:
-        expected = frozenset({"layout_detection", "accepted", "review", "split"})
+        expected = frozenset({"semantic_norm", "review", "split"})
         assert ALLOWED_TRANSITIONS["pending_human_correction"] == expected
 
     def test_layout_detection_transitions(self) -> None:
@@ -192,13 +198,21 @@ class TestValidTransitions:
         # User explicitly sends page to review
         validate_transition("layout_detection", "pending_human_correction")
 
-    def test_pending_human_correction_to_layout_detection(self) -> None:
-        # Correction submitted, pipeline_mode=layout → resume IEP2
-        validate_transition("pending_human_correction", "layout_detection")
+    def test_pending_human_correction_to_semantic_norm(self) -> None:
+        # Correction submitted, pipeline_mode=layout → iep1e then IEP2
+        validate_transition("pending_human_correction", "semantic_norm")
 
-    def test_pending_human_correction_to_accepted(self) -> None:
-        # Correction submitted, pipeline_mode=preprocess → direct accept
-        validate_transition("pending_human_correction", "accepted")
+    def test_semantic_norm_to_layout_detection(self) -> None:
+        # After iep1e, proceed to IEP2
+        validate_transition("semantic_norm", "layout_detection")
+
+    def test_semantic_norm_to_accepted(self) -> None:
+        # After iep1e, pipeline_mode=preprocess → accept
+        validate_transition("semantic_norm", "accepted")
+
+    def test_accepted_to_semantic_norm(self) -> None:
+        # A split sibling correction can force pair-level IEP1E reconsideration.
+        validate_transition("accepted", "semantic_norm")
 
     def test_pending_human_correction_to_review(self) -> None:
         # Correction rejected
@@ -227,9 +241,10 @@ class TestInvalidTransitions:
             validate_transition(from_state, to_state)
 
     def test_accepted_to_any_invalid_state_raises(self) -> None:
-        # accepted → pending_human_correction is now valid (reviewer flag action).
+        # accepted → pending_human_correction is valid (reviewer flag action).
+        # accepted → semantic_norm is valid (split sibling correction).
         # All other transitions from accepted are still invalid.
-        invalid_targets = ALL_PAGE_STATES - {"pending_human_correction"}
+        invalid_targets = ALL_PAGE_STATES - {"pending_human_correction", "semantic_norm"}
         for state in invalid_targets:
             with pytest.raises(InvalidTransitionError):
                 validate_transition("accepted", state)
@@ -336,6 +351,7 @@ class TestIsWorkerTerminal:
             "preprocessing",
             "rectification",
             "layout_detection",
+            "semantic_norm",
         }
 
 
@@ -388,15 +404,16 @@ class TestAllowedNext:
 
     def test_pending_human_correction_allowed_next(self) -> None:
         result = allowed_next("pending_human_correction")
-        assert result == frozenset({"layout_detection", "accepted", "review", "split"})
+        assert result == frozenset({"semantic_norm", "review", "split"})
 
     def test_layout_detection_allowed_next(self) -> None:
         result = allowed_next("layout_detection")
         assert result == frozenset({"accepted", "review", "failed", "pending_human_correction"})
 
     def test_accepted_allowed_next_has_flag_transition(self) -> None:
-        # accepted → pending_human_correction is the reviewer flag action.
-        assert allowed_next("accepted") == frozenset({"pending_human_correction"})
+        assert allowed_next("accepted") == frozenset(
+            {"pending_human_correction", "semantic_norm"}
+        )
 
     def test_review_allowed_next_is_empty(self) -> None:
         assert allowed_next("review") == frozenset()

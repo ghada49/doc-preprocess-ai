@@ -383,7 +383,7 @@ class TestIep1dSchemas:
                 job_id=_JOB_ID,
                 page_number=1,
                 image_uri=_ARTIFACT_URI,
-                material_type="microfilm",  # type: ignore[arg-type]
+                material_type="scroll",  # type: ignore[arg-type]
             )
 
     def test_rectify_response_valid(self) -> None:

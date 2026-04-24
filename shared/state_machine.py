@@ -86,19 +86,32 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     ),
     "pending_human_correction": frozenset(
         {
-            "layout_detection",  # correction submitted, pipeline_mode=layout → resume IEP2
-            "accepted",  # correction submitted, pipeline_mode=preprocess → direct accept
+            "semantic_norm",  # correction submitted → iep1e (all pipeline modes)
             "review",  # correction rejected
             "split",  # human split: parent → split after children reach terminal
         }
     ),
-    # ── Accepted: leaf-final for automation, but reviewer may flag for re-correction ──
+    # Post-human-correction semantic normalization: worker runs iep1e (orientation +
+    # reading order) then routes to layout_detection (layout mode) or accepted
+    # (preprocess-only mode).
+    "semantic_norm": frozenset(
+        {
+            "layout_detection",  # iep1e done, pipeline_mode=layout → proceed to IEP2
+            "accepted",          # iep1e done, pipeline_mode=preprocess → accept
+            "failed",            # infrastructure failure; retries exhausted
+        }
+    ),
+    # ── Accepted: leaf-final for automation, but reviewer/system may reopen it ──
     # Transition to pending_human_correction is user-initiated only (PTIFF QA viewer
     # flag action). This re-opens the page for human correction; after correction the
     # page resumes the normal pipeline (layout_detection or accepted depending on mode).
+    # Transition to semantic_norm is system-initiated only: when a split sibling is
+    # human-corrected, an already-accepted child must be reconsidered with the pair
+    # for reading direction and rotation.
     "accepted": frozenset(
         {
             "pending_human_correction",  # reviewer flags via PTIFF QA viewer
+            "semantic_norm",  # sibling correction re-runs pair-level IEP1E
         }
     ),
     # ── Truly leaf-final states: no outgoing transitions ─────────────────────────
@@ -116,6 +129,7 @@ _ALL_PAGE_STATES: frozenset[str] = frozenset(
         "rectification",
         "ptiff_qa_pending",
         "layout_detection",
+        "semantic_norm",
         "pending_human_correction",
         "accepted",
         "review",

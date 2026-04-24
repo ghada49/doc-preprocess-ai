@@ -139,13 +139,31 @@ def _fetch_job_or_404(db: Session, job_id: str) -> Job:
 
 
 def _leaf_pages_ordered(db: Session, job_id: str) -> list[JobPage]:
-    """Return all non-split leaf pages sorted by (page_number, sub_page_index)."""
+    """
+    Return all non-split leaf pages sorted in reading order.
+
+    Sort key: (page_number, reading_order, sub_page_index)
+
+    When reading_order is set (assigned by IEP1E), it is authoritative and
+    controls the file order inside the ZIP.  For pages where reading_order is
+    NULL (single-page jobs, or pages not yet through IEP1E), sub_page_index is
+    used as a tie-breaker, matching the original physical-left-first behaviour.
+
+    ZIP filenames still use sub_page_index (page_0001_0.tiff / page_0001_1.tiff)
+    because that naming is part of the archival contract — only the ordering
+    inside the archive is affected by reading_order.
+    """
     rows: list[JobPage] = (
         db.query(JobPage)
         .filter(JobPage.job_id == job_id, JobPage.status != "split")
         .all()
     )
-    rows.sort(key=lambda p: (p.page_number, p.sub_page_index if p.sub_page_index is not None else -1))
+    rows.sort(key=lambda p: (
+        p.page_number,
+        p.reading_order if p.reading_order is not None
+        else (p.sub_page_index + 1 if p.sub_page_index is not None else 0),
+        p.sub_page_index if p.sub_page_index is not None else -1,
+    ))
     return rows
 
 
@@ -155,11 +173,19 @@ def _canonical_filename(page: JobPage) -> str:
 
     Format:
       page_0001.tiff          — whole page (sub_page_index IS NULL)
-      page_0001_0.tiff        — left split child (sub_page_index == 0)
-      page_0001_1.tiff        — right split child (sub_page_index == 1)
+      page_0001_1.tiff        — split child, reading_order 1 (first page to read)
+      page_0001_2.tiff        — split child, reading_order 2 (second page to read)
+      page_0001_0.tiff        — split child, reading_order not yet assigned (fallback)
+
+    When reading_order is set the suffix is 1-based reading position so that
+    alphabetical filename order matches reading order for both LTR and RTL jobs.
+    For RTL Arabic spreads the physical right child (sub_page_index=1) gets
+    suffix _1 (first to read) and the physical left child gets suffix _2.
+    When reading_order is NULL the old sub_page_index suffix is used unchanged.
     """
     if page.sub_page_index is not None:
-        return f"page_{page.page_number:04d}_{page.sub_page_index}.tiff"
+        suffix = page.reading_order if page.reading_order is not None else page.sub_page_index
+        return f"page_{page.page_number:04d}_{suffix}.tiff"
     return f"page_{page.page_number:04d}.tiff"
 
 

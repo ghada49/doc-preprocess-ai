@@ -57,7 +57,8 @@ WORKDIR /app
 
 ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    UV_HTTP_TIMEOUT=120
 
 RUN pip install --no-cache-dir --upgrade pip wheel "setuptools<81"
 
@@ -79,5 +80,8 @@ RUN if [ "$ENABLE_REAL_MODEL" = "true" ]; then \
         -r /tmp/requirements-real-iep2b.txt; \
     fi
 
-# Source code is volume-mounted in development (see docker-compose.yml).
-# CMD is supplied by docker-compose.yml.
+COPY shared/ ./shared/
+COPY services/iep2b/ ./services/iep2b/
+
+EXPOSE 8005
+CMD ["uvicorn", "services.iep2b.app.main:app", "--host", "0.0.0.0", "--port", "8005"]

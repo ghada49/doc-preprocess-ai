@@ -44,6 +44,7 @@ from services.eep.app.auth import CurrentUser, assert_job_ownership, require_use
 from services.eep.app.db.models import Job, JobPage, PageLineage
 from services.eep.app.db.page_state import advance_page_state
 from services.eep.app.db.session import get_session
+from services.eep.app.jobs.summary import sync_job_summary
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -143,13 +144,22 @@ def send_to_review(
         )
         .first()
     )
-    if lineage is not None:
-        gate_results = dict(lineage.gate_results or {})
-        gate_results.pop("downsample", None)
-        gate_results.pop("layout_input", None)
-        gate_results.pop("layout_adjudication", None)
-        lineage.gate_results = gate_results or None
-        lineage.layout_artifact_state = "pending"
+    if lineage is None:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=(
+                f"Data-integrity failure: no lineage row for job {job_id!r} "
+                f"page {page_number} sub_page_index {page.sub_page_index!r}. "
+                "Page cannot be sent to review without an existing lineage record."
+            ),
+        )
+
+    gate_results = dict(lineage.gate_results or {})
+    gate_results.pop("downsample", None)
+    gate_results.pop("layout_input", None)
+    gate_results.pop("layout_adjudication", None)
+    lineage.gate_results = gate_results or None
+    lineage.layout_artifact_state = "pending"
 
     advanced = advance_page_state(
         db,
@@ -172,6 +182,7 @@ def send_to_review(
     page.status = "pending_human_correction"
     page.review_reasons = ["user_requested_review"]
 
+    sync_job_summary(db, job)
     db.commit()
 
     logger.info(

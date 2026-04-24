@@ -17,10 +17,11 @@ Implements:
        automated pipeline and landed in accepted.
 
 Ordering:
-  Pages are sorted by (page_number ASC, sub_page_index ASC NULLS FIRST).
-  Split children (sub_page_index 0 and 1) immediately follow the parent
-  page_number. The parent row itself (sub_page_index IS NULL) is excluded by
-  _leaf_pages, so children appear in sequence after any preceding whole page.
+  Pages are sorted by (page_number ASC, reading_order ASC, sub_page_index ASC).
+  When reading_order is set (assigned by IEP1E), split children appear in
+  semantic reading order (RTL spreads show right page first).  For pages not yet
+  through IEP1E (ptiff_qa_pending in manual mode), reading_order is NULL and the
+  fallback physical sub_page_index order is used.
 
 Image delivery:
   Prefers output_image_uri (PTIFF).  Falls back to input_image_uri (OTIFF)
@@ -46,6 +47,7 @@ from __future__ import annotations
 
 import logging
 import os
+from datetime import datetime, timezone
 from urllib.parse import urlparse
 
 import boto3
@@ -57,6 +59,7 @@ from services.eep.app.auth import CurrentUser, assert_job_ownership, require_use
 from services.eep.app.db.models import Job, JobPage
 from services.eep.app.db.page_state import advance_page_state
 from services.eep.app.db.session import get_session
+from services.eep.app.jobs.summary import derive_job_status, leaf_pages_from_pages
 from shared.io.storage import rewrite_presigned_url_for_public_endpoint
 
 logger = logging.getLogger(__name__)
@@ -68,6 +71,24 @@ router = APIRouter()
 
 _BUCKET: str = os.environ.get("S3_BUCKET_NAME", "libraryai")
 _READ_EXPIRES_IN: int = int(os.environ.get("ARTIFACT_READ_PRESIGN_EXPIRES_SECONDS", "300"))
+
+
+def _sync_job_summary(db: Session, job: Job) -> None:
+    pages = db.query(JobPage).filter_by(job_id=job.job_id).all()
+    leaf_pages = leaf_pages_from_pages(pages)
+    now = datetime.now(timezone.utc)
+
+    job.accepted_count = sum(1 for page in leaf_pages if page.status == "accepted")
+    job.review_count = sum(1 for page in leaf_pages if page.status == "review")
+    job.failed_count = sum(1 for page in leaf_pages if page.status == "failed")
+    job.pending_human_correction_count = sum(
+        1 for page in leaf_pages if page.status == "pending_human_correction"
+    )
+    job.status = derive_job_status(leaf_pages)
+    if job.status in {"done", "failed"}:
+        job.completed_at = job.completed_at or now
+    else:
+        job.completed_at = None
 
 
 # ---------------------------------------------------------------------------
@@ -190,18 +211,29 @@ def _fetch_job_or_404(db: Session, job_id: str) -> Job:
 
 def _leaf_pages_ordered(db: Session, job_id: str) -> list[JobPage]:
     """
-    Return all non-split leaf pages sorted by (page_number, sub_page_index).
+    Return all non-split leaf pages sorted in reading order.
 
-    Split-parent rows (status == 'split') are excluded; their children appear
-    in ascending sub_page_index order after any preceding whole-page rows.
-    None sub_page_index sorts before 0 (NULLS FIRST semantics).
+    Sort key: (page_number, reading_order, sub_page_index)
+
+    When reading_order is set (assigned by IEP1E after orientation + direction
+    resolution), the carousel navigates pages in the order a reader would
+    encounter them — e.g. right-page first for RTL spreads.
+
+    For pages where reading_order is NULL (ptiff_qa_pending state in manual
+    mode runs before IEP1E, so reading_order is not yet assigned), the sort
+    falls back to physical sub_page_index, preserving the previous behaviour.
     """
     rows: list[JobPage] = (
         db.query(JobPage)
         .filter(JobPage.job_id == job_id, JobPage.status != "split")
         .all()
     )
-    rows.sort(key=lambda p: (p.page_number, p.sub_page_index if p.sub_page_index is not None else -1))
+    rows.sort(key=lambda p: (
+        p.page_number,
+        p.reading_order if p.reading_order is not None
+        else (p.sub_page_index + 1 if p.sub_page_index is not None else 0),
+        p.sub_page_index if p.sub_page_index is not None else -1,
+    ))
     return rows
 
 
@@ -344,10 +376,12 @@ def ptiff_qa_viewer(
 
     **Navigation**
 
-    Pages are ordered by ``(page_number ASC, sub_page_index ASC NULLS FIRST)``.
-    Omit ``page_number`` to start at the first page.  Use the ``prev`` and
-    ``next`` fields in the response to walk forward or backward through the
-    collection.
+    Pages are ordered by ``(page_number ASC, reading_order ASC, sub_page_index ASC)``.
+    When ``reading_order`` is set (post-IEP1E), carousel navigation follows
+    semantic reading order — RTL spreads navigate right-page → left-page.
+    For pages not yet through IEP1E, physical sub_page_index order is used.
+    Omit ``page_number`` to start at the first page in reading order.  Use
+    the ``prev`` and ``next`` fields to walk forward or backward.
 
     **Image display**
 
@@ -561,9 +595,19 @@ def flag_page_for_correction(
                 page.page_id,
                 page.status,
             )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Page state changed concurrently; please retry.",
+            )
+        page.status = "pending_human_correction"
+        page.acceptance_decision = None
+        page.routing_path = None
+        page.completed_at = None
+        page.review_reasons = ["user_flagged_for_correction"]
         # Clear any prior QA approval so re-correction starts fresh.
         page.ptiff_qa_approved = False
 
+    _sync_job_summary(db, job)
     db.commit()
 
     logger.info(

@@ -71,6 +71,7 @@ def _make_job(
     job.created_at = created_at
     job.updated_at = created_at
     job.completed_at = None
+    job.reading_direction = None
     return job
 
 
@@ -84,13 +85,17 @@ def _make_session(jobs: list[Any], total: int | None = None) -> MagicMock:
     _total = total if total is not None else len(jobs)
 
     chain = session.query.return_value
-    # ilike / filter chains — each .filter() returns the chain itself
+    # Endpoint: db.query(Job, User).outerjoin(...) — keep chain flowing
+    chain.outerjoin.return_value = chain
     chain.filter.return_value = chain
-    chain.count.return_value = _total
     chain.order_by.return_value = chain
     chain.offset.return_value = chain
     chain.limit.return_value = chain
-    chain.all.return_value = jobs
+    # Endpoint uses .with_entities(count).scalar() for total; .all() for rows
+    chain.with_entities.return_value = chain
+    chain.scalar.return_value = _total
+    # Endpoint unpacks list[tuple[Job, User|None]]; mock as (job, None) pairs
+    chain.all.return_value = [(j, None) for j in jobs]
 
     return session
 

@@ -55,10 +55,9 @@ export interface PresignUploadResponse {
 export type MaterialType =
   | "book"
   | "newspaper"
-  | "archival_document"
-  | "document";
+  | "microfilm";
 
-export type PipelineMode = "preprocess" | "layout";
+export type PipelineMode = "preprocess" | "layout" | "layout_with_ocr";
 export type JobStatus = "queued" | "running" | "done" | "failed";
 
 export type PageState =
@@ -67,6 +66,7 @@ export type PageState =
   | "rectification"
   | "ptiff_qa_pending"
   | "layout_detection"
+  | "semantic_norm"
   | "pending_human_correction"
   | "accepted"
   | "review"
@@ -80,7 +80,7 @@ export interface PageInput {
 
 export interface CreateJobRequest {
   collection_id: string;
-  material_type: MaterialType;
+  material_type?: MaterialType;
   pages: PageInput[];
   pipeline_mode: PipelineMode;
   policy_version: string;
@@ -112,6 +112,7 @@ export interface JobSummary {
   created_at: string;
   updated_at: string;
   completed_at: string | null;
+  reading_direction: "ltr" | "rtl" | "unresolved" | null;
 }
 
 export interface QualitySummary {
@@ -133,6 +134,7 @@ export interface JobPage {
   review_reasons: string[] | null;
   acceptance_decision: string | null;
   processing_time_ms: number | null;
+  reading_order: number | null;
 }
 
 export interface JobDetailResponse {
@@ -311,6 +313,7 @@ export interface CorrectionWorkspaceDetail {
   pipeline_mode: PipelineMode;
   review_reasons: string[];
   original_otiff_uri: string | null;
+  parent_source_uri: string | null;
   current_output_uri: string | null;
   current_output_role: LayoutArtifactRole | null;
   current_layout_uri: string | null;
@@ -462,7 +465,8 @@ export interface ServiceHealthRate {
     | "rectification_success_rate"
     | "layout_success_rate"
     | "human_review_throughput_rate"
-    | "structural_agreement_rate";
+    | "structural_agreement_rate"
+    | "rescue_rate";
   label: string;
   value: number | null;
 }
@@ -473,6 +477,8 @@ export interface ServiceHealthResponse {
   layout_success_rate?: number | null;
   human_review_throughput_rate?: number | null;
   structural_agreement_rate?: number | null;
+  rescue_rate?: number | null;
+  policy_skips_count?: number | null;
   window_hours?: number | null;
   services?: Array<{
     service_name: string;

@@ -19,6 +19,7 @@ from typing import Any, Literal
 from urllib.parse import urlparse
 
 import cv2
+import httpx
 import numpy as np
 import redis as redis_lib
 from pydantic import ValidationError
@@ -52,6 +53,8 @@ from services.eep_worker.app.geometry_invocation import (
     GeometryServiceError,
     invoke_geometry_services,
 )
+from services.eep.app.db.quality_gate import log_gate
+from services.eep.app.gates.geometry_selection import build_geometry_gate_log_record
 from services.eep_worker.app.intake import (
     OtiffDecodeError,
     OtiffHashMismatchError,
@@ -71,11 +74,14 @@ from services.eep_worker.app.normalization_step import (
     NormalizationOutcome,
     run_normalization_and_first_validation,
 )
+from services.eep_worker.app.split_step import SplitOutcome, run_split_normalization
 from services.eep_worker.app.rescue_step import RescueOutcome, run_rescue_flow
 from services.eep_worker.app.task import build_gate_config
 from services.eep_worker.app.watchdog import TaskWatchdog
 from shared.gpu.backend import BackendError, GPUBackend, LocalHTTPBackend, RunpodBackend
+from shared.metrics import EEP_RECTIFICATION_POLICY_SKIPS
 from shared.io.storage import get_backend
+from shared.schemas.iep0 import BatchClassifyResponse, ClassifyResponse
 from shared.schemas.layout import (
     LayoutAdjudicationResult,
     LayoutArtifactRole,
@@ -84,6 +90,7 @@ from shared.schemas.layout import (
     Region,
 )
 from shared.schemas.preprocessing import PreprocessBranchResponse
+from shared.schemas.semantic_norm import SemanticNormResponse
 from shared.schemas.ucf import BoundingBox
 from shared.schemas.queue import PageTask
 
@@ -96,6 +103,7 @@ _ACK_ONLY_STATES: frozenset[str] = frozenset(
         "accepted",
         "review",
         "failed",
+        "ptiff_qa_pending",
         "pending_human_correction",
         "split",
     }
@@ -107,6 +115,12 @@ class RetryableTaskError(RuntimeError):
 
 
 @dataclass(slots=True)
+class _SemanticNormSplitChild:
+    page: JobPage
+    lineage: PageLineage
+
+
+@dataclass(slots=True)
 class WorkerConfig:
     worker_id: str
     poll_timeout_seconds: float
@@ -115,6 +129,8 @@ class WorkerConfig:
     layout_artifact_io_timeout_seconds: float
     layout_artifact_io_attempts: int
     layout_artifact_io_backoff_seconds: float
+    iep0_endpoint: str
+    iep0_batch_endpoint: str
     iep1a_endpoint: str
     iep1b_endpoint: str
     iep1d_endpoint: str
@@ -123,11 +139,14 @@ class WorkerConfig:
     backend: GPUBackend
     iep1d_execution_timeout_seconds: float
     iep2_call_timeout_seconds: float
+    iep0_circuit_breaker: CircuitBreaker
     iep1a_circuit_breaker: CircuitBreaker
     iep1b_circuit_breaker: CircuitBreaker
     iep1d_circuit_breaker: CircuitBreaker
     iep2a_circuit_breaker: CircuitBreaker
     iep2b_circuit_breaker: CircuitBreaker
+    iep1e_endpoint: str
+    iep1e_circuit_breaker: CircuitBreaker
 
 
 def _env_float(name: str, default: float) -> float:
@@ -199,6 +218,8 @@ def build_worker_config(worker_id: str | None = None) -> WorkerConfig:
             "LAYOUT_ARTIFACT_IO_BACKOFF_SECONDS",
             1.0,
         ),
+        iep0_endpoint=_service_endpoint("IEP0_URL", "http://iep0:8006", "/v1/classify"),
+        iep0_batch_endpoint=_service_endpoint("IEP0_URL", "http://iep0:8006", "/v1/classify-batch"),
         iep1a_endpoint=_service_endpoint("IEP1A_URL", "http://iep1a:8001", "/v1/geometry"),
         iep1b_endpoint=_service_endpoint("IEP1B_URL", "http://iep1b:8002", "/v1/geometry"),
         iep1d_endpoint=_service_endpoint("IEP1D_URL", "http://iep1d:8003", "/v1/rectify"),
@@ -210,11 +231,14 @@ def build_worker_config(worker_id: str | None = None) -> WorkerConfig:
             "IEP2_CALL_TIMEOUT_SECONDS",
             cold_start_timeout + execution_timeout,
         ),
+        iep0_circuit_breaker=CircuitBreaker("iep0", cb_cfg),
         iep1a_circuit_breaker=CircuitBreaker("iep1a", cb_cfg),
         iep1b_circuit_breaker=CircuitBreaker("iep1b", cb_cfg),
         iep1d_circuit_breaker=CircuitBreaker("iep1d", cb_cfg),
         iep2a_circuit_breaker=CircuitBreaker("iep2a", cb_cfg),
         iep2b_circuit_breaker=CircuitBreaker("iep2b", cb_cfg),
+        iep1e_endpoint=_service_endpoint("IEP1E_URL", "http://iep1e:8007", "/v1/semantic-norm"),
+        iep1e_circuit_breaker=CircuitBreaker("iep1e", cb_cfg),
     )
 
 
@@ -370,6 +394,105 @@ def _sync_job_summary(session: Session, job: Job) -> None:
         job.completed_at = None
 
 
+def _update_job_reading_direction(job: Job, new_direction: str) -> None:
+    """
+    Persist reading_direction on job with merge policy:
+      - Write "ltr" or "rtl" unconditionally (resolved always wins).
+      - Write "unresolved" only if no resolved value has been stored yet.
+
+    This ensures a resolved direction from an earlier page is never demoted.
+    """
+    if new_direction in ("ltr", "rtl"):
+        job.reading_direction = new_direction
+    elif new_direction == "unresolved" and job.reading_direction is None:
+        job.reading_direction = "unresolved"
+
+
+def _reading_order_for_sub(direction: str, sub_page_index: int) -> int:
+    """
+    Compute the semantic reading_order (1-based) for a split child page.
+
+    After the post-rotation swap, sub_page_index=0 is always the physical
+    left page and sub_page_index=1 is the physical right page.
+
+    RTL:  right page (sub=1) is first in reading order → reading_order=1
+    LTR / unresolved: left page (sub=0) is first → reading_order=1
+    """
+    if direction == "rtl":
+        return 2 if sub_page_index == 0 else 1
+    # ltr or unresolved: left-first
+    return 1 if sub_page_index == 0 else 2
+
+
+def _clear_layout_artifacts_for_semantic_update(page: JobPage, lineage: PageLineage) -> None:
+    """Clear layout outputs that were produced against a now-stale page image."""
+    page.output_layout_uri = None
+    page.layout_consensus_result = None
+    gate_results = dict(lineage.gate_results or {})
+    gate_results.pop("downsample", None)
+    gate_results.pop("layout_input", None)
+    gate_results.pop("layout_adjudication", None)
+    lineage.gate_results = gate_results or None
+    lineage.layout_artifact_state = "pending"
+
+
+def _find_split_child_group_for_semantic_norm(
+    session: Session,
+    page: JobPage,
+    lineage: PageLineage,
+) -> list[_SemanticNormSplitChild] | None:
+    """Return sibling split children that must be semantically normalized together."""
+    if page.sub_page_index is None:
+        return None
+    if not getattr(lineage, "split_source", False) and not getattr(lineage, "parent_page_id", None):
+        return None
+
+    children: list[JobPage] = (
+        session.query(JobPage)
+        .filter(
+            JobPage.job_id == page.job_id,
+            JobPage.page_number == page.page_number,
+            JobPage.sub_page_index.isnot(None),
+        )
+        .order_by(JobPage.sub_page_index.asc())
+        .all()
+    )
+    if len(children) < 2:
+        return None
+
+    group: list[_SemanticNormSplitChild] = []
+    for child in children:
+        child_lineage = _find_lineage(
+            session,
+            child.job_id,
+            child.page_number,
+            child.sub_page_index,
+        )
+        if child_lineage is None:
+            logger.warning(
+                "worker_loop: split semantic_norm missing sibling lineage "
+                "job=%s page=%d sub=%s",
+                child.job_id,
+                child.page_number,
+                child.sub_page_index,
+            )
+            return None
+        if not child.output_image_uri:
+            logger.warning(
+                "worker_loop: split semantic_norm missing sibling artifact "
+                "job=%s page=%d sub=%s",
+                child.job_id,
+                child.page_number,
+                child.sub_page_index,
+            )
+            return None
+        group.append(_SemanticNormSplitChild(page=child, lineage=child_lineage))
+
+    if not any(child.page.page_id == page.page_id for child in group):
+        return None
+    return group
+
+
 def _resolve_material_type_placeholder(session: Session, job: Job, page: JobPage) -> str:
     """
     Placeholder IEP0 hook.
@@ -383,6 +506,292 @@ def _resolve_material_type_placeholder(session: Session, job: Job, page: JobPage
     if predicted:
         return str(predicted)
     return job.material_type
+
+
+async def _invoke_iep0_classification(
+    *,
+    job_id: str,
+    page_number: int,
+    image_uri: str,
+    iep0_endpoint: str,
+    iep0_circuit_breaker: CircuitBreaker,
+    backend: GPUBackend,
+    fallback_material_type: str,
+) -> str:
+    """
+    Call IEP0 to classify the material type of a single image.
+
+    If IEP0 is unavailable (circuit breaker open, timeout, error),
+    falls back to the job-level material_type.
+
+    Returns the resolved material_type string.
+    """
+    if not iep0_circuit_breaker.allow_call():
+        logger.warning(
+            "worker_loop: iep0 skipped by open circuit breaker job=%s page=%d; "
+            "using fallback material_type=%s",
+            job_id,
+            page_number,
+            fallback_material_type,
+        )
+        return fallback_material_type
+
+    payload = {
+        "job_id": job_id,
+        "page_number": page_number,
+        "image_uri": image_uri,
+    }
+
+    try:
+        raw = await backend.call(iep0_endpoint, payload)
+        response = ClassifyResponse.model_validate(raw)
+        iep0_circuit_breaker.record_success()
+        logger.info(
+            "worker_loop: iep0 classified job=%s page=%d as %s (conf=%.3f)",
+            job_id,
+            page_number,
+            response.material_type,
+            response.confidence,
+        )
+        return response.material_type
+    except BackendError as exc:
+        iep0_circuit_breaker.record_failure(exc.kind)
+        logger.warning(
+            "worker_loop: iep0 failed job=%s page=%d kind=%s error=%s; "
+            "using fallback material_type=%s",
+            job_id,
+            page_number,
+            exc.kind.value,
+            exc,
+            fallback_material_type,
+        )
+    except ValidationError as exc:
+        iep0_circuit_breaker.record_failure(None)
+        logger.warning(
+            "worker_loop: iep0 returned malformed response job=%s page=%d error=%s; "
+            "using fallback material_type=%s",
+            job_id,
+            page_number,
+            exc,
+            fallback_material_type,
+        )
+    except Exception:
+        iep0_circuit_breaker.record_failure(None)
+        logger.exception(
+            "worker_loop: unexpected iep0 failure job=%s page=%d; "
+            "using fallback material_type=%s",
+            job_id,
+            page_number,
+            fallback_material_type,
+        )
+    return fallback_material_type
+
+
+# ── IEP0: batch classification with majority voting ─────────────────────────
+
+_IEP0_SMALL_THRESHOLD = 11  # classify all if fewer than this many pages
+_IEP0_SAMPLE_RATIO = 0.2    # sample 20% of pages when >= threshold
+_IEP0_MAX_SAMPLE = 50       # hard cap on sample size
+_IEP0_VOTE_CONFIDENCE_THRESHOLD = 0.70  # 70% vote share required
+
+
+def _compute_sample_size(total_pages: int) -> int:
+    """
+    Compute number of images to sample for IEP0 majority voting.
+
+    - < 11 pages  → classify all
+    - >= 11 pages → 20% of total, capped at 50
+    """
+    if total_pages < _IEP0_SMALL_THRESHOLD:
+        return total_pages
+    import math
+    return min(math.ceil(total_pages * _IEP0_SAMPLE_RATIO), _IEP0_MAX_SAMPLE)
+
+
+async def _invoke_iep0_batch_classification(
+    *,
+    session: Session,
+    job: Job,
+    current_proxy_uri: str,
+    iep0_batch_endpoint: str,
+    iep0_circuit_breaker: CircuitBreaker,
+    backend: GPUBackend,
+    fallback_material_type: str,
+) -> str:
+    """
+    Classify job pages via IEP0 with majority voting and a confidence retry.
+
+    Round 1: sample images and classify.  If the winner gets >= 70% of votes,
+    accept immediately.  Otherwise take a second, *different* sample and
+    classify again, then combine both rounds' votes.  The final winner is
+    used regardless of its vote share (with a warning if still < 70%).
+
+    Falls back to fallback_material_type if IEP0 is unavailable.
+    """
+    if not iep0_circuit_breaker.allow_call():
+        logger.warning(
+            "worker_loop: iep0 batch skipped by open circuit breaker job=%s; "
+            "using fallback material_type=%s",
+            job.job_id,
+            fallback_material_type,
+        )
+        return fallback_material_type
+
+    # Gather all page image URIs from the job.
+    pages = session.query(JobPage).filter_by(job_id=job.job_id).all()
+    all_uris: list[str] = [current_proxy_uri]
+    for p in pages:
+        uri = p.input_image_uri
+        if uri and uri != current_proxy_uri:
+            all_uris.append(uri)
+
+    sample_size = _compute_sample_size(len(all_uris))
+
+    # ── Round 1 ─────────────────────────────────────────────────────────────
+    round1_uris = all_uris[:sample_size]
+    round1_response = await _call_iep0_batch(
+        job_id=job.job_id,
+        image_uris=round1_uris,
+        iep0_batch_endpoint=iep0_batch_endpoint,
+        iep0_circuit_breaker=iep0_circuit_breaker,
+        backend=backend,
+    )
+    if round1_response is None:
+        return fallback_material_type
+
+    # Check if winner has >= 70% of votes.
+    total_votes = round1_response.sample_size
+    winner_votes = round1_response.vote_counts.get(round1_response.material_type, 0)
+    vote_ratio = winner_votes / total_votes if total_votes > 0 else 0.0
+
+    if vote_ratio >= _IEP0_VOTE_CONFIDENCE_THRESHOLD:
+        logger.info(
+            "worker_loop: iep0 round 1 confident job=%s type=%s "
+            "votes=%d/%d (%.0f%%)",
+            job.job_id,
+            round1_response.material_type,
+            winner_votes,
+            total_votes,
+            vote_ratio * 100,
+        )
+        return round1_response.material_type
+
+    # ── Round 2: low confidence, retry with different images ────────────────
+    remaining_uris = all_uris[sample_size:]
+    if not remaining_uris:
+        # No more images to sample — use round 1 result with a warning.
+        logger.warning(
+            "worker_loop: iep0 low confidence job=%s type=%s "
+            "votes=%d/%d (%.0f%%) but no more images to sample",
+            job.job_id,
+            round1_response.material_type,
+            winner_votes,
+            total_votes,
+            vote_ratio * 100,
+        )
+        return round1_response.material_type
+
+    round2_size = min(sample_size, len(remaining_uris))
+    round2_uris = remaining_uris[:round2_size]
+    round2_response = await _call_iep0_batch(
+        job_id=job.job_id,
+        image_uris=round2_uris,
+        iep0_batch_endpoint=iep0_batch_endpoint,
+        iep0_circuit_breaker=iep0_circuit_breaker,
+        backend=backend,
+    )
+
+    if round2_response is None:
+        # Round 2 failed — use round 1 result.
+        logger.warning(
+            "worker_loop: iep0 round 2 failed job=%s; using round 1 result %s",
+            job.job_id,
+            round1_response.material_type,
+        )
+        return round1_response.material_type
+
+    # ── Combine both rounds' votes ──────────────────────────────────────────
+    from collections import Counter
+
+    combined_votes: Counter[str] = Counter()
+    for type_name, count in round1_response.vote_counts.items():
+        combined_votes[type_name] += count
+    for type_name, count in round2_response.vote_counts.items():
+        combined_votes[type_name] += count
+
+    final_winner = combined_votes.most_common(1)[0][0]
+    final_total = sum(combined_votes.values())
+    final_winner_votes = combined_votes[final_winner]
+    final_ratio = final_winner_votes / final_total if final_total > 0 else 0.0
+
+    if final_ratio < _IEP0_VOTE_CONFIDENCE_THRESHOLD:
+        logger.warning(
+            "worker_loop: iep0 still low confidence after 2 rounds job=%s "
+            "type=%s votes=%d/%d (%.0f%%)",
+            job.job_id,
+            final_winner,
+            final_winner_votes,
+            final_total,
+            final_ratio * 100,
+        )
+    else:
+        logger.info(
+            "worker_loop: iep0 round 2 resolved job=%s type=%s "
+            "votes=%d/%d (%.0f%%)",
+            job.job_id,
+            final_winner,
+            final_winner_votes,
+            final_total,
+            final_ratio * 100,
+        )
+
+    return final_winner
+
+
+async def _call_iep0_batch(
+    *,
+    job_id: str,
+    image_uris: list[str],
+    iep0_batch_endpoint: str,
+    iep0_circuit_breaker: CircuitBreaker,
+    backend: GPUBackend,
+) -> BatchClassifyResponse | None:
+    """
+    Call the IEP0 batch endpoint.  Returns the response on success,
+    or None on any failure (circuit breaker, backend error, validation).
+    """
+    payload = {
+        "job_id": job_id,
+        "image_uris": image_uris,
+    }
+
+    try:
+        raw = await backend.call(iep0_batch_endpoint, payload)
+        response = BatchClassifyResponse.model_validate(raw)
+        iep0_circuit_breaker.record_success()
+        return response
+    except BackendError as exc:
+        iep0_circuit_breaker.record_failure(exc.kind)
+        logger.warning(
+            "worker_loop: iep0 batch failed job=%s kind=%s error=%s",
+            job_id,
+            exc.kind.value,
+            exc,
+        )
+    except ValidationError as exc:
+        iep0_circuit_breaker.record_failure(None)
+        logger.warning(
+            "worker_loop: iep0 batch malformed response job=%s error=%s",
+            job_id,
+            exc,
+        )
+    except Exception:
+        iep0_circuit_breaker.record_failure(None)
+        logger.exception(
+            "worker_loop: unexpected iep0 batch failure job=%s",
+            job_id,
+        )
+    return None
 
 
 def _page_task_for(page: JobPage) -> PageTask:
@@ -655,6 +1064,154 @@ async def _call_layout_service(
     return None
 
 
+_IEP1E_READY_POLL_INTERVAL_SECONDS: float = 5.0
+_IEP1E_READY_TIMEOUT_SECONDS: float = 600.0  # covers model download + init on cold start
+
+
+async def _wait_for_iep1e_ready(endpoint: str) -> bool:
+    """
+    Poll iep1e /ready until it returns HTTP 200 or the timeout expires.
+
+    Background: iep1e's /health returns 200 as soon as FastAPI starts (~3 s),
+    but PaddlePaddle model loading takes another 60-120 s.  The shared
+    LocalHTTPBackend._wait_for_warm polls /health and passes too early,
+    causing the first inference request to hang until execution_timeout fires.
+
+    By polling /ready here (which returns 503 until is_model_ready() == True),
+    we absorb the model-loading wait as a cold-start grace period instead of
+    burning the inference timeout.
+
+    Returns:
+        True  — iep1e is ready to serve inference
+        False — timed out; caller should fall back
+    """
+    parsed = urlparse(endpoint)
+    ready_url = f"{parsed.scheme}://{parsed.netloc}/ready"
+    deadline = asyncio.get_event_loop().time() + _IEP1E_READY_TIMEOUT_SECONDS
+
+    async with httpx.AsyncClient() as client:
+        while True:
+            remaining = deadline - asyncio.get_event_loop().time()
+            if remaining <= 0:
+                logger.warning(
+                    "worker_loop: iep1e not ready after %.0fs — skipping",
+                    _IEP1E_READY_TIMEOUT_SECONDS,
+                )
+                return False
+            try:
+                resp = await client.get(
+                    ready_url, timeout=min(5.0, remaining)
+                )
+                if resp.status_code == 200:
+                    return True
+                # 503 = model still loading; any other non-200 is unexpected but
+                # we keep polling rather than failing fast.
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError):
+                pass  # container still starting
+
+            await asyncio.sleep(_IEP1E_READY_POLL_INTERVAL_SECONDS)
+
+
+async def _call_iep1e(
+    *,
+    page_uris: list[str],
+    x_centers: list[float],
+    sub_page_indices: list[int],
+    job_id: str,
+    page_number: int,
+    material_type: str,
+    endpoint: str,
+    backend: GPUBackend,
+    cb: CircuitBreaker,
+) -> SemanticNormResponse | None:
+    """
+    Call IEP1E POST /v1/semantic-norm.  Never raises — all failures return None.
+
+    On None, callers must fall back to the original (geometry-only) URIs.
+    Circuit breaker is checked before the call; recorded on success/failure.
+
+    Args:
+        page_uris:         1 or 2 IEP1C-normalized artifact URIs, physical left-first.
+        x_centers:         Physical x-center for each URI (same order).
+        sub_page_indices:  sub_page_index for each URI.
+        job_id:            Parent job identifier.
+        page_number:       1-indexed page number (for logging).
+        material_type:     Job material type string.
+        endpoint:          Full HTTP URL for IEP1E POST /v1/semantic-norm.
+        backend:           Shared GPUBackend instance.
+        cb:                Per-worker CircuitBreaker for IEP1E.
+
+    Returns:
+        SemanticNormResponse on success; None on any failure.
+    """
+    if not cb.allow_call():
+        logger.warning(
+            "worker_loop: iep1e skipped by open circuit breaker job=%s page=%d",
+            job_id,
+            page_number,
+        )
+        return None
+
+    # Wait for iep1e to finish model initialisation before sending inference.
+    # /health returns 200 immediately (FastAPI up), but /ready returns 503 until
+    # PaddlePaddle models are loaded.  Waiting here prevents warm_inference_timeout
+    # from firing on the first request after a container restart.
+    if not await _wait_for_iep1e_ready(endpoint):
+        return None
+
+    payload: dict[str, object] = {
+        "job_id": job_id,
+        "page_number": page_number,
+        "page_uris": page_uris,
+        "x_centers": x_centers,
+        "sub_page_indices": sub_page_indices,
+        "material_type": material_type,
+    }
+
+    try:
+        raw = await backend.call(endpoint, payload)
+        response = SemanticNormResponse.model_validate(raw)
+        cb.record_success()
+        logger.info(
+            "worker_loop: iep1e semantic-norm job=%s page=%d "
+            "direction=%s fallback=%s pages=%d",
+            job_id,
+            page_number,
+            response.reading_direction,
+            response.fallback_used,
+            len(response.pages),
+        )
+        return response
+    except BackendError as exc:
+        cb.record_failure(exc.kind)
+        logger.warning(
+            "worker_loop: iep1e failed job=%s page=%d kind=%s error=%s; "
+            "using geometry-only fallback",
+            job_id,
+            page_number,
+            exc.kind.value,
+            exc,
+        )
+    except ValidationError as exc:
+        cb.record_failure(None)
+        logger.warning(
+            "worker_loop: iep1e returned malformed response job=%s page=%d error=%s; "
+            "using geometry-only fallback",
+            job_id,
+            page_number,
+            exc,
+        )
+    except Exception:
+        cb.record_failure(None)
+        logger.exception(
+            "worker_loop: unexpected iep1e failure job=%s page=%d; "
+            "using geometry-only fallback",
+            job_id,
+            page_number,
+        )
+    return None
+
+
 def _write_layout_artifact(uri: str, payload: dict[str, Any]) -> None:
     data = json.dumps(payload, ensure_ascii=True, sort_keys=True).encode("utf-8")
     get_backend(uri).put_bytes(uri, data)
@@ -761,6 +1318,31 @@ async def _run_preprocessing(
     except Exception as exc:
         raise RetryableTaskError(f"proxy generation failed: {exc}") from exc
 
+    # ── IEP0: material-type classification via batch majority voting ───────
+    # Sample up to 10 page images from the job and classify them.
+    # The majority-voted result overrides the job-level material_type.
+    material_type = await _invoke_iep0_batch_classification(
+        session=session,
+        job=job,
+        current_proxy_uri=proxy_uri,
+        iep0_batch_endpoint=config.iep0_batch_endpoint,
+        iep0_circuit_breaker=config.iep0_circuit_breaker,
+        backend=config.backend,
+        fallback_material_type=material_type,
+    )
+
+    # Persist the classified material_type back to the job record so the
+    # frontend and downstream queries reflect the real classification.
+    if material_type != job.material_type:
+        logger.info(
+            "worker_loop: updating job material_type %s -> %s job=%s",
+            job.material_type,
+            material_type,
+            job.job_id,
+        )
+        job.material_type = material_type
+        session.commit()
+
     gate_config = build_gate_config(session)
     proxy_height, proxy_width = proxy_image.shape[:2]
 
@@ -785,6 +1367,19 @@ async def _run_preprocessing(
         raise RetryableTaskError(str(exc)) from exc
 
     selection = geometry_result.selection_result
+
+    # ── Write quality_gate_log row ─────────────────────────────────────────
+    gate_record = build_geometry_gate_log_record(
+        result=selection,
+        job_id=job.job_id,
+        page_number=page.page_number,
+        gate_type="geometry_selection",
+        iep1a_response=geometry_result.iep1a_result,
+        iep1b_response=geometry_result.iep1b_result,
+        processing_time_ms=(time.monotonic() - task_started_at) * 1000.0,
+    )
+    log_gate(session, **gate_record)
+
     update_geometry_result(
         session,
         lineage.lineage_id,
@@ -811,8 +1406,412 @@ async def _run_preprocessing(
         )
         return "ack"
 
-    # split_required check is deferred until after normalization so the reviewer
-    # has a preprocessed artifact (output_image_uri) to work with.
+    # ── Split handling ────────────────────────────────────────────────────────
+    # When split_required=True the image is a book spread with two page regions.
+    # Normalize both child pages, create child JobPage + PageLineage rows, and
+    # set the parent page to "split".
+
+    if selection.selected.response.split_required:
+        left_output_uri = _artifact_uri(
+            page.input_image_uri, job.job_id, "output",
+            page.page_number, 0, ".tiff",
+        )
+        right_output_uri = _artifact_uri(
+            page.input_image_uri, job.job_id, "output",
+            page.page_number, 1, ".tiff",
+        )
+        left_rescue_output_uri = _artifact_uri(
+            page.input_image_uri, job.job_id, "output_rectified",
+            page.page_number, 0, ".tiff",
+        )
+        right_rescue_output_uri = _artifact_uri(
+            page.input_image_uri, job.job_id, "output_rectified",
+            page.page_number, 1, ".tiff",
+        )
+        left_rectified_proxy_uri = _artifact_uri(
+            page.input_image_uri, job.job_id, "proxy_rectified",
+            page.page_number, 0, ".png",
+        )
+        right_rectified_proxy_uri = _artifact_uri(
+            page.input_image_uri, job.job_id, "proxy_rectified",
+            page.page_number, 1, ".png",
+        )
+        split_storage = get_backend(left_output_uri)
+        split_loader = make_cv2_image_loader(split_storage)
+
+        try:
+            split_outcome: SplitOutcome = await run_split_normalization(
+                full_res_image=full_res_image,
+                selected_geometry=selection.selected.response,
+                selected_model=selection.selected.model,
+                proxy_width=proxy_width,
+                proxy_height=proxy_height,
+                left_output_uri=left_output_uri,
+                right_output_uri=right_output_uri,
+                left_rescue_output_uri=left_rescue_output_uri,
+                right_rescue_output_uri=right_rescue_output_uri,
+                left_rectified_proxy_uri=left_rectified_proxy_uri,
+                right_rectified_proxy_uri=right_rectified_proxy_uri,
+                storage=split_storage,
+                image_loader=split_loader,
+                job_id=job.job_id,
+                page_number=page.page_number,
+                lineage_id=lineage.lineage_id,
+                material_type=material_type,
+                iep1d_endpoint=config.iep1d_endpoint,
+                iep1a_endpoint=config.iep1a_endpoint,
+                iep1b_endpoint=config.iep1b_endpoint,
+                iep1d_circuit_breaker=config.iep1d_circuit_breaker,
+                iep1a_circuit_breaker=config.iep1a_circuit_breaker,
+                iep1b_circuit_breaker=config.iep1b_circuit_breaker,
+                backend=config.backend,
+                session=session,
+                iep1d_execution_timeout_seconds=config.iep1d_execution_timeout_seconds,
+                gate_config=gate_config,
+            )
+        except Exception as exc:
+            raise RetryableTaskError(f"split normalization failed: {exc}") from exc
+
+        # ── IEP1E — semantic normalization for split children ────────────────
+        # Resolve orientation + reading order for both crops (best-effort).
+        # On failure, original physical-left-first order is preserved.
+        _split_iep1e_uri_map: dict[int, str] = {
+            0: split_outcome.left.branch_response.processed_image_uri
+            if split_outcome.left.branch_response is not None else left_output_uri,
+            1: split_outcome.right.branch_response.processed_image_uri
+            if split_outcome.right.branch_response is not None else right_output_uri,
+        }
+        _split_sem_result: SemanticNormResponse | None = None
+        try:
+            _left_br = split_outcome.left.branch_response
+            _right_br = split_outcome.right.branch_response
+            if _left_br is not None and _right_br is not None:
+                _split_page_uris = [
+                    _left_br.processed_image_uri,
+                    _right_br.processed_image_uri,
+                ]
+                _split_x_centers = [
+                    (_left_br.crop.crop_box.x_min + _left_br.crop.crop_box.x_max) / 2.0,
+                    (_right_br.crop.crop_box.x_min + _right_br.crop.crop_box.x_max) / 2.0,
+                ]
+                _split_sem_result = await _call_iep1e(
+                    page_uris=_split_page_uris,
+                    x_centers=_split_x_centers,
+                    sub_page_indices=[0, 1],
+                    job_id=job.job_id,
+                    page_number=page.page_number,
+                    material_type=material_type,
+                    endpoint=config.iep1e_endpoint,
+                    backend=config.backend,
+                    cb=config.iep1e_circuit_breaker,
+                )
+                if _split_sem_result is not None and _split_sem_result.pages:
+                    for _sp in _split_sem_result.pages:
+                        _split_iep1e_uri_map[_sp.sub_page_index] = _sp.oriented_uri
+
+                    # ── Blank-page rotation inheritance ──────────────────────
+                    # If exactly one page has no OCR text (blank page),
+                    # it cannot self-determine its orientation.  Apply the
+                    # same rotation as the confident sibling so both halves
+                    # are consistently oriented.
+                    _pages = _split_sem_result.pages
+                    if len(_pages) == 2:
+                        _p0, _p1 = _pages[0], _pages[1]
+                        _confident_page = None
+                        _blank_page = None
+                        if _p0.orientation.orientation_confident and not _p1.orientation.orientation_confident:
+                            _confident_page, _blank_page = _p0, _p1
+                        elif _p1.orientation.orientation_confident and not _p0.orientation.orientation_confident:
+                            _confident_page, _blank_page = _p1, _p0
+
+                        if (
+                            _confident_page is not None
+                            and _blank_page is not None
+                            and _confident_page.orientation.best_rotation_deg != 0
+                        ):
+                            _donor_deg = _confident_page.orientation.best_rotation_deg
+                            _blank_src_uri = _blank_page.original_uri
+                            _blank_oriented_uri = _artifact_uri(
+                                page.input_image_uri,
+                                job.job_id,
+                                "oriented",
+                                page.page_number,
+                                _blank_page.sub_page_index,
+                                ".tiff",
+                            )
+                            try:
+                                _raw = await asyncio.to_thread(
+                                    get_backend(_blank_src_uri).get_bytes, _blank_src_uri
+                                )
+                                _arr = np.frombuffer(_raw, dtype=np.uint8)
+                                _blank_img = cv2.imdecode(_arr, cv2.IMREAD_COLOR)
+                                if _blank_img is not None:
+                                    _cv2_rot = {
+                                        90: cv2.ROTATE_90_CLOCKWISE,
+                                        180: cv2.ROTATE_180,
+                                        270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+                                    }[_donor_deg]
+                                    _rotated_blank = cv2.rotate(_blank_img, _cv2_rot)
+                                    _success, _buf = cv2.imencode(".tiff", _rotated_blank)
+                                    if _success:
+                                        get_backend(_blank_oriented_uri).put_bytes(
+                                            _blank_oriented_uri, bytes(_buf.tobytes())
+                                        )
+                                        _split_iep1e_uri_map[_blank_page.sub_page_index] = (
+                                            _blank_oriented_uri
+                                        )
+                                        logger.info(
+                                            "worker_loop: blank split child sub=%d rotated %d° "
+                                            "(inherited from sibling sub=%d) job=%s page=%d → %s",
+                                            _blank_page.sub_page_index,
+                                            _donor_deg,
+                                            _confident_page.sub_page_index,
+                                            job.job_id,
+                                            page.page_number,
+                                            _blank_oriented_uri,
+                                        )
+                            except Exception as _rot_exc:
+                                logger.warning(
+                                    "worker_loop: blank split rotation inheritance failed "
+                                    "sub=%d job=%s: %s — leaving original URI",
+                                    _blank_page.sub_page_index,
+                                    job.job_id,
+                                    _rot_exc,
+                                )
+
+                    # ── Post-rotation left/right ordering ─────────────────────
+                    # The geometry model runs on the pre-rotation scan, so the
+                    # initial pages[0]/pages[1] order (and hence sub=0/sub=1)
+                    # reflects scan-space positions, not corrected-view positions.
+                    # Example: a landscape spread photographed 90° CCW appears
+                    # as two vertically-stacked crops; the top crop (pages[0])
+                    # becomes the RIGHT page after 270° CW correction, not left.
+                    #
+                    # Algorithm: transform each page's center (from the full-res
+                    # crop_box) through the IEP1E rotation angle to get its
+                    # post-correction x-position.  If sub=0 ends up to the RIGHT
+                    # of sub=1 after correction, swap the URI assignments.
+                    #
+                    # Rotation transforms for a W×H image:
+                    #   0°   → x_post = x_pre           (no change)
+                    #   90°  → x_post = H - y_pre       (top → right)
+                    #   180° → x_post = W - x_pre       (left ↔ right)
+                    #   270° → x_post = y_pre            (top → left)
+                    try:
+                        _iep1e_by_sub = {
+                            _sp.sub_page_index: _sp for _sp in _split_sem_result.pages
+                        }
+                        _rot_p0 = _iep1e_by_sub.get(0)
+                        _rot_p1 = _iep1e_by_sub.get(1)
+                        if (
+                            _rot_p0 is not None
+                            and _rot_p1 is not None
+                            and _left_br is not None
+                            and _right_br is not None
+                        ):
+                            # Use the confident page's rotation; fallback to sub=0
+                            if (
+                                _rot_p1.orientation.orientation_confident
+                                and not _rot_p0.orientation.orientation_confident
+                            ):
+                                _ref_rot_deg = _rot_p1.orientation.best_rotation_deg
+                            else:
+                                _ref_rot_deg = _rot_p0.orientation.best_rotation_deg
+
+                            _fr_h, _fr_w = full_res_image.shape[:2]
+
+                            # Page centers in full-res scan space
+                            _cx0 = (
+                                _left_br.crop.crop_box.x_min
+                                + _left_br.crop.crop_box.x_max
+                            ) / 2.0
+                            _cy0 = (
+                                _left_br.crop.crop_box.y_min
+                                + _left_br.crop.crop_box.y_max
+                            ) / 2.0
+                            _cx1 = (
+                                _right_br.crop.crop_box.x_min
+                                + _right_br.crop.crop_box.x_max
+                            ) / 2.0
+                            _cy1 = (
+                                _right_br.crop.crop_box.y_min
+                                + _right_br.crop.crop_box.y_max
+                            ) / 2.0
+
+                            def _post_rot_x(
+                                cx: float, cy: float, deg: int, W: int, H: int
+                            ) -> float:
+                                if deg == 90:
+                                    return H - cy   # top → right
+                                if deg == 180:
+                                    return W - cx   # left ↔ right
+                                if deg == 270:
+                                    return cy       # top → left
+                                return cx           # 0°: unchanged
+
+                            _px0 = _post_rot_x(_cx0, _cy0, _ref_rot_deg, _fr_w, _fr_h)
+                            _px1 = _post_rot_x(_cx1, _cy1, _ref_rot_deg, _fr_w, _fr_h)
+
+                            if _px0 > _px1:
+                                # After correction sub=0 is to the RIGHT of sub=1:
+                                # swap URI assignments so sub=0 → left, sub=1 → right.
+                                _split_iep1e_uri_map[0], _split_iep1e_uri_map[1] = (
+                                    _split_iep1e_uri_map[1],
+                                    _split_iep1e_uri_map[0],
+                                )
+                                logger.info(
+                                    "worker_loop: post-rotation left/right swap "
+                                    "rot=%d° cx0=%.0f cy0=%.0f→px0=%.0f "
+                                    "cx1=%.0f cy1=%.0f→px1=%.0f "
+                                    "job=%s page=%d",
+                                    _ref_rot_deg,
+                                    _cx0, _cy0, _px0,
+                                    _cx1, _cy1, _px1,
+                                    job.job_id,
+                                    page.page_number,
+                                )
+                            else:
+                                logger.debug(
+                                    "worker_loop: post-rotation order preserved "
+                                    "rot=%d° px0=%.0f px1=%.0f job=%s page=%d",
+                                    _ref_rot_deg, _px0, _px1,
+                                    job.job_id, page.page_number,
+                                )
+                    except Exception as _swap_exc:
+                        logger.warning(
+                            "worker_loop: post-rotation swap failed job=%s page=%d: %s "
+                            "— keeping current URI order",
+                            job.job_id,
+                            page.page_number,
+                            _swap_exc,
+                        )
+        except Exception:
+            logger.exception(
+                "worker_loop: iep1e split call raised unexpectedly job=%s page=%d; "
+                "using original URIs",
+                job.job_id,
+                page.page_number,
+            )
+
+        # Keep the parent split transition and child row creation in one
+        # transaction; a split parent without child leaves disappears from the UI.
+        advanced = advance_page_state(
+            session,
+            page.page_id,
+            from_state=current_state,
+            to_state="split",
+            processing_time_ms=(time.monotonic() - task_started_at) * 1000.0,
+        )
+        if not advanced:
+            logger.warning(
+                "worker_loop: split CAS miss job=%s page_id=%s",
+                job.job_id, page.page_id,
+            )
+            return "ack"
+        page.status = "split"
+        lineage.split_source = True
+
+        # Derive reading_direction for this spread from IEP1E result (or "unresolved").
+        _split_direction: str = (
+            _split_sem_result.reading_direction
+            if _split_sem_result is not None
+            else "unresolved"
+        )
+
+        split_children_to_enqueue: list[PageTask] = []
+
+        # Create child rows for each split half
+        for child_outcome, child_uri in [
+            (split_outcome.left, left_output_uri),
+            (split_outcome.right, right_output_uri),
+        ]:
+            sub_idx = child_outcome.sub_page_index
+            if child_outcome.route == "accept_now":
+                # Mirror single-page routing: layout mode goes to layout_detection,
+                # ptiff_qa_mode=manual stops at ptiff_qa_pending, else accepted.
+                if job.ptiff_qa_mode == "manual":
+                    child_status = "ptiff_qa_pending"
+                elif job.pipeline_mode in {"layout", "layout_with_ocr"}:
+                    child_status = "layout_detection"
+                else:
+                    child_status = "accepted"
+            else:
+                child_status = "pending_human_correction"
+            # Use IEP1E-oriented URI when available; fall back to IEP1C output.
+            _child_oriented_uri = _split_iep1e_uri_map.get(sub_idx)
+            _child_output_uri: str
+            if _child_oriented_uri:
+                _child_output_uri = _child_oriented_uri
+            elif child_outcome.branch_response is not None:
+                _child_output_uri = child_outcome.branch_response.processed_image_uri
+            else:
+                _child_output_uri = child_uri
+            child_page = JobPage(
+                page_id=str(uuid.uuid4()),
+                job_id=job.job_id,
+                page_number=page.page_number,
+                sub_page_index=sub_idx,
+                status=child_status,
+                input_image_uri=page.input_image_uri,
+                output_image_uri=_child_output_uri,
+                review_reasons=(
+                    [child_outcome.review_reason or "split_child_failed"]
+                    if child_status == "pending_human_correction"
+                    else None
+                ),
+                reading_order=_reading_order_for_sub(_split_direction, sub_idx),
+            )
+            session.add(child_page)
+            session.flush()
+
+            child_lineage = create_lineage(
+                session,
+                lineage_id=str(uuid.uuid4()),
+                job_id=job.job_id,
+                page_number=page.page_number,
+                sub_page_index=sub_idx,
+                correlation_id=lineage.correlation_id,
+                input_image_uri=lineage.input_image_uri,
+                otiff_uri=lineage.otiff_uri,
+                input_image_hash=lineage.input_image_hash,
+                material_type=material_type,
+                policy_version=job.policy_version,
+                parent_page_id=page.page_id,
+                split_source=True,
+            )
+            child_lineage.output_image_uri = child_page.output_image_uri
+            if child_status == "accepted":
+                child_lineage.acceptance_decision = "accepted"
+                child_lineage.routing_path = "split_child_accepted"
+            confirm_preprocessed_artifact(session, child_lineage.lineage_id)
+
+            logger.info(
+                "worker_loop: split child created job=%s page=%d sub=%d route=%s status=%s uri=%s",
+                job.job_id, page.page_number, sub_idx,
+                child_outcome.route,
+                child_status,
+                child_page.output_image_uri,
+            )
+
+            # Only layout_detection children need worker processing. PTIFF QA
+            # pages are released by the QA endpoints after reviewer approval.
+            if child_status == "layout_detection":
+                split_children_to_enqueue.append(_page_task_for(child_page))
+
+        _sync_job_summary(session, job)
+        _update_job_reading_direction(job, _split_direction)
+        _commit(session)
+        for child_task in split_children_to_enqueue:
+            try:
+                enqueue_page_task(redis_client, child_task)
+            except redis_lib.RedisError:
+                logger.exception(
+                    "worker_loop: failed to enqueue committed split child page_id=%s",
+                    child_task.page_id,
+                )
+        return "ack"
+
+    # ── Single-page normalization ──────────────────────────────────────────────
 
     output_uri = _artifact_uri(
         page.input_image_uri,
@@ -844,24 +1843,32 @@ async def _run_preprocessing(
     branch_response = norm_outcome.branch_response
     quality_summary = _quality_summary_dict(branch_response)
 
-    if selection.selected.response.split_required:
-        # Normalization has now run so the reviewer has a preprocessed artifact
-        # (branch_response.processed_image_uri) to open and split.
-        confirm_preprocessed_artifact(session, lineage.lineage_id)
-        _complete_pending_human_correction(
-            session,
-            page=page,
-            job=job,
-            lineage=lineage,
-            from_state=current_state,
-            review_reason="split_required",
-            total_processing_ms=(time.monotonic() - task_started_at) * 1000.0,
-            output_image_uri=branch_response.processed_image_uri,
-            quality_summary=quality_summary,
-        )
-        return "ack"
-
     if page.status == "preprocessing" and norm_outcome.route == "rescue_required":
+        if gate_config.rectification_policy == "disabled_direct_review":
+            logger.info(
+                {
+                    "event": "rectification_skipped_by_policy",
+                    "policy": "disabled_direct_review",
+                    "job_id": job.job_id,
+                    "page_id": page.page_id,
+                    "page_number": page.page_number,
+                }
+            )
+            EEP_RECTIFICATION_POLICY_SKIPS.labels(policy="disabled_direct_review").inc()
+            confirm_preprocessed_artifact(session, lineage.lineage_id)
+            _complete_pending_human_correction(
+                session,
+                page=page,
+                job=job,
+                lineage=lineage,
+                from_state="preprocessing",
+                review_reason="rectification_policy_disabled",
+                total_processing_ms=(time.monotonic() - task_started_at) * 1000.0,
+                output_image_uri=branch_response.processed_image_uri,
+                quality_summary=quality_summary,
+            )
+            return "ack"
+
         advanced = advance_page_state(
             session,
             page.page_id,
@@ -997,6 +2004,39 @@ async def _run_preprocessing(
 
     confirm_preprocessed_artifact(session, lineage.lineage_id)
 
+    # ── IEP1E — semantic normalization (orientation + reading order) ──────────
+    # Best-effort: failure falls back silently to the IEP1C output URI.
+    _iep1e_x_center = (
+        final_branch.crop.crop_box.x_min + final_branch.crop.crop_box.x_max
+    ) / 2.0
+    _iep1e_sub_idx = page.sub_page_index if page.sub_page_index is not None else 0
+    _sem_norm_uri = final_branch.processed_image_uri  # default: unchanged
+    _sem_norm_result = None
+    try:
+        _sem_norm_result = await _call_iep1e(
+            page_uris=[final_branch.processed_image_uri],
+            x_centers=[_iep1e_x_center],
+            sub_page_indices=[_iep1e_sub_idx],
+            job_id=job.job_id,
+            page_number=page.page_number,
+            material_type=material_type,
+            endpoint=config.iep1e_endpoint,
+            backend=config.backend,
+            cb=config.iep1e_circuit_breaker,
+        )
+        if (
+            _sem_norm_result is not None
+            and _sem_norm_result.ordered_page_uris
+        ):
+            _sem_norm_uri = _sem_norm_result.ordered_page_uris[0]
+    except Exception:
+        logger.exception(
+            "worker_loop: iep1e call raised unexpectedly job=%s page=%d; "
+            "using original URI",
+            job.job_id,
+            page.page_number,
+        )
+
     total_processing_ms = (time.monotonic() - task_started_at) * 1000.0
     final_quality_summary = _quality_summary_dict(final_branch)
     from_state = page.status
@@ -1007,8 +2047,8 @@ async def _run_preprocessing(
         # The gate (ptiff_qa.py) will release the page to layout_detection or
         # accepted once the reviewer approves via the QA viewer.
         to_state = "ptiff_qa_pending"
-    elif job.pipeline_mode == "layout":
-        # auto_continue + layout: proceed directly to layout detection and enqueue IEP2.
+    elif job.pipeline_mode in {"layout", "layout_with_ocr"}:
+        # auto_continue + layout/layout_with_ocr: proceed directly to layout detection.
         to_state = "layout_detection"
     else:
         # auto_continue + preprocess-only: accept immediately.
@@ -1019,7 +2059,7 @@ async def _run_preprocessing(
         page.page_id,
         from_state=from_state,
         to_state=to_state,
-        output_image_uri=final_branch.processed_image_uri,
+        output_image_uri=_sem_norm_uri,
         quality_summary=final_quality_summary,
         processing_time_ms=total_processing_ms,
     )
@@ -1034,11 +2074,13 @@ async def _run_preprocessing(
         return "ack"
 
     page.status = to_state
-    page.output_image_uri = final_branch.processed_image_uri
+    page.output_image_uri = _sem_norm_uri
     page.quality_summary = final_quality_summary
     page.processing_time_ms = total_processing_ms
     page.review_reasons = None
+    page.reading_order = 1  # single page is always the first (and only) in reading order
 
+    task_after_commit: PageTask | None = None
     if to_state == "ptiff_qa_pending":
         # Worker stops here; the PTIFF QA gate (ptiff_qa.py) owns the next
         # transition.  No lineage completion or layout enqueue at this point.
@@ -1049,8 +2091,8 @@ async def _run_preprocessing(
             page.page_number,
             page.sub_page_index,
         )
-    elif job.pipeline_mode == "layout":
-        enqueue_page_task(redis_client, _page_task_for(page))
+    elif job.pipeline_mode in {"layout", "layout_with_ocr"}:
+        task_after_commit = _page_task_for(page)
     else:
         page.acceptance_decision = "accepted"
         page.routing_path = "preprocessing_only"
@@ -1061,11 +2103,25 @@ async def _run_preprocessing(
             acceptance_reason="preprocessing accepted",
             routing_path="preprocessing_only",
             total_processing_ms=total_processing_ms,
-            output_image_uri=final_branch.processed_image_uri,
+            output_image_uri=_sem_norm_uri,
         )
 
+    _single_direction: str = (
+        _sem_norm_result.reading_direction
+        if _sem_norm_result is not None
+        else "unresolved"
+    )
     _sync_job_summary(session, job)
+    _update_job_reading_direction(job, _single_direction)
     _commit(session)
+    if task_after_commit is not None:
+        try:
+            enqueue_page_task(redis_client, task_after_commit)
+        except redis_lib.RedisError:
+            logger.exception(
+                "worker_loop: failed to enqueue committed layout page_id=%s",
+                task_after_commit.page_id,
+            )
     return "ack"
 
 
@@ -1330,6 +2386,407 @@ def _rescale_layout_response(
     return response.model_copy(update={"regions": rescaled})
 
 
+async def _inherit_blank_rotation_for_semantic_group(
+    *,
+    job: Job,
+    page_number: int,
+    sem_result: SemanticNormResponse | None,
+    oriented_uri_by_sub: dict[int, str],
+) -> None:
+    """
+    If one split child is blank, rotate it with the confident sibling's rotation.
+
+    IEP1E leaves a blank page at rotation 0 because there is no OCR evidence.
+    For a spread pair, a blank sibling should still follow the rotation resolved
+    from the text-bearing page.
+    """
+    if sem_result is None or len(sem_result.pages) != 2:
+        return
+
+    p0, p1 = sem_result.pages[0], sem_result.pages[1]
+    confident_page = None
+    blank_page = None
+    if p0.orientation.orientation_confident and not p1.orientation.orientation_confident:
+        confident_page, blank_page = p0, p1
+    elif p1.orientation.orientation_confident and not p0.orientation.orientation_confident:
+        confident_page, blank_page = p1, p0
+
+    if confident_page is None or blank_page is None:
+        return
+
+    donor_deg = confident_page.orientation.best_rotation_deg
+    if donor_deg == 0:
+        return
+
+    blank_src_uri = blank_page.original_uri
+    blank_oriented_uri = _artifact_uri(
+        blank_src_uri,
+        job.job_id,
+        "oriented",
+        page_number,
+        blank_page.sub_page_index,
+        ".tiff",
+    )
+
+    try:
+        raw = await asyncio.to_thread(get_backend(blank_src_uri).get_bytes, blank_src_uri)
+        arr = np.frombuffer(raw, dtype=np.uint8)
+        blank_img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+        if blank_img is None:
+            return
+        cv2_rot = {
+            90: cv2.ROTATE_90_CLOCKWISE,
+            180: cv2.ROTATE_180,
+            270: cv2.ROTATE_90_COUNTERCLOCKWISE,
+        }[donor_deg]
+        rotated_blank = cv2.rotate(blank_img, cv2_rot)
+        success, buf = cv2.imencode(".tiff", rotated_blank)
+        if not success:
+            return
+        get_backend(blank_oriented_uri).put_bytes(blank_oriented_uri, bytes(buf.tobytes()))
+        oriented_uri_by_sub[blank_page.sub_page_index] = blank_oriented_uri
+        logger.info(
+            "worker_loop: split semantic_norm blank sibling sub=%d inherited rotation=%d "
+            "from sub=%d job=%s page=%d uri=%s",
+            blank_page.sub_page_index,
+            donor_deg,
+            confident_page.sub_page_index,
+            job.job_id,
+            page_number,
+            blank_oriented_uri,
+        )
+    except Exception as exc:
+        logger.warning(
+            "worker_loop: split semantic_norm blank rotation inheritance failed "
+            "job=%s page=%d sub=%d error=%s",
+            job.job_id,
+            page_number,
+            blank_page.sub_page_index,
+            exc,
+        )
+
+
+async def _run_split_group_semantic_norm(
+    *,
+    session: Session,
+    page: JobPage,
+    job: Job,
+    lineage: PageLineage,
+    config: WorkerConfig,
+    redis_client: redis_lib.Redis,
+    task_started_at: float,
+) -> TaskResolution | None:
+    """
+    Re-run semantic normalization for all split children after one child is corrected.
+
+    Reading direction and sibling rotation are pair-level decisions.  A child that
+    returned from human review cannot be normalized in isolation if its sibling was
+    already accepted directly from the split path.
+    """
+    group = _find_split_child_group_for_semantic_norm(session, page, lineage)
+    if group is None:
+        return None
+
+    ordered_group = sorted(
+        group,
+        key=lambda item: int(
+            item.page.sub_page_index if item.page.sub_page_index is not None else 0
+        ),
+    )
+    material_type = _resolve_material_type_placeholder(session, job, page)
+    page_uris = [item.page.output_image_uri or "" for item in ordered_group]
+    sub_page_indices = [
+        int(item.page.sub_page_index if item.page.sub_page_index is not None else 0)
+        for item in ordered_group
+    ]
+    x_centers = [float(sub_idx) for sub_idx in sub_page_indices]
+
+    sem_result = await _call_iep1e(
+        page_uris=page_uris,
+        x_centers=x_centers,
+        sub_page_indices=sub_page_indices,
+        job_id=job.job_id,
+        page_number=page.page_number,
+        material_type=material_type,
+        endpoint=config.iep1e_endpoint,
+        backend=config.backend,
+        cb=config.iep1e_circuit_breaker,
+    )
+
+    direction = sem_result.reading_direction if sem_result is not None else "unresolved"
+    oriented_uri_by_sub: dict[int, str] = dict(zip(sub_page_indices, page_uris))
+    if sem_result is not None:
+        for result in sem_result.pages:
+            oriented_uri_by_sub[result.sub_page_index] = result.oriented_uri
+        await _inherit_blank_rotation_for_semantic_group(
+            job=job,
+            page_number=page.page_number,
+            sem_result=sem_result,
+            oriented_uri_by_sub=oriented_uri_by_sub,
+        )
+
+    total_processing_ms = (time.monotonic() - task_started_at) * 1000.0
+    current_target = "layout_detection" if job.pipeline_mode in {"layout", "layout_with_ocr"} else "accepted"
+    pages_to_enqueue: list[JobPage] = []
+
+    for item in ordered_group:
+        child = item.page
+        child_lineage = item.lineage
+        sub_idx = int(child.sub_page_index if child.sub_page_index is not None else 0)
+        previous_uri = child.output_image_uri
+        oriented_uri = oriented_uri_by_sub.get(sub_idx) or previous_uri
+        uri_changed = oriented_uri is not None and oriented_uri != previous_uri
+
+        if oriented_uri is not None:
+            child.output_image_uri = oriented_uri
+            child_lineage.output_image_uri = oriented_uri
+        child.reading_order = _reading_order_for_sub(direction, sub_idx)
+
+        if uri_changed:
+            _clear_layout_artifacts_for_semantic_update(child, child_lineage)
+
+        if child.page_id == page.page_id:
+            advanced = advance_page_state(
+                session,
+                child.page_id,
+                from_state="semantic_norm",
+                to_state=current_target,
+                output_image_uri=oriented_uri,
+            )
+            if not advanced:
+                logger.warning(
+                    "worker_loop: split semantic_norm CAS miss job=%s page_id=%s",
+                    job.job_id,
+                    child.page_id,
+                )
+                return "ack"
+
+            child.status = current_target
+            child.output_image_uri = oriented_uri
+            child.processing_time_ms = total_processing_ms
+            child.review_reasons = None
+            if current_target == "layout_detection":
+                child.acceptance_decision = None
+                child.routing_path = None
+                child.completed_at = None
+                pages_to_enqueue.append(child)
+            else:
+                child.acceptance_decision = "accepted"
+                child.routing_path = "preprocessing_only"
+                update_lineage_completion(
+                    session,
+                    child_lineage.lineage_id,
+                    acceptance_decision="accepted",
+                    acceptance_reason="preprocessing accepted after human correction",
+                    routing_path="preprocessing_only",
+                    total_processing_ms=total_processing_ms,
+                    output_image_uri=oriented_uri,
+                )
+            continue
+
+        if job.pipeline_mode in {"layout", "layout_with_ocr"} and uri_changed and child.status == "accepted":
+            reopened = advance_page_state(
+                session,
+                child.page_id,
+                from_state="accepted",
+                to_state="semantic_norm",
+            )
+            if not reopened:
+                logger.warning(
+                    "worker_loop: split semantic_norm could not reopen accepted sibling "
+                    "job=%s page_id=%s",
+                    job.job_id,
+                    child.page_id,
+                )
+                continue
+            child.status = "semantic_norm"
+            child.acceptance_decision = None
+            child.routing_path = None
+            child.completed_at = None
+
+            advanced = advance_page_state(
+                session,
+                child.page_id,
+                from_state="semantic_norm",
+                to_state="layout_detection",
+                output_image_uri=oriented_uri,
+            )
+            if advanced:
+                child.status = "layout_detection"
+                child.completed_at = None
+                pages_to_enqueue.append(child)
+            else:
+                logger.warning(
+                    "worker_loop: split semantic_norm could not send sibling to layout "
+                    "job=%s page_id=%s",
+                    job.job_id,
+                    child.page_id,
+                )
+        elif job.pipeline_mode in {"layout", "layout_with_ocr"} and child.status == "layout_detection":
+            pages_to_enqueue.append(child)
+        elif job.pipeline_mode == "preprocess" and child.status == "accepted" and uri_changed:
+            update_lineage_completion(
+                session,
+                child_lineage.lineage_id,
+                acceptance_decision=child.acceptance_decision or "accepted",
+                acceptance_reason="preprocessing accepted after sibling semantic correction",
+                routing_path=child.routing_path or "preprocessing_only",
+                total_processing_ms=child.processing_time_ms,
+                output_image_uri=oriented_uri,
+            )
+
+    _sync_job_summary(session, job)
+    _update_job_reading_direction(job, direction)
+    _commit(session)
+
+    for child in pages_to_enqueue:
+        enqueue_page_task(redis_client, _page_task_for(child))
+
+    logger.info(
+        "worker_loop: split semantic_norm complete job=%s page=%d direction=%s pages=%d",
+        job.job_id,
+        page.page_number,
+        direction,
+        len(ordered_group),
+    )
+    return "ack"
+
+
+async def _run_semantic_norm(
+    *,
+    session: Session,
+    page: JobPage,
+    job: Job,
+    config: WorkerConfig,
+    redis_client: redis_lib.Redis,
+    task_started_at: float,
+) -> TaskResolution:
+    """
+    Run iep1e for a page returning from human correction (all pipeline modes).
+
+    Orientation and reading-order correction applies whether or not the job
+    proceeds to layout detection — a preprocess-only job still needs the
+    artifact rotated correctly before acceptance.
+
+    Routes to layout_detection (layout mode) or accepted (preprocess-only mode).
+    """
+    lineage = _find_lineage(session, page.job_id, page.page_number, page.sub_page_index)
+    if lineage is None:
+        _complete_failed(
+            session,
+            page=page,
+            job=job,
+            lineage=None,
+            from_state="semantic_norm",
+            failure_reason="missing_lineage_for_semantic_norm",
+            total_processing_ms=(time.monotonic() - task_started_at) * 1000.0,
+        )
+        return "ack"
+
+    image_uri = page.output_image_uri
+    if not image_uri:
+        _complete_failed(
+            session,
+            page=page,
+            job=job,
+            lineage=lineage,
+            from_state="semantic_norm",
+            failure_reason="missing_corrected_artifact_for_semantic_norm",
+            total_processing_ms=(time.monotonic() - task_started_at) * 1000.0,
+        )
+        return "ack"
+
+    group_resolution = await _run_split_group_semantic_norm(
+        session=session,
+        page=page,
+        job=job,
+        lineage=lineage,
+        config=config,
+        redis_client=redis_client,
+        task_started_at=task_started_at,
+    )
+    if group_resolution is not None:
+        return group_resolution
+
+    material_type = _resolve_material_type_placeholder(session, job, page)
+    sub_idx = page.sub_page_index if page.sub_page_index is not None else 0
+
+    sem_result = await _call_iep1e(
+        page_uris=[image_uri],
+        x_centers=[0.0],
+        sub_page_indices=[sub_idx],
+        job_id=job.job_id,
+        page_number=page.page_number,
+        material_type=material_type,
+        endpoint=config.iep1e_endpoint,
+        backend=config.backend,
+        cb=config.iep1e_circuit_breaker,
+    )
+
+    oriented_uri = image_uri
+    if sem_result is not None and sem_result.ordered_page_uris:
+        oriented_uri = sem_result.ordered_page_uris[0]
+
+    total_processing_ms = (time.monotonic() - task_started_at) * 1000.0
+    to_state = "layout_detection" if job.pipeline_mode in {"layout", "layout_with_ocr"} else "accepted"
+
+    advanced = advance_page_state(
+        session,
+        page.page_id,
+        from_state="semantic_norm",
+        to_state=to_state,
+        output_image_uri=oriented_uri,
+    )
+    if not advanced:
+        logger.warning(
+            "worker_loop: semantic_norm CAS miss job=%s page_id=%s",
+            job.job_id,
+            page.page_id,
+        )
+        return "ack"
+
+    page.status = to_state
+    page.output_image_uri = oriented_uri
+    page.reading_order = 1
+
+    if job.pipeline_mode in {"layout", "layout_with_ocr"}:
+        session.commit()
+        enqueue_page_task(
+            redis_client,
+            PageTask(
+                task_id=str(uuid.uuid4()),
+                job_id=page.job_id,
+                page_id=page.page_id,
+                page_number=page.page_number,
+                sub_page_index=page.sub_page_index,
+            ),
+        )
+    else:
+        page.acceptance_decision = "accepted"
+        page.routing_path = "preprocessing_only"
+        update_lineage_completion(
+            session,
+            lineage.lineage_id,
+            acceptance_decision="accepted",
+            acceptance_reason="preprocessing accepted after human correction",
+            routing_path="preprocessing_only",
+            total_processing_ms=total_processing_ms,
+            output_image_uri=oriented_uri,
+        )
+        _sync_job_summary(session, job)
+        _commit(session)
+
+    logger.info(
+        "worker_loop: semantic_norm complete job=%s page=%d sub=%s → %s uri=%s",
+        job.job_id,
+        page.page_number,
+        page.sub_page_index,
+        to_state,
+        oriented_uri,
+    )
+    return "ack"
+
+
 async def _run_layout(
     *,
     session: Session,
@@ -1437,55 +2894,60 @@ async def _run_layout(
             context="layout_google_fallback",
         )
 
-    try:
-        iep2a_result = await asyncio.wait_for(
-            _call_layout_service(
-                service_name="iep2a",
-                endpoint=config.iep2a_endpoint,
-                job_id=job.job_id,
-                page_number=page.page_number,
-                sub_page_index=page.sub_page_index,
-                image_uri=layout_image_uri,
-                material_type=material_type,
-                backend=config.backend,
-                circuit_breaker=config.iep2a_circuit_breaker,
-            ),
-            timeout=config.iep2_call_timeout_seconds,
-        )
-    except asyncio.TimeoutError:
-        logger.warning(
-            "worker_loop: iep2a timed out after %.1fs job=%s page=%d",
-            config.iep2_call_timeout_seconds,
-            job.job_id,
-            page.page_number,
-        )
-        config.iep2a_circuit_breaker.record_failure(None)
+    # layout_with_ocr: bypass local detectors entirely — always use Google directly.
+    if job.pipeline_mode == "layout_with_ocr":
         iep2a_result = None
-
-    try:
-        iep2b_result = await asyncio.wait_for(
-            _call_layout_service(
-                service_name="iep2b",
-                endpoint=config.iep2b_endpoint,
-                job_id=job.job_id,
-                page_number=page.page_number,
-                sub_page_index=page.sub_page_index,
-                image_uri=layout_image_uri,
-                material_type=material_type,
-                backend=config.backend,
-                circuit_breaker=config.iep2b_circuit_breaker,
-            ),
-            timeout=config.iep2_call_timeout_seconds,
-        )
-    except asyncio.TimeoutError:
-        logger.warning(
-            "worker_loop: iep2b timed out after %.1fs job=%s page=%d",
-            config.iep2_call_timeout_seconds,
-            job.job_id,
-            page.page_number,
-        )
-        config.iep2b_circuit_breaker.record_failure(None)
         iep2b_result = None
+    else:
+        try:
+            iep2a_result = await asyncio.wait_for(
+                _call_layout_service(
+                    service_name="iep2a",
+                    endpoint=config.iep2a_endpoint,
+                    job_id=job.job_id,
+                    page_number=page.page_number,
+                    sub_page_index=page.sub_page_index,
+                    image_uri=layout_image_uri,
+                    material_type=material_type,
+                    backend=config.backend,
+                    circuit_breaker=config.iep2a_circuit_breaker,
+                ),
+                timeout=config.iep2_call_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "worker_loop: iep2a timed out after %.1fs job=%s page=%d",
+                config.iep2_call_timeout_seconds,
+                job.job_id,
+                page.page_number,
+            )
+            config.iep2a_circuit_breaker.record_failure(None)
+            iep2a_result = None
+
+        try:
+            iep2b_result = await asyncio.wait_for(
+                _call_layout_service(
+                    service_name="iep2b",
+                    endpoint=config.iep2b_endpoint,
+                    job_id=job.job_id,
+                    page_number=page.page_number,
+                    sub_page_index=page.sub_page_index,
+                    image_uri=layout_image_uri,
+                    material_type=material_type,
+                    backend=config.backend,
+                    circuit_breaker=config.iep2b_circuit_breaker,
+                ),
+                timeout=config.iep2_call_timeout_seconds,
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                "worker_loop: iep2b timed out after %.1fs job=%s page=%d",
+                config.iep2_call_timeout_seconds,
+                job.job_id,
+                page.page_number,
+            )
+            config.iep2b_circuit_breaker.record_failure(None)
+            iep2b_result = None
 
     # Rescale IEP2A and IEP2B outputs back to canonical (original-resolution) coordinates.
     if layout_input.coordinate_rescaled and downsample_gate is not None:
@@ -1587,6 +3049,15 @@ async def process_page_task(
             resolution = "ack"
         elif page.status in {"queued", "preprocessing", "rectification"}:
             resolution = await _run_preprocessing(
+                session=session,
+                page=page,
+                job=job,
+                config=config,
+                redis_client=redis_client,
+                task_started_at=time.monotonic(),
+            )
+        elif page.status == "semantic_norm":
+            resolution = await _run_semantic_norm(
                 session=session,
                 page=page,
                 job=job,
@@ -1710,29 +3181,30 @@ async def run_worker_loop(
 
     try:
         while True:
-            try:
-                claimed = await asyncio.to_thread(
-                    claim_task,
-                    redis_client,
-                    config.worker_id,
-                    config.poll_timeout_seconds,
-                )
-            except asyncio.CancelledError:
-                raise
-            except Exception:
-                logger.exception("worker_loop: claim_task failed; retrying")
-                await asyncio.sleep(1.0)
-                continue
-
-            if claimed is None:
-                continue
-
-            if watchdog is not None:
-                watchdog.register(claimed.task.task_id)
-                _claimed_tasks[claimed.task.task_id] = claimed
-
+            claimed: ClaimedTask | None = None
             try:
                 async with WorkerSlotContext(redis_client):
+                    try:
+                        claimed = await asyncio.to_thread(
+                            claim_task,
+                            redis_client,
+                            config.worker_id,
+                            config.poll_timeout_seconds,
+                        )
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception:
+                        logger.exception("worker_loop: claim_task failed; retrying")
+                        await asyncio.sleep(1.0)
+                        continue
+
+                    if claimed is None:
+                        continue
+
+                    if watchdog is not None:
+                        watchdog.register(claimed.task.task_id)
+                        _claimed_tasks[claimed.task.task_id] = claimed
+
                     await process_page_task(
                         claimed,
                         config,
@@ -1740,7 +3212,7 @@ async def run_worker_loop(
                         session_factory=session_factory,
                     )
             finally:
-                if watchdog is not None:
+                if watchdog is not None and "claimed" in locals() and claimed is not None:
                     watchdog.deregister(claimed.task.task_id)
                     _claimed_tasks.pop(claimed.task.task_id, None)
     finally:

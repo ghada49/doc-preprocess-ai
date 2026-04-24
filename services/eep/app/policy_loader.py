@@ -47,6 +47,12 @@ field name for operator tuning):
   preprocessing.weight_foreground_coverage, weight_geometry_confidence
   preprocessing.weight_tta_agreement
 
+Behavioral toggle:
+  preprocessing.rectification_policy — "conditional" (default) or "disabled_direct_review"
+    conditional:            attempt IEP1D whenever the first pass is not acceptable.
+    disabled_direct_review: skip IEP1D; route non-acceptable pages directly to review.
+    Any unrecognised value falls back to "conditional".
+
 Note: The ``layout`` section of the policy YAML is parsed by this module
 but no LayoutGateConfig is returned yet — Phase 6 (layout gate) is not
 implemented.  Layout config loading will be added in Phase 6.
@@ -233,6 +239,15 @@ def parse_gate_config(
         pre.get("weight_tta_agreement"), defaults.weight_tta_agreement
     )
 
+    # ── Behavioral toggle: rectification routing policy ───────────────────────
+    _VALID_RECTIFICATION_POLICIES = {"conditional", "disabled_direct_review"}
+    _raw_rectification_policy = pre.get("rectification_policy")
+    rectification_policy = (
+        _raw_rectification_policy
+        if _raw_rectification_policy in _VALID_RECTIFICATION_POLICIES
+        else defaults.rectification_policy
+    )
+
     return PreprocessingGateConfig(
         geometry_sanity_area_min_fraction=geometry_sanity_area_min_fraction,
         geometry_sanity_area_max_fraction=geometry_sanity_area_max_fraction,
@@ -261,6 +276,7 @@ def parse_gate_config(
         weight_foreground_coverage=weight_foreground_coverage,
         weight_geometry_confidence=weight_geometry_confidence,
         weight_tta_agreement=weight_tta_agreement,
+        rectification_policy=rectification_policy,
     )
 
 

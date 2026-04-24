@@ -89,7 +89,7 @@ class PreprocessingGateConfig:
     """
 
     geometry_sanity_area_min_fraction: float = 0.15
-    geometry_sanity_area_max_fraction: float = 0.98
+    geometry_sanity_area_max_fraction: float = 1.0
     aspect_ratio_bounds: dict[str, tuple[float, float]] = field(
         default_factory=lambda: dict(_DEFAULT_ASPECT_RATIO_BOUNDS)
     )
@@ -99,6 +99,11 @@ class PreprocessingGateConfig:
     page_area_preference_threshold: float = 0.30
     # Packet 3.5 fields — artifact soft signal scoring (spec Section 6.9 + 8.4).
     artifact_validation_threshold: float = 0.60
+    # Rectification routing policy (spec Section 8.4).
+    # "conditional"            — attempt IEP1D whenever first pass is not acceptable (default).
+    # "disabled_direct_review" — skip IEP1D; route first-pass non-acceptable pages directly
+    #                            to pending_human_correction.
+    rectification_policy: str = "conditional"
     skew_residual_good_max: float = 1.0
     skew_residual_bad_min: float = 5.0
     blur_score_good_max: float = 0.4
@@ -331,9 +336,14 @@ def check_sanity(
 
         # -------------------------------------------------------------------
         # Check 3: Page area fraction plausible
+        # For 2-page spreads each page is naturally smaller, so halve the
+        # minimum area threshold when the response reports page_count == 2.
         # -------------------------------------------------------------------
+        area_min = config.geometry_sanity_area_min_fraction
+        if response.page_count == 2:
+            area_min = area_min / 2.0
         if not (
-            config.geometry_sanity_area_min_fraction
+            area_min
             <= region.page_area_fraction
             <= config.geometry_sanity_area_max_fraction
         ):

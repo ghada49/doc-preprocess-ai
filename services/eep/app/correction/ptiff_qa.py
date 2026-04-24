@@ -55,6 +55,7 @@ from __future__ import annotations
 
 import logging
 import uuid
+from datetime import datetime, timezone
 
 import redis
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -63,9 +64,11 @@ from sqlalchemy.orm import Session
 
 from services.eep.app.auth import CurrentUser, assert_job_ownership, require_user
 from services.eep.app.correction._split_parent import _maybe_close_split_parent
-from services.eep.app.db.models import Job, JobPage
+from services.eep.app.db.lineage import update_lineage_completion
+from services.eep.app.db.models import Job, JobPage, PageLineage
 from services.eep.app.db.page_state import advance_page_state
 from services.eep.app.db.session import get_session
+from services.eep.app.jobs.summary import derive_job_status, leaf_pages_from_pages
 from services.eep.app.queue import enqueue_page_task
 from services.eep.app.redis_client import get_redis
 from shared.schemas.eep import TERMINAL_PAGE_STATES
@@ -77,6 +80,24 @@ router = APIRouter()
 
 # ── Exported constants ───────────────────────────────────────────────────────────
 _WORKER_TERMINAL_STATES = TERMINAL_PAGE_STATES
+
+
+def _sync_job_summary(db: Session, job: Job) -> None:
+    pages = db.query(JobPage).filter_by(job_id=job.job_id).all()
+    leaf_pages = leaf_pages_from_pages(pages)
+    now = datetime.now(timezone.utc)
+
+    job.accepted_count = sum(1 for page in leaf_pages if page.status == "accepted")
+    job.review_count = sum(1 for page in leaf_pages if page.status == "review")
+    job.failed_count = sum(1 for page in leaf_pages if page.status == "failed")
+    job.pending_human_correction_count = sum(
+        1 for page in leaf_pages if page.status == "pending_human_correction"
+    )
+    job.status = derive_job_status(leaf_pages)
+    if job.status in {"done", "failed"}:
+        job.completed_at = job.completed_at or now
+    else:
+        job.completed_at = None
 
 
 # ── Response models ─────────────────────────────────────────────────────────────
@@ -225,33 +246,75 @@ def _check_and_release_ptiff_qa(db: Session, job: Job, pages: list[JobPage]) -> 
     # Validate transition before touching the DB (fail-fast on programming errors).
     validate_transition("ptiff_qa_pending", target_state)
 
+    released_pages: list[JobPage] = []
     for page in pages_to_release:
+        transition_kwargs = {}
+        if target_state == "accepted":
+            transition_kwargs = {
+                "acceptance_decision": "accepted",
+                "routing_path": "ptiff_qa_approved",
+            }
         advanced = advance_page_state(
             db,
             page.page_id,
             from_state="ptiff_qa_pending",
             to_state=target_state,
+            **transition_kwargs,
         )
-        if advanced:
-            # Mirror new state onto the ORM object so identity-map lookups
-            # (e.g. in _maybe_close_split_parent) see the updated status.
-            page.status = target_state
-        else:
+        if not advanced:
             logger.warning(
                 "PTIFF QA gate release CAS miss: job=%s page_id=%s "
                 "(concurrent update or already transitioned)",
                 job.job_id,
                 page.page_id,
             )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Page state changed concurrently during PTIFF QA release; please retry.",
+            )
+
+        # Mirror new state onto the ORM object so identity-map lookups
+        # (e.g. in _maybe_close_split_parent) see the updated status.
+        page.status = target_state
+        if target_state == "accepted":
+            page.acceptance_decision = "accepted"
+            page.routing_path = "ptiff_qa_approved"
+            lineage = (
+                db.query(PageLineage)
+                .filter(
+                    PageLineage.job_id == page.job_id,
+                    PageLineage.page_number == page.page_number,
+                    PageLineage.sub_page_index == page.sub_page_index,
+                )
+                .first()
+            )
+            if lineage is None:
+                raise HTTPException(
+                    status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    detail=(
+                        f"Data-integrity failure: no lineage row for job {page.job_id!r} "
+                        f"page {page.page_number} sub_page_index {page.sub_page_index!r}."
+                    ),
+                )
+            update_lineage_completion(
+                db,
+                lineage.lineage_id,
+                acceptance_decision="accepted",
+                acceptance_reason="PTIFF QA approved",
+                routing_path="ptiff_qa_approved",
+                total_processing_ms=page.processing_time_ms,
+                output_image_uri=page.output_image_uri,
+            )
+        released_pages.append(page)
 
     logger.info(
         "PTIFF QA gate released: job=%s pipeline_mode=%s target=%s page_count=%d",
         job.job_id,
         job.pipeline_mode,
         target_state,
-        len(pages_to_release),
+        len(released_pages),
     )
-    return pages_to_release
+    return released_pages
 
 
 # ── Endpoints ───────────────────────────────────────────────────────────────────
@@ -385,13 +448,13 @@ def approve_page(
     all_pages = _leaf_pages(db, job_id)
     released_pages = _check_and_release_ptiff_qa(db, job, all_pages)
     gate_released = bool(released_pages)
+    tasks_to_enqueue: list[PageTask] = []
 
     if gate_released:
         # Enqueue released pages for layout detection when pipeline_mode == 'layout'.
         if job.pipeline_mode != "preprocess":
             for page in released_pages:
-                enqueue_page_task(
-                    r,
+                tasks_to_enqueue.append(
                     PageTask(
                         task_id=str(uuid.uuid4()),
                         job_id=page.job_id,
@@ -405,8 +468,18 @@ def approve_page(
         # Close any split parent whose children are all now worker-terminal.
         for pn in {p.page_number for p in released_pages if p.sub_page_index is not None}:
             _maybe_close_split_parent(db, job_id, pn)
+        _sync_job_summary(db, job)
 
     db.commit()
+    for task in tasks_to_enqueue:
+        try:
+            enqueue_page_task(r, task)
+        except redis.RedisError:
+            logger.exception(
+                "PTIFF QA approve: DB committed but enqueue failed job=%s page_id=%s",
+                job_id,
+                task.page_id,
+            )
 
     logger.info(
         "PTIFF QA approve: job=%s page=%d gate_released=%s",
@@ -477,13 +550,13 @@ def approve_all(
     all_pages = _leaf_pages(db, job_id)
     released_pages = _check_and_release_ptiff_qa(db, job, all_pages)
     gate_released = bool(released_pages)
+    tasks_to_enqueue: list[PageTask] = []
 
     if gate_released:
         # Enqueue released pages for layout detection when pipeline_mode == 'layout'.
         if job.pipeline_mode != "preprocess":
             for page in released_pages:
-                enqueue_page_task(
-                    r,
+                tasks_to_enqueue.append(
                     PageTask(
                         task_id=str(uuid.uuid4()),
                         job_id=page.job_id,
@@ -497,8 +570,18 @@ def approve_all(
         # Close any split parent whose children are all now worker-terminal.
         for pn in {p.page_number for p in released_pages if p.sub_page_index is not None}:
             _maybe_close_split_parent(db, job_id, pn)
+        _sync_job_summary(db, job)
 
     db.commit()
+    for task in tasks_to_enqueue:
+        try:
+            enqueue_page_task(r, task)
+        except redis.RedisError:
+            logger.exception(
+                "PTIFF QA approve-all: DB committed but enqueue failed job=%s page_id=%s",
+                job_id,
+                task.page_id,
+            )
 
     logger.info(
         "PTIFF QA approve-all: job=%s approved_count=%d gate_released=%s",
@@ -586,9 +669,15 @@ def edit_page(
                 page.page_id,
                 page_number,
             )
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="Page state changed concurrently; please retry.",
+            )
+        page.status = "pending_human_correction"
         # Clear approval flag: page must be re-approved after correction.
         page.ptiff_qa_approved = False
 
+    _sync_job_summary(db, job)
     db.commit()
 
     logger.info(

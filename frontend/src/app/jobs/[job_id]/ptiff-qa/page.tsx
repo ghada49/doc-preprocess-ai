@@ -18,13 +18,12 @@ export default function PtiffQaPage() {
   return (
     <UserShell
       breadcrumbs={[
-        { label: "My Jobs", href: "/jobs" },
-        { label: truncateId(job_id, 8) + "…", href: `/jobs/${job_id}` },
-        { label: "PTIFF QA" },
+        { label: "Documents", href: "/jobs" },
+        { label: truncateId(job_id, 8), href: `/jobs/${job_id}` },
+        { label: "Review results" },
       ]}
     >
-      <div className="p-6 space-y-4 max-w-6xl">
-        {/* Tab bar */}
+      <div className="max-w-6xl space-y-4 p-6">
         <div className="flex items-center gap-1 border-b border-slate-200">
           <TabButton
             active={activeTab === "overview"}
@@ -36,11 +35,10 @@ export default function PtiffQaPage() {
             active={activeTab === "viewer"}
             onClick={() => setActiveTab("viewer")}
             icon={<Images className="h-3.5 w-3.5" />}
-            label="Image Viewer"
+            label="Page viewer"
           />
         </div>
 
-        {/* Tab content */}
         {activeTab === "overview" ? (
           <PtiffQaPanel jobId={job_id} backPath={`/jobs/${job_id}`} />
         ) : (

@@ -24,7 +24,9 @@ _NON_TERMINAL: frozenset[str] = frozenset(
         "preprocessing",
         "rectification",
         "layout_detection",
+        "semantic_norm",
         "pending_human_correction",
+        "split",
     }
 )
 
@@ -38,8 +40,20 @@ class JobPageCounts:
 
 
 def leaf_pages_from_pages(pages: list[JobPage]) -> list[JobPage]:
-    """Return only leaf pages for job-level status/count derivation."""
-    return [page for page in pages if page.status != "split"]
+    """Return only leaf pages for job-level status/count derivation.
+
+    A normal split parent is excluded once child rows exist. If a split parent
+    has no children, keep it visible as an anomalous in-progress leaf instead
+    of deriving an empty/queued job that disappears from the UI.
+    """
+    page_numbers_with_children = {
+        page.page_number for page in pages if page.sub_page_index is not None
+    }
+    return [
+        page
+        for page in pages
+        if page.status != "split" or page.page_number not in page_numbers_with_children
+    ]
 
 
 def derive_job_status(leaf_pages: list[JobPage]) -> JobStatus:

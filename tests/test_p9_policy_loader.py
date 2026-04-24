@@ -227,6 +227,31 @@ class TestParseGateConfig:
         })
         assert cfg.split_confidence_threshold == pytest.approx(0.80)
 
+    # ── rectification_policy toggle ────────────────────────────────────────────
+
+    def test_rectification_policy_absent_defaults_to_conditional(self):
+        """Missing rectification_policy → 'conditional' (preserves current behavior)."""
+        cfg = parse_gate_config({"preprocessing": {}})
+        assert cfg.rectification_policy == "conditional"
+
+    def test_rectification_policy_conditional_loaded(self):
+        cfg = parse_gate_config({"preprocessing": {"rectification_policy": "conditional"}})
+        assert cfg.rectification_policy == "conditional"
+
+    def test_rectification_policy_disabled_direct_review_loaded(self):
+        cfg = parse_gate_config(
+            {"preprocessing": {"rectification_policy": "disabled_direct_review"}}
+        )
+        assert cfg.rectification_policy == "disabled_direct_review"
+
+    def test_rectification_policy_unknown_value_falls_back_to_conditional(self):
+        cfg = parse_gate_config({"preprocessing": {"rectification_policy": "unknown_value"}})
+        assert cfg.rectification_policy == "conditional"
+
+    def test_rectification_policy_none_falls_back_to_conditional(self):
+        cfg = parse_gate_config({"preprocessing": {"rectification_policy": None}})
+        assert cfg.rectification_policy == "conditional"
+
 
 # ── load_gate_config (DB-backed) ──────────────────────────────────────────────
 
@@ -326,6 +351,24 @@ class TestLoadGateConfig:
         db = _mock_db_with_yaml(policy_yaml)
         cfg = load_gate_config(db)
         assert cfg.split_confidence_threshold == pytest.approx(0.77)
+
+    def test_loads_rectification_policy_disabled_direct_review(self):
+        """load_gate_config correctly propagates disabled_direct_review from YAML."""
+        policy_yaml = yaml.dump(
+            {"preprocessing": {"rectification_policy": "disabled_direct_review"}}
+        )
+        db = _mock_db_with_yaml(policy_yaml)
+        cfg = load_gate_config(db)
+        assert cfg.rectification_policy == "disabled_direct_review"
+
+    def test_policy_without_rectification_policy_defaults_to_conditional(self):
+        """Existing policies that lack rectification_policy retain current behavior."""
+        policy_yaml = yaml.dump(
+            {"preprocessing": {"split_confidence_threshold": 0.75}}
+        )
+        db = _mock_db_with_yaml(policy_yaml)
+        cfg = load_gate_config(db)
+        assert cfg.rectification_policy == "conditional"
 
 
 # ── build_gate_config wiring (task.py entry point) ────────────────────────────

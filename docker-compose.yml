@@ -162,7 +162,7 @@ services:
       - ./frontend:/app
       - /app/node_modules          # keep container node_modules, don't overwrite with host
     environment:
-      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8000}
+      NEXT_PUBLIC_API_BASE_URL: ${NEXT_PUBLIC_API_BASE_URL:-http://localhost:8888}
       NEXT_TELEMETRY_DISABLED: "1"
     ports:
       - "3000:3000"
@@ -186,7 +186,7 @@ services:
       PYTHONUNBUFFERED: "1"
     env_file: .env
     ports:
-      - "8000:8000"
+      - "8888:8000"
     networks:
       - libraryai-net
     restart: unless-stopped
@@ -253,6 +253,8 @@ services:
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
       HEALTH_PORT: "9100"
+      EXECUTION_TIMEOUT_SECONDS: "180"
+      COLD_START_TIMEOUT_SECONDS: "240"
     env_file: .env
     expose:
       - "9100"
@@ -466,6 +468,27 @@ services:
         condition: service_started
     command: ["uvicorn", "services.artifact_cleanup.app.main:app", "--host", "0.0.0.0", "--port", "9106", "--reload"]
 
+  # ── IEP0 — Material-type classification service ──────────────────────────────
+
+  iep0:
+    build:
+      context: .
+      dockerfile: services/iep0/Dockerfile
+    volumes:
+      - .:/app
+      - ./models/iep0:/app/models/iep0:ro
+    environment:
+      PYTHONPATH: /app
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+    env_file: .env
+    ports:
+      - "8006:8006"
+    networks:
+      - libraryai-net
+    restart: unless-stopped
+    command: ["uvicorn", "services.iep0.app.main:app", "--host", "0.0.0.0", "--port", "8006", "--reload"]
+
   # ── IEP1A — YOLOv8-seg geometry service ──────────────────────────────────────
 
   iep1a:
@@ -475,10 +498,13 @@ services:
     volumes:
       - .:/app
       - ./test_data:/app/test_data
+      - ./models/iep1a:/app/models/iep1a:ro
     environment:
       PYTHONPATH: /app
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
+      IEP1A_MODELS_DIR: /app/models/iep1a
+      IEP1A_MOCK_MODE: "false"
     env_file: .env
     ports:
       - "8001:8001"
@@ -495,10 +521,13 @@ services:
       dockerfile: services/iep1b/Dockerfile
     volumes:
       - .:/app
+      - ./models/iep1b:/app/models/iep1b:ro
     environment:
       PYTHONPATH: /app
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
+      IEP1B_MODELS_DIR: /app/models/iep1b
+      IEP1B_MOCK_MODE: "false"
     env_file: .env
     ports:
       - "8002:8002"
@@ -529,6 +558,41 @@ services:
       - libraryai-net
     restart: unless-stopped
     command: ["uvicorn", "services.iep1d.app.main:app", "--host", "0.0.0.0", "--port", "8003", "--reload"]
+
+  # ── IEP1E — Semantic normalization service ───────────────────────────────────
+  #
+  # Real-model build (optional):
+  #   Set IEP1E_ENABLE_REAL_MODEL=true in your shell or .env, then:
+  #     docker compose build iep1e
+  #   Enable inference at runtime by also setting IEP1E_MOCK_MODE=false in .env.
+  #   Without real-model, service runs in mock mode (returns no rotation, unresolved).
+
+  iep1e:
+    build:
+      context: .
+      dockerfile: services/iep1e/Dockerfile
+      args:
+        ENABLE_REAL_MODEL: "${IEP1E_ENABLE_REAL_MODEL:-false}"
+    volumes:
+      - .:/app
+    environment:
+      PYTHONPATH: /app
+      PYTHONDONTWRITEBYTECODE: "1"
+      PYTHONUNBUFFERED: "1"
+      # Default to mock mode; set IEP1E_MOCK_MODE=false to use real PaddleOCR.
+      IEP1E_MOCK_MODE: "${IEP1E_MOCK_MODE:-true}"
+      IEP1E_USE_GPU: "${IEP1E_USE_GPU:-false}"
+      IEP1E_MODEL_DIR: "${IEP1E_MODEL_DIR:-/opt/models/iep1e}"
+    env_file: .env
+    ports:
+      - "8007:8007"
+    networks:
+      - libraryai-net
+    restart: unless-stopped
+    command: [
+      "uvicorn", "services.iep1e.app.main:app",
+      "--host", "0.0.0.0", "--port", "8007"
+    ]
 
   # ── IEP2A — Detectron2 layout detection ──────────────────────────────────────
   #

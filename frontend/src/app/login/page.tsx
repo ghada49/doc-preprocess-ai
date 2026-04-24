@@ -43,7 +43,6 @@ export default function LoginPage() {
     setSubmitting(true);
     try {
       await login({ username, password });
-      // redirect handled by useEffect above
     } catch (err: unknown) {
       const status = isApiError(err) ? err.status : null;
       if (status === 401) {
@@ -57,8 +56,7 @@ export default function LoginPage() {
   };
 
   return (
-    <div className="min-h-screen bg-slate-50 flex items-center justify-center p-4">
-      {/* Background grid */}
+    <div className="flex min-h-screen items-center justify-center bg-[linear-gradient(180deg,rgb(248,250,252)_0%,rgb(241,245,249)_52%,rgb(248,250,252)_100%)] p-4">
       <div
         className="fixed inset-0 opacity-[0.4] pointer-events-none"
         style={{
@@ -69,9 +67,8 @@ export default function LoginPage() {
       />
 
       <div className="w-full max-w-sm relative z-10">
-        {/* Logo */}
         <div className="flex flex-col items-center mb-8">
-          <div className="flex h-12 w-12 items-center justify-center rounded-2xl bg-indigo-600 mb-4 shadow-lg shadow-indigo-500/20">
+          <div className="mb-4 flex h-12 w-12 items-center justify-center rounded-2xl bg-slate-950 shadow-lg shadow-slate-900/20">
             <svg
               viewBox="0 0 24 24"
               fill="none"
@@ -85,11 +82,10 @@ export default function LoginPage() {
             </svg>
           </div>
           <h1 className="text-xl font-semibold text-slate-900 tracking-tight">LibraryAI</h1>
-          <p className="text-sm text-slate-500 mt-1">Document AI Operations Console</p>
+          <p className="text-sm text-slate-500 mt-1">Clean document processing</p>
         </div>
 
-        {/* Card */}
-        <div className="bg-white border border-slate-200 rounded-2xl p-8 shadow-sm">
+        <div className="surface-panel p-8">
           <h2 className="text-sm font-semibold text-slate-800 mb-6">Sign in to your account</h2>
 
           {signupSuccess && (
@@ -125,7 +121,7 @@ export default function LoginPage() {
                 autoComplete="current-password"
                 value={password}
                 onChange={(e) => setPassword(e.target.value)}
-                placeholder="••••••••"
+                placeholder="Enter your password"
                 required
               />
             </div>
@@ -141,17 +137,15 @@ export default function LoginPage() {
           </form>
         </div>
 
-        {/* Sign-up link */}
         <p className="text-center text-sm text-slate-500 mt-6">
           Don&apos;t have an account?{" "}
-          <Link href="/signup" className="text-indigo-600 hover:text-indigo-500 transition-colors">
+          <Link href="/signup" className="font-medium text-slate-800 transition-colors hover:text-slate-950">
             Sign up
           </Link>
         </p>
 
-        {/* Footer */}
         <p className="text-center text-2xs text-slate-400 mt-3">
-          LibraryAI v2.0
+          Secure document workspace
         </p>
       </div>
     </div>

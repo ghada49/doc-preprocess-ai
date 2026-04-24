@@ -30,8 +30,8 @@ from pydantic import BaseModel, Field, model_validator
 
 # ── Type aliases ───────────────────────────────────────────────────────────────
 
-MaterialType = Literal["book", "newspaper", "archival_document"]
-PipelineMode = Literal["preprocess", "layout"]
+MaterialType = Literal["book", "newspaper", "archival_document", "microfilm"]
+PipelineMode = Literal["preprocess", "layout", "layout_with_ocr"]
 JobStatus = Literal["queued", "running", "done", "failed"]
 
 # All valid page states (spec Section 9.1 + DB CHECK constraint in Section 13).
@@ -41,6 +41,7 @@ PageState = Literal[
     "rectification",
     "ptiff_qa_pending",        # PTIFF QA checkpoint (spec Section 3.1 / 8.5)
     "layout_detection",
+    "semantic_norm",           # post-human-correction iep1e pass before layout_detection
     "pending_human_correction",
     "accepted",
     "review",
@@ -107,7 +108,7 @@ class JobCreateRequest(BaseModel):
     """
 
     collection_id: str
-    material_type: MaterialType
+    material_type: MaterialType = "book"
     pages: list[PageInput]
     pipeline_mode: PipelineMode = "layout"
     ptiff_qa_mode: Literal["auto_continue", "manual"] = "auto_continue"
@@ -119,6 +120,16 @@ class JobCreateRequest(BaseModel):
         n = len(self.pages)
         if not (1 <= n <= 1000):
             raise ValueError(f"pages must contain 1–1000 entries; got {n}")
+        seen: set[int] = set()
+        duplicates: set[int] = set()
+        for page in self.pages:
+            if page.page_number in seen:
+                duplicates.add(page.page_number)
+            seen.add(page.page_number)
+        if duplicates:
+            raise ValueError(
+                f"page_number must be unique within a job; duplicates: {sorted(duplicates)}"
+            )
         return self
 
 
@@ -199,6 +210,7 @@ class PageStatus(BaseModel):
     review_reasons: list[str] | None = None
     acceptance_decision: Literal["accepted", "review", "failed"] | None = None
     processing_time_ms: float | None = None
+    reading_order: int | None = None
 
 
 # ── JobStatusSummary ───────────────────────────────────────────────────────────
@@ -247,6 +259,7 @@ class JobStatusSummary(BaseModel):
     created_at: datetime
     updated_at: datetime
     completed_at: datetime | None = None
+    reading_direction: Literal["ltr", "rtl", "unresolved"] | None = None
 
 
 # ── JobStatusResponse ──────────────────────────────────────────────────────────

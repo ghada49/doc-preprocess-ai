@@ -11,23 +11,27 @@ metadata:
     app.kubernetes.io/part-of: libraryai
 data:
   # ── PostgreSQL ──────────────────────────────────────────────────────────────
+  # DATABASE_URL is the variable the code actually reads (services/eep/app/db/session.py).
+  # Postgres is external (RDS in production); set DATABASE_URL in secret.yaml, not here.
   POSTGRES_DB: "libraryai"
   POSTGRES_USER: "libraryai"
-  POSTGRES_HOST: "postgres"          # k8s Service name
-  POSTGRES_PORT: "5432"
 
   # ── Redis ───────────────────────────────────────────────────────────────────
-  REDIS_HOST: "redis"
-  REDIS_PORT: "6379"
+  # REDIS_URL is the variable the code actually reads (services/eep/app/queue.py).
+  # Redis is external (ElastiCache in production); set REDIS_URL in secret.yaml.
 
-  # ── MinIO / S3 ──────────────────────────────────────────────────────────────
-  S3_ENDPOINT_URL: "http://minio:9000"
+  # ── S3 ──────────────────────────────────────────────────────────────────────
+  # These manifests target AWS S3.  S3_ENDPOINT_URL is intentionally absent so
+  # boto3 resolves the standard AWS regional endpoint automatically.
+  # For a local MinIO deployment, add:  S3_ENDPOINT_URL: "http://minio:9000"
+  # and deploy MinIO separately (no MinIO manifest is included in this k8s/ set).
   S3_BUCKET_NAME: "libraryai"
 
   # ── Internal service URLs ────────────────────────────────────────────────────
   IEP1A_URL: "http://iep1a:8001"
   IEP1B_URL: "http://iep1b:8002"
   IEP1D_URL: "http://iep1d:8003"
+  IEP1E_URL: "http://iep1e:8007"
   IEP2A_URL: "http://iep2a:8004"
   IEP2B_URL: "http://iep2b:8005"
 
@@ -35,13 +39,14 @@ data:
   MLFLOW_TRACKING_URI: "http://mlflow:5000"
 
   # ── Worker tuning ───────────────────────────────────────────────────────────
-  WORKER_CONCURRENCY: "4"
-  TASK_TIMEOUT_SECONDS: "900"
+  # Code reads MAX_CONCURRENT_PAGES (services/eep_worker/app/concurrency.py).
+  MAX_CONCURRENT_PAGES: "4"
+  # Code reads WORKER_TASK_TIMEOUT_SECONDS (services/eep_worker/app/main.py).
+  WORKER_TASK_TIMEOUT_SECONDS: "900"
 
   # ── CORS ────────────────────────────────────────────────────────────────────
-  # Set to the public frontend URL; used by the EEP API.
-  # Replace with your actual domain, e.g. https://app.libraryai.example.com
-  CORS_ALLOWED_ORIGINS: "https://app.libraryai.example.com"
+  # Code reads CORS_ALLOW_ORIGINS (services/eep/app/main.py).
+  CORS_ALLOW_ORIGINS: "https://app.libraryai.example.com"
 
   # ── Observability ───────────────────────────────────────────────────────────
   PROMETHEUS_MULTIPROC_DIR: "/tmp/prometheus_multiproc"
@@ -49,11 +54,15 @@ data:
   # ── GPU backend ─────────────────────────────────────────────────────────────
   GPU_BACKEND: "local"               # or "runpod"
 
+  # ── IEP2A backend ───────────────────────────────────────────────────────────
+  # Code reads IEP2A_LAYOUT_BACKEND (services/iep2a/app/model.py).
+  IEP2A_LAYOUT_BACKEND: "paddleocr"
+
   # ── Google Document AI (non-secret settings) ────────────────────────────────
   GOOGLE_ENABLED: "false"            # set to "true" to activate
   GOOGLE_LOCATION: "us"
-  GOOGLE_TIMEOUT_LAYOUT: "30"
-  GOOGLE_TIMEOUT_CLEANUP: "60"
+  GOOGLE_TIMEOUT_LAYOUT_SECONDS: "30"
+  GOOGLE_TIMEOUT_CLEANUP_SECONDS: "60"
   GOOGLE_MAX_RETRIES: "3"
   GOOGLE_FALLBACK_ON_TIMEOUT: "true"
   GOOGLE_CREDENTIALS_PATH: "/var/secrets/google/key.json"

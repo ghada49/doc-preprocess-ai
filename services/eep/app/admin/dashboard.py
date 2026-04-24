@@ -135,6 +135,11 @@ class ServiceHealthResponse(BaseModel):
         layout_success_rate          — IEP2A/IEP2B invocation success rate
         human_review_throughput_rate — human-corrected pages per hour
         structural_agreement_rate    — IEP1A/IEP1B geometric agreement rate
+        rescue_rate                  — fraction of first-pass failures that entered
+                                       IEP1D rescue (vs. skipped by policy). 0.0 when
+                                       no failures occurred in the window.
+        policy_skips_count           — count of pages skipped to pending_human_correction
+                                       by the disabled_direct_review policy in the window.
         window_hours                 — look-back window used for all rates
     """
 
@@ -143,6 +148,8 @@ class ServiceHealthResponse(BaseModel):
     layout_success_rate: float
     human_review_throughput_rate: float
     structural_agreement_rate: float
+    rescue_rate: float
+    policy_skips_count: int
     window_hours: int
 
 
@@ -343,15 +350,39 @@ def get_service_health(
     )
     structural_agreement_rate = _safe_rate(agreed_window, total_with_agreement_window)
 
+    # Rescue rate: of first-pass failures, what fraction entered IEP1D rescue
+    # (vs. being skipped to pending_human_correction by disabled_direct_review policy).
+    rescue_attempted: int = (
+        db.query(func.count(PageLineage.lineage_id))
+        .filter(
+            PageLineage.iep1d_used.is_(True),
+            PageLineage.created_at >= window_start,
+        )
+        .scalar()
+        or 0
+    )
+    policy_skips_count: int = (
+        db.query(func.count(PageLineage.lineage_id))
+        .filter(
+            PageLineage.acceptance_reason == "rectification_policy_disabled",
+            PageLineage.created_at >= window_start,
+        )
+        .scalar()
+        or 0
+    )
+    rescue_rate = _safe_rate(rescue_attempted, rescue_attempted + policy_skips_count)
+
     logger.debug(
         "service-health: window=%dh preprocessing=%.4f rectification=%.4f "
-        "layout=%.4f human_throughput=%.4f structural=%.4f",
+        "layout=%.4f human_throughput=%.4f structural=%.4f rescue=%.4f policy_skips=%d",
         window_hours,
         preprocessing_success_rate,
         rectification_success_rate,
         layout_success_rate,
         human_review_throughput_rate,
         structural_agreement_rate,
+        rescue_rate,
+        policy_skips_count,
     )
     return ServiceHealthResponse(
         preprocessing_success_rate=preprocessing_success_rate,
@@ -359,5 +390,7 @@ def get_service_health(
         layout_success_rate=layout_success_rate,
         human_review_throughput_rate=human_review_throughput_rate,
         structural_agreement_rate=structural_agreement_rate,
+        rescue_rate=rescue_rate,
+        policy_skips_count=policy_skips_count,
         window_hours=window_hours,
     )

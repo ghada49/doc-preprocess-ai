@@ -12,7 +12,7 @@ Covers:
   - human_corrected set to False on lineage row
   - Optional notes stored in lineage.reviewer_notes
   - Notes not written when body omits them (no-body and empty-body cases)
-  - CAS miss (advance_page_state returns False) logs warning but still returns 200
+  - CAS miss (advance_page_state returns False) returns 409 without committing
   - 404 — job not found
   - 404 — page not found
   - 409 — page not in pending_human_correction state
@@ -156,7 +156,7 @@ class TestRejectCorrectionEndpoint:
     # ── State transition ──────────────────────────────────────────────────────
 
     def test_advance_page_state_called_correctly(self) -> None:
-        """advance_page_state is called with correct from/to states."""
+        """advance_page_state is called with terminal metadata."""
         job = _make_job()
         page = _make_page(status="pending_human_correction")
         lineage = _make_lineage()
@@ -176,10 +176,12 @@ class TestRejectCorrectionEndpoint:
             page.page_id,
             from_state="pending_human_correction",
             to_state="review",
+            acceptance_decision="review",
+            routing_path="human_correction_rejected",
         )
 
-    def test_cas_miss_still_returns_200(self) -> None:
-        """advance_page_state returning False (CAS miss) does not fail the request."""
+    def test_cas_miss_returns_409(self) -> None:
+        """advance_page_state returning False (CAS miss) fails without commit."""
         job = _make_job()
         page = _make_page(status="pending_human_correction")
         lineage = _make_lineage()
@@ -190,7 +192,8 @@ class TestRejectCorrectionEndpoint:
         with patch("services.eep.app.correction.reject.advance_page_state", return_value=False):
             r = self.client.post("/v1/jobs/job-001/pages/1/correction-reject")
 
-        assert r.status_code == 200
+        assert r.status_code == 409
+        session.commit.assert_not_called()
 
     # ── Persistence checks ────────────────────────────────────────────────────
 

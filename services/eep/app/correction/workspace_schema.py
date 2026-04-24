@@ -13,8 +13,8 @@ Schema fields:
   page_number          — 1-indexed page number
   sub_page_index       — 0/1 for split children; None for unsplit pages
   material_type        — job material type (book | newspaper | archival_document)
-  pipeline_mode        — preprocess | layout; frontend suppresses layout fields
-                         for preprocess-only jobs (spec Section 11.3)
+  pipeline_mode        — preprocess | layout | layout_with_ocr; frontend suppresses
+                         layout fields for preprocess-only jobs (spec Section 11.3)
   review_reasons       — list of reason codes that caused the correction routing
   original_otiff_uri   — original raw OTIFF input (always included when available)
   best_output_uri      — best available derived preprocessing artifact
@@ -143,8 +143,8 @@ class CorrectionWorkspaceResponse(BaseModel):
         page_number          — 1-indexed page number (>= 1)
         sub_page_index       — 0 (left child) or 1 (right child); None for unsplit pages
         material_type        — job material type
-        pipeline_mode        — preprocess | layout; frontend suppresses layout-related
-                               fields in preprocess-only mode (spec Section 11.3)
+        pipeline_mode        — preprocess | layout | layout_with_ocr; frontend suppresses
+                               layout-related fields in preprocess-only mode (spec Section 11.3)
         review_reasons       — list of reason codes from preprocessing quality gates
         original_otiff_uri   — URI of the original raw OTIFF input; None when unavailable
         best_output_uri      — URI of best available derived artifact; None when unavailable
@@ -163,6 +163,7 @@ class CorrectionWorkspaceResponse(BaseModel):
     pipeline_mode: PipelineMode
     review_reasons: list[str]
     original_otiff_uri: str | None = None
+    parent_source_uri: str | None = None
     current_output_uri: str | None = None
     current_output_role: LayoutArtifactRole | None = None
     current_layout_uri: str | None = None

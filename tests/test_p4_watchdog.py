@@ -151,12 +151,14 @@ class TestTaskWatchdog:
         assert report.stale_task_ids == []
         assert report.checked_count == 1
 
-    def test_check_stale_returns_expired_tasks(self) -> None:
-        wdog = TaskWatchdog(WatchdogConfig(task_timeout_seconds=0.0))
+    def test_check_stale_returns_expired_tasks(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # register t1 at t=100.0, register t2 at t=100.0, check at t=101.0
+        # elapsed = 1.0 > threshold 0.5 → both stale (deterministic, no real sleep)
+        _times = iter([100.0, 100.0, 101.0])
+        monkeypatch.setattr(time, "monotonic", lambda: next(_times))
+        wdog = TaskWatchdog(WatchdogConfig(task_timeout_seconds=0.5))
         wdog.register("t1")
         wdog.register("t2")
-        # With threshold=0, any age > 0 is stale; ensure at least one tick
-        time.sleep(0.01)
         report = wdog.check_stale()
         assert set(report.stale_task_ids) == {"t1", "t2"}
         assert report.checked_count == 2
@@ -171,19 +173,27 @@ class TestTaskWatchdog:
         assert wdog.active_count == 1
 
     @pytest.mark.asyncio
-    async def test_run_watch_loop_calls_on_stale(self) -> None:
+    async def test_run_watch_loop_calls_on_stale(self, monkeypatch: pytest.MonkeyPatch) -> None:
         """Loop invokes on_stale when stale tasks are present."""
-        wdog = TaskWatchdog(WatchdogConfig(task_timeout_seconds=0.0, check_interval_seconds=0.0))
+        # register at t=100.0; loop: sleep1→no raise, check_stale→101.0→stale,
+        # sleep2→CancelledError.  Counter function never exhausts (safe for teardown).
+        _call: list[int] = [0]
+
+        def _monotonic() -> float:
+            _call[0] += 1
+            return 99.0 + _call[0]  # 100.0, 101.0, 102.0, …
+
+        monkeypatch.setattr(time, "monotonic", _monotonic)
+
+        wdog = TaskWatchdog(WatchdogConfig(task_timeout_seconds=0.5, check_interval_seconds=0.0))
         wdog.register("t1")
-        time.sleep(0.01)  # ensure it's stale
 
         reports: list[StaleTaskReport] = []
-        call_count = 0
+        _sleeps: list[int] = [0]
 
         async def _fake_sleep(_: float) -> None:
-            nonlocal call_count
-            call_count += 1
-            if call_count >= 2:
+            _sleeps[0] += 1
+            if _sleeps[0] >= 2:
                 raise asyncio.CancelledError()
 
         with patch("asyncio.sleep", side_effect=_fake_sleep):
@@ -258,6 +268,8 @@ class TestReconcileOnce:
         r = _make_redis(processing_items=[maxed_task.model_dump_json()])
         session = MagicMock()
         session.get.return_value = page
+        # advance_page_state uses session.query(...).filter(...).update(...) → must return int
+        session.query.return_value.filter.return_value.update.return_value = 1
 
         result = reconcile_once(r, session, ReconcilerConfig(max_task_retries=3))
 
@@ -308,6 +320,8 @@ class TestReconcileOnce:
         r = _make_redis(processing_items=[maxed_task.model_dump_json()])
         session = MagicMock()
         session.get.return_value = page
+        # advance_page_state uses session.query(...).filter(...).update(...) → must return int
+        session.query.return_value.filter.return_value.update.return_value = 1
 
         result = reconcile_once(r, session, ReconcilerConfig(task_timeout_seconds=900.0))
 

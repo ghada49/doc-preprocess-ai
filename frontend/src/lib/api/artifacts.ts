@@ -1,6 +1,40 @@
 import { apiPost, getAccessToken, API_BASE_URL } from "./client";
 import type { PresignReadRequest, PresignReadResponse } from "@/types/api";
 
+export interface ArtifactPreviewBlob {
+  blob: Blob;
+  originalWidth: number | null;
+  originalHeight: number | null;
+}
+
+export class ArtifactPreviewError extends Error {
+  status: number | null;
+
+  constructor(message: string, status: number | null = null) {
+    super(message);
+    this.name = "ArtifactPreviewError";
+    this.status = status;
+  }
+}
+
+export function isRetryableArtifactPreviewError(error: unknown): boolean {
+  if (error instanceof DOMException && error.name === "AbortError") {
+    return false;
+  }
+
+  if (error instanceof ArtifactPreviewError) {
+    return (
+      error.status == null ||
+      error.status === 408 ||
+      error.status === 425 ||
+      error.status === 429 ||
+      error.status >= 500
+    );
+  }
+
+  return error instanceof TypeError;
+}
+
 export async function presignReadArtifact(
   uri: string,
   expiresIn = 300
@@ -30,22 +64,28 @@ export async function fetchArtifactJson<T>(
   });
 
   if (!response.ok) {
-    throw new Error(`Artifact fetch failed (HTTP ${response.status})`);
+    throw new Error("We could not load this file.");
   }
 
   return response.json() as Promise<T>;
 }
 
 /**
- * Call POST /v1/artifacts/preview, receive PNG bytes, and return an object
- * URL suitable for <img src={...}>.
- *
- * The caller must revoke the returned URL via URL.revokeObjectURL() when done.
+ * Call POST /v1/artifacts/preview and return the PNG blob plus source dimensions.
  */
 export async function fetchArtifactPreviewBlobUrl(
   uri: string,
   options: { pageIndex?: number; maxWidth?: number } = {}
 ): Promise<string> {
+  const preview = await fetchArtifactPreviewBlob(uri, options);
+  return URL.createObjectURL(preview.blob);
+}
+
+export async function fetchArtifactPreviewBlob(
+  uri: string,
+  options: { pageIndex?: number; maxWidth?: number } = {},
+  signal?: AbortSignal
+): Promise<ArtifactPreviewBlob> {
   const token = getAccessToken();
   const headers: HeadersInit = { "Content-Type": "application/json" };
   if (token) headers["Authorization"] = `Bearer ${token}`;
@@ -54,20 +94,43 @@ export async function fetchArtifactPreviewBlobUrl(
   if (options.pageIndex != null) body["page_index"] = options.pageIndex;
   if (options.maxWidth != null) body["max_width"] = options.maxWidth;
 
-  const response = await fetch(`${API_BASE_URL}/v1/artifacts/preview`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify(body),
-  });
+  let response: Response;
+  try {
+    response = await fetch(`${API_BASE_URL}/v1/artifacts/preview`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify(body),
+      cache: "no-store",
+      signal,
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw error;
+    }
+    throw new ArtifactPreviewError("We could not load this preview.");
+  }
 
   if (!response.ok) {
-    let detail = `Preview failed (HTTP ${response.status})`;
+    let detail = "We could not load this preview.";
     try {
       const json = await response.json();
       if (typeof json?.detail === "string") detail = json.detail;
     } catch { /* ignore */ }
-    throw new Error(detail);
+    throw new ArtifactPreviewError(detail, response.status);
   }
 
-  return URL.createObjectURL(await response.blob());
+  const originalWidth = parsePositiveIntHeader(response.headers.get("X-Original-Width"));
+  const originalHeight = parsePositiveIntHeader(response.headers.get("X-Original-Height"));
+
+  return {
+    blob: await response.blob(),
+    originalWidth,
+    originalHeight,
+  };
+}
+
+function parsePositiveIntHeader(value: string | null): number | null {
+  if (!value) return null;
+  const parsed = Number.parseInt(value, 10);
+  return Number.isFinite(parsed) && parsed > 0 ? parsed : null;
 }

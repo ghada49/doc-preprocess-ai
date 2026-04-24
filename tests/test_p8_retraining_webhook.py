@@ -124,7 +124,10 @@ def inject_session(mini_app: FastAPI):
 
     def _setup(session: MagicMock) -> TestClient:
         mini_app.dependency_overrides[get_session] = lambda: session
-        return TestClient(mini_app, raise_server_exceptions=False)
+        client = TestClient(mini_app, raise_server_exceptions=False)
+        # Endpoint requires X-Webhook-Secret; default env value used in tests
+        client.headers.update({"X-Webhook-Secret": "dev-webhook-secret-change-in-production"})
+        return client
 
     yield _setup
     mini_app.dependency_overrides.pop(get_session, None)

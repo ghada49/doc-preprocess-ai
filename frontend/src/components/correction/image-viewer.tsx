@@ -414,7 +414,7 @@ export function ImageViewer({
                 ref={imgRef}
                 src={imageUrl}
                 alt="Page artifact"
-                className="block max-w-none"
+                className={cn("block max-w-none", !imgLoaded && "invisible")}
                 draggable={false}
                 onLoad={(e) => {
                   const img = e.currentTarget;
@@ -428,6 +428,12 @@ export function ImageViewer({
                   setImgError(true);
                 }}
               />
+
+              {!imgLoaded && !imgError && (
+                <div className="absolute inset-0 flex items-center justify-center">
+                  <Spinner size="lg" />
+                </div>
+              )}
 
               {imgLoaded && showQuadOverlay && quadPoints && (
                 <QuadOverlay

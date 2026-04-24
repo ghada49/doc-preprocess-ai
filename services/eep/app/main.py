@@ -94,6 +94,7 @@ if cors_allow_origins:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        expose_headers=["X-Original-Width", "X-Original-Height"],
     )
 
 configure_observability(app, service_name="eep")

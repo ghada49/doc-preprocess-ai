@@ -15,7 +15,7 @@ import logging
 from fastapi import APIRouter
 from fastapi.responses import JSONResponse
 
-from services.iep1b.app.inference import InferenceError, run_mock_inference
+from services.iep1b.app.inference import InferenceError, run_inference
 from shared.schemas.geometry import GeometryRequest, GeometryResponse
 from shared.schemas.preprocessing import PreprocessError
 
@@ -56,7 +56,7 @@ def geometry(body: GeometryRequest) -> GeometryResponse | JSONResponse:
     HTTP 503 (RETRY) on failure.
     """
     try:
-        return run_mock_inference(body)
+        return run_inference(body)
     except InferenceError as exc:
         err = exc.preprocess_error
         status = _ACTION_TO_STATUS.get(err.fallback_action, 500)

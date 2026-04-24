@@ -6,8 +6,8 @@ Packet 5.2 — Single-page correction apply path tests.
 Covers:
   POST /v1/jobs/{job_id}/pages/{page_number}/correction
 
-  - Apply correction (layout mode) → state becomes layout_detection, enqueued
-  - Apply correction (preprocess mode) → state becomes accepted
+  - Apply correction (any mode) → state becomes semantic_norm, enqueued for iep1e
+  - Worker runs iep1e then routes to layout_detection (layout) or accepted (preprocess)
   - Reject invalid state (not pending_human_correction) → 409
   - Reject missing page → 404
   - Reject missing job → 404
@@ -278,8 +278,8 @@ class TestApplyCorrectionEndpoint:
         assert r.status_code == 200
         assert r.json() == {"status": "ok"}
 
-    def test_apply_correction_transitions_to_layout_detection_in_layout_mode(self) -> None:
-        """advance_page_state called with to_state=layout_detection for layout pipeline."""
+    def test_apply_correction_transitions_to_semantic_norm_in_layout_mode(self) -> None:
+        """advance_page_state called with to_state=semantic_norm for layout pipeline."""
         job = _make_job(pipeline_mode="layout")
         page = _make_page(status="pending_human_correction")
         lineage = _make_lineage()
@@ -298,11 +298,11 @@ class TestApplyCorrectionEndpoint:
             session,
             page.page_id,
             from_state="pending_human_correction",
-            to_state="layout_detection",
+            to_state="semantic_norm",
         )
 
-    def test_apply_correction_transitions_to_accepted_in_preprocess_mode(self) -> None:
-        """advance_page_state called with to_state=accepted for preprocess pipeline."""
+    def test_apply_correction_transitions_to_semantic_norm_in_preprocess_mode(self) -> None:
+        """advance_page_state called with to_state=semantic_norm for preprocess pipeline too."""
         job = _make_job(pipeline_mode="preprocess")
         page = _make_page(status="pending_human_correction")
         lineage = _make_lineage()
@@ -321,7 +321,7 @@ class TestApplyCorrectionEndpoint:
             session,
             page.page_id,
             from_state="pending_human_correction",
-            to_state="accepted",
+            to_state="semantic_norm",
         )
 
     def test_child_correction_targets_requested_sub_page_only(self) -> None:
@@ -365,7 +365,7 @@ class TestApplyCorrectionEndpoint:
             session,
             child.page_id,
             from_state="pending_human_correction",
-            to_state="layout_detection",
+            to_state="semantic_norm",
         )
         self.mock_backend.get_bytes.assert_called_with("s3://bucket/norm-parent.tiff")
         assert child.output_image_uri == "s3://bucket/jobs/job-001/corrected/1_1.tiff"

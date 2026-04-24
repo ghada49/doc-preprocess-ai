@@ -96,6 +96,26 @@ EEP_REQUESTS_TOTAL = Counter(
     "Total EEP processing requests",
 )
 
+# ── IEP0 metrics ──────────────────────────────────────────────────────────────
+
+IEP0_CLASSIFICATION_CONFIDENCE = Histogram(
+    "iep0_classification_confidence",
+    "IEP0 material-type classification confidence score",
+    buckets=_CONFIDENCE_BUCKETS,
+)
+
+IEP0_CLASSIFICATION_TOTAL = Counter(
+    "iep0_classification_total",
+    "IEP0 classification requests by predicted material type",
+    ["material_type"],
+)
+
+IEP0_GPU_INFERENCE_SECONDS = Histogram(
+    "iep0_gpu_inference_seconds",
+    "IEP0 classification inference latency in seconds",
+    buckets=_GPU_SECONDS_BUCKETS,
+)
+
 # ── IEP1A metrics ─────────────────────────────────────────────────────────────
 
 IEP1A_GEOMETRY_CONFIDENCE = Histogram(
@@ -227,6 +247,40 @@ IEP1D_REJECTION_REASONS = Counter(
     "IEP1D quality gate rejection reason count (multiple reasons may fire per event)",
     ["reason"],
     # reason label values: low_confidence, skew_not_improved, border_regressed, warning_veto
+)
+
+EEP_RECTIFICATION_POLICY_SKIPS = Counter(
+    "eep_rectification_policy_skips_total",
+    "Pages routed directly to pending_human_correction because rectification was disabled by policy",
+    ["policy"],
+    # policy label values: disabled_direct_review
+)
+
+# ── IEP1E metrics ─────────────────────────────────────────────────────────────
+
+IEP1E_ORIENTATION_DECISIONS = Counter(
+    "iep1e_orientation_decisions_total",
+    "IEP1E orientation decision count",
+    ["confident"],
+    # confident label values: "true", "false"
+)
+
+IEP1E_READING_DIRECTION = Counter(
+    "iep1e_reading_direction_total",
+    "IEP1E reading-direction decision count",
+    ["direction"],
+    # direction label values: ltr, rtl, unresolved
+)
+
+IEP1E_PROCESSING_SECONDS = Histogram(
+    "iep1e_processing_seconds",
+    "IEP1E semantic-norm wall-clock time in seconds",
+    buckets=_GPU_SECONDS_BUCKETS,
+)
+
+IEP1E_FALLBACK_TOTAL = Counter(
+    "iep1e_fallback_total",
+    "IEP1E calls that used geometry-only fallback (blank pages or OCR unavailable)",
 )
 
 # ── Google Document AI cleanup metrics ────────────────────────────────────────

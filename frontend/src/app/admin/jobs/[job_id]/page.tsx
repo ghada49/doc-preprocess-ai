@@ -168,6 +168,12 @@ export default function AdminJobDetailPage() {
                   <p className="text-xs capitalize text-slate-700">{value}</p>
                 </div>
               ))}
+              {summary.reading_direction != null && (
+                <div>
+                  <p className="mb-0.5 text-2xs text-slate-400">Reading Direction</p>
+                  <ReadingDirectionBadge direction={summary.reading_direction} />
+                </div>
+              )}
             </div>
           </div>
 
@@ -176,10 +182,14 @@ export default function AdminJobDetailPage() {
                Pages ({operationalPages.length})
              </h2>
             <div className="overflow-hidden rounded-xl border border-slate-200 bg-white shadow-sm">
+              {(() => {
+                const hasSplitPages = operationalPages.some(p => p.sub_page_index != null);
+                return (
               <table className="w-full data-table">
                 <thead>
                   <tr>
                     <th>#</th>
+                    {hasSplitPages && <th className="w-10">Order</th>}
                     <th>State</th>
                     <th>Routing</th>
                     <th>Review Reasons</th>
@@ -210,9 +220,22 @@ export default function AdminJobDetailPage() {
                           <td>
                             <span className="font-mono text-xs text-slate-400">
                               {page.page_number}
-                              {page.sub_page_index != null && `/${page.sub_page_index}`}
+                              {page.sub_page_index != null && (
+                                <span className="ml-1 text-2xs font-sans font-medium text-indigo-400">
+                                  {page.sub_page_index === 0 ? "Left" : "Right"}
+                                </span>
+                              )}
                             </span>
                           </td>
+                          {hasSplitPages && (
+                            <td>
+                              <span className="font-mono text-xs text-slate-400">
+                                {page.sub_page_index != null && page.reading_order != null
+                                  ? page.reading_order
+                                  : "—"}
+                              </span>
+                            </td>
+                          )}
                           <td>
                             <StatusBadge status={page.status} type="page" />
                           </td>
@@ -311,13 +334,13 @@ export default function AdminJobDetailPage() {
 
                         {isLayoutOpen && (
                           <tr className="bg-slate-50/80">
-                            <td colSpan={7} className="px-4 py-4">
+                            <td colSpan={hasSplitPages ? 8 : 7} className="px-4 py-4">
                               <LayoutOverlay
                                 imageUri={displayImageUri}
                                 layoutUri={page.output_layout_uri}
                                 pageLabel={`Page ${page.page_number}${
                                   page.sub_page_index != null
-                                    ? ` / ${page.sub_page_index}`
+                                    ? ` ${page.sub_page_index === 0 ? "Left" : "Right"}`
                                     : ""
                                 }`}
                               />
@@ -329,6 +352,8 @@ export default function AdminJobDetailPage() {
                   })}
                 </tbody>
               </table>
+                );
+              })()}
             </div>
           </div>
         </div>
@@ -341,11 +366,41 @@ function filterOperationalPages(pages: JobPage[]): JobPage[] {
   const pageNumbersWithChildren = new Set(
     pages.filter((page) => page.sub_page_index != null).map((page) => page.page_number)
   );
-  return pages.filter((page) => {
+  const filtered = pages.filter((page) => {
     if (page.status === "split") return false;
     if (page.sub_page_index == null && pageNumbersWithChildren.has(page.page_number)) {
       return false;
     }
     return true;
   });
+
+  // Sort by (page_number, reading_order, sub_page_index) — reading_order is authoritative.
+  return filtered.sort((a, b) => {
+    if (a.page_number !== b.page_number) return a.page_number - b.page_number;
+    const aOrder = a.reading_order ?? (a.sub_page_index != null ? a.sub_page_index + 1 : 0);
+    const bOrder = b.reading_order ?? (b.sub_page_index != null ? b.sub_page_index + 1 : 0);
+    return aOrder - bOrder;
+  });
+}
+
+function ReadingDirectionBadge({ direction }: { direction: "ltr" | "rtl" | "unresolved" }) {
+  if (direction === "ltr") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-xs font-medium text-blue-700">
+        LTR →
+      </span>
+    );
+  }
+  if (direction === "rtl") {
+    return (
+      <span className="inline-flex items-center gap-1 rounded border border-purple-200 bg-purple-50 px-1.5 py-0.5 text-xs font-medium text-purple-700">
+        ← RTL
+      </span>
+    );
+  }
+  return (
+    <span className="inline-flex items-center gap-1 rounded border border-slate-200 bg-slate-100 px-1.5 py-0.5 text-xs font-medium text-slate-500">
+      ?
+    </span>
+  );
 }

@@ -4,15 +4,15 @@ import { UserShell } from "@/components/layout/user-shell";
 import { PageHeader } from "@/components/shared/page-header";
 import { CorrectionQueueTable } from "@/components/correction/queue-table";
 
-export const metadata: Metadata = { title: "Correction Queue" };
+export const metadata: Metadata = { title: "Needs Review" };
 
 export default function MyQueuePage() {
   return (
-    <UserShell breadcrumbs={[{ label: "Correction Queue" }]}>
-      <div className="p-6 space-y-5">
+    <UserShell breadcrumbs={[{ label: "Needs Review" }]}>
+      <div className="relative z-10 space-y-5 p-6">
         <PageHeader
-          title="My Correction Queue"
-          description="Pages from your jobs that require human review."
+          title="Needs review"
+          description="Review pages that could not be processed automatically."
           icon={ClipboardList}
           iconColor="text-orange-400"
         />

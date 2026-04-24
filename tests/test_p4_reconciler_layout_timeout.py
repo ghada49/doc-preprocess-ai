@@ -70,3 +70,28 @@ def test_non_layout_active_states_keep_generic_timeout() -> None:
 
     assert result.skipped_active == 1
     assert result.requeued_stale == 0
+
+
+def test_semantic_norm_uses_generic_stale_timeout() -> None:
+    task = PageTask(
+        task_id="task-semantic",
+        job_id="job-semantic",
+        page_id="page-semantic",
+        page_number=1,
+        sub_page_index=0,
+        retry_count=0,
+    )
+    r = _make_redis(task.model_dump_json())
+    session = MagicMock()
+    session.get.return_value = _make_page(status="semantic_norm", age_seconds=901)
+
+    result = reconcile_once(
+        r,
+        session,
+        ReconcilerConfig(task_timeout_seconds=900.0, layout_task_timeout_seconds=180.0),
+    )
+
+    assert result.requeued_stale == 1
+    pipe = r.pipeline.return_value
+    pipe.lpush.assert_called_once()
+    assert pipe.lpush.call_args[0][0] == QUEUE_PAGE_TASKS

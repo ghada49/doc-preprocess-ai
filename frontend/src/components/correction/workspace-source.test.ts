@@ -19,6 +19,7 @@ function makeWorkspace(
     pipeline_mode: "layout",
     review_reasons: [],
     original_otiff_uri: "s3://bucket/raw/page-1.tiff",
+    parent_source_uri: null,
     current_output_uri: "s3://bucket/jobs/job-001/output/1.tiff",
     current_output_role: "normalized_output",
     current_layout_uri: null,
@@ -63,7 +64,8 @@ function makeWorkspace(
     ],
   });
 
-  assert.equal(getDefaultWorkspaceSource(workspace, "original"), "current");
+  assert.equal(getDefaultWorkspaceSource(workspace, "original"), "original");
+  assert.equal(getDefaultWorkspaceSource(workspace, "current"), "current");
   assert.equal(
     resolveWorkspaceSourceUri(workspace, "current"),
     "s3://bucket/norm/page-1.tiff"
@@ -118,6 +120,22 @@ function makeWorkspace(
 
 {
   const workspace = makeWorkspace({
+    sub_page_index: 1,
+    parent_source_uri: "s3://bucket/raw/parent-page-1.tiff",
+    original_otiff_uri: "s3://bucket/raw/parent-page-1.tiff",
+    current_output_uri: "s3://bucket/jobs/job-001/output/1_1.tiff",
+    current_output_role: "split_child",
+  });
+
+  assert.equal(getDefaultWorkspaceSource(workspace, "current"), "parent");
+  assert.equal(
+    resolveWorkspaceSourceUri(workspace, "parent"),
+    "s3://bucket/raw/parent-page-1.tiff"
+  );
+}
+
+{
+  const workspace = makeWorkspace({
     original_otiff_uri: "s3://bucket/raw/page-1.tiff",
     current_output_uri: "s3://bucket/jobs/job-001/output/1.tiff",
     branch_outputs: {
@@ -152,7 +170,7 @@ function makeWorkspace(
     },
   });
 
-  assert.equal(getDefaultWorkspaceSource(workspace, "original"), "current");
+  assert.equal(getDefaultWorkspaceSource(workspace, "original"), "original");
   assert.equal(resolveWorkspaceSourceUri(workspace, "current"), null);
   assert.match(
     getWorkspaceEmptyMessage(workspace, "current"),
@@ -207,6 +225,6 @@ function makeWorkspace(
 
   assert.equal(currentState.canEditOnDisplayedSource, true);
   assert.equal(currentState.canSubmitCorrection, true);
-  assert.equal(originalState.canEditOnDisplayedSource, false);
-  assert.equal(originalState.canSubmitCorrection, false);
+  assert.equal(originalState.canEditOnDisplayedSource, true);
+  assert.equal(originalState.canSubmitCorrection, true);
 }

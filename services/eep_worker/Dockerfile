@@ -12,7 +12,8 @@ WORKDIR /app
 
 ENV PYTHONPATH=/app \
     PYTHONDONTWRITEBYTECODE=1 \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    UV_HTTP_TIMEOUT=120
 
 # Install the shared runtime dependency set needed by the worker modules and
 # the shared pipeline helpers they import.
@@ -34,5 +35,9 @@ RUN uv pip install --system \
     "bcrypt>=4.0" \
     "google-cloud-documentai>=2.20"
 
-# Source code is volume-mounted in development (see docker-compose.yml)
-# CMD is supplied by docker-compose.yml
+COPY shared/ ./shared/
+COPY services/eep/ ./services/eep/
+COPY services/eep_worker/ ./services/eep_worker/
+
+EXPOSE 9100
+CMD ["uvicorn", "services.eep_worker.app.main:app", "--host", "0.0.0.0", "--port", "9100"]

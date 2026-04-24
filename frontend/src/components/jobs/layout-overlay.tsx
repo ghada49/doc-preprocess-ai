@@ -20,7 +20,7 @@ import {
   CardTitle,
 } from "@/components/ui/card";
 import { Spinner } from "@/components/ui/spinner";
-import { formatDuration, formatScore, snakeToTitle } from "@/lib/utils";
+import { cn, formatDuration, formatScore, snakeToTitle } from "@/lib/utils";
 import type {
   LayoutAdjudicationResult,
   LayoutDecisionSource,
@@ -34,6 +34,7 @@ interface LayoutOverlayProps {
   layoutUri: string | null;
   pageLabel?: string;
   originalImageSize?: ImageSize | null;
+  userMode?: boolean;
 }
 
 interface ImageSize {
@@ -62,6 +63,7 @@ export function LayoutOverlay({
   layoutUri,
   pageLabel,
   originalImageSize,
+  userMode = false,
 }: LayoutOverlayProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const imageRef = useRef<HTMLImageElement>(null);
@@ -69,11 +71,12 @@ export function LayoutOverlay({
   const [displayedImage, setDisplayedImage] = useState<DisplayedImageFrame | null>(
     null
   );
+  const [imageLoaded, setImageLoaded] = useState(false);
   const [imageError, setImageError] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
 
-  const imageQuery = useArtifactPreview(imageUri);
+  const imageQuery = useArtifactPreview(imageUri, { maxWidth: 2400 });
   const layoutQuery = useArtifactJson<LayoutAdjudicationResult>(layoutUri);
 
   const layout = layoutQuery.data;
@@ -150,6 +153,12 @@ export function LayoutOverlay({
     };
   }, [imageQuery.data?.blobUrl, layoutUri, syncDisplayedImage]);
 
+  useEffect(() => {
+    setImageLoaded(false);
+    setImageError(false);
+    setDisplayedImage(null);
+  }, [imageQuery.data?.blobUrl]);
+
   return (
     <Card className="overflow-hidden border-slate-200 shadow-sm">
       <CardHeader className="border-b border-slate-200 bg-slate-50/80">
@@ -161,20 +170,25 @@ export function LayoutOverlay({
               </span>
               <div>
                 <CardTitle>
-                  Layout Viewer{pageLabel ? ` - ${pageLabel}` : ""}
+                  {userMode ? "Page layout" : "Layout Viewer"}
+                  {pageLabel ? ` - ${pageLabel}` : ""}
                 </CardTitle>
                 <CardDescription>
-                  Rendered from the persisted layout adjudication artifact.
+                  {userMode
+                    ? "Detected text, tables, images, and other page sections."
+                    : "Rendered from the persisted layout adjudication artifact."}
                 </CardDescription>
               </div>
             </div>
           </div>
 
           <div className="flex flex-wrap items-center gap-2">
-            <Badge variant={sourceBadgeVariant(source)} dot>
-              Decision: {sourceLabel(source)}
-            </Badge>
-            {layoutInput && (
+            {!userMode && (
+              <Badge variant={sourceBadgeVariant(source)} dot>
+                Decision: {sourceLabel(source)}
+              </Badge>
+            )}
+            {!userMode && layoutInput && (
               <Badge variant="muted">
                 Analyzed: {artifactRoleLabel(layoutInput.artifact_role)}
               </Badge>
@@ -182,16 +196,18 @@ export function LayoutOverlay({
             <Badge variant="muted">{regions.length} regions</Badge>
             <ArtifactLinkButton
               uri={imageUri}
-              label="Open image"
+              label={userMode ? "Open page" : "Open image"}
               size="xs"
               variant="outline"
             />
-            <ArtifactLinkButton
-              uri={layoutUri}
-              label="Layout JSON"
-              size="xs"
-              variant="ghost"
-            />
+            {!userMode && (
+              <ArtifactLinkButton
+                uri={layoutUri}
+                label="Layout JSON"
+                size="xs"
+                variant="ghost"
+              />
+            )}
           </div>
         </div>
       </CardHeader>
@@ -209,10 +225,12 @@ export function LayoutOverlay({
               <div className="mb-3 flex flex-wrap items-center justify-between gap-2">
                 <div>
                   <p className="text-sm font-semibold text-slate-900">
-                    Page image
+                    {userMode ? "Processed page" : "Page image"}
                   </p>
                   <p className="text-xs text-slate-500">
-                    Canonical pixel boxes overlaid on the stored output image.
+                    {userMode
+                      ? "Highlighted areas show the detected structure on this page."
+                      : "Canonical pixel boxes overlaid on the stored output image."}
                   </p>
                 </div>
                 <Badge variant="muted">
@@ -227,18 +245,28 @@ export function LayoutOverlay({
                   ref={containerRef}
                   className="relative mx-auto w-full max-w-full"
                 >
+                  {!imageLoaded && imageQuery.data?.blobUrl && !imageError && (
+                    <div className="absolute inset-0 z-10 flex items-center justify-center rounded-lg bg-white/90">
+                      <Spinner size="lg" />
+                    </div>
+                  )}
                   {/* eslint-disable-next-line @next/next/no-img-element */}
                   <img
                     ref={imageRef}
                     src={imageQuery.data?.blobUrl}
                     alt={pageLabel ? `Layout for ${pageLabel}` : "Layout overlay"}
-                    className="block h-auto w-full rounded-lg"
+                    className={cn(
+                      "block h-auto w-full rounded-lg",
+                      !imageLoaded && "invisible"
+                    )}
                     onError={() => {
+                      setImageLoaded(false);
                       setImageError(true);
                       setDisplayedImage(null);
                     }}
                     onLoad={(event) => {
                       const image = event.currentTarget;
+                      setImageLoaded(true);
                       setImageError(false);
                       setNaturalSize({
                         width: image.naturalWidth,
@@ -316,9 +344,15 @@ export function LayoutOverlay({
               <div className="mt-3 flex items-start gap-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
                 <FileSearch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-slate-400" />
                 <span>
-                  Boxes are rendered from <code>final_layout_result</code> using
-                  the persisted canonical coordinates scaled into the displayed
-                  image frame.
+                  {userMode
+                    ? "Boxes are aligned to the displayed page so you can review each detected section."
+                    : (
+                      <>
+                        Boxes are rendered from <code>final_layout_result</code> using
+                        the persisted canonical coordinates scaled into the displayed
+                        image frame.
+                      </>
+                    )}
                 </span>
               </div>
             </div>
@@ -328,68 +362,94 @@ export function LayoutOverlay({
                 regions={regions}
                 selectedRegionId={selectedRegionId}
                 onSelectRegion={setSelectedRegionId}
+                title={userMode ? "Detected text" : "Extracted Text"}
+                emptyText={
+                  userMode
+                    ? "No text was detected in this layout."
+                    : "No text regions in this layout."
+                }
               />
 
-              <Panel title="Decision Panel">
-                <Metric label="Decision source" value={sourceLabel(source)} />
-                {layoutInput && (
-                  <Metric
-                    label="Analyzed artifact"
-                    value={artifactRoleLabel(layoutInput.artifact_role)}
-                  />
-                )}
-                {layoutInput && (
-                  <Metric
-                    label="Input source"
-                    value={inputSourceLabel(layoutInput.input_source)}
-                  />
-                )}
-                {layoutInput && (
-                  <Metric
-                    label="Artifact freshness"
-                    value={
-                      layoutInput.analyzed_artifact_uri ===
-                      layoutInput.source_page_artifact_uri
-                        ? "Direct current artifact"
-                        : "Derivative of current artifact"
-                    }
-                  />
-                )}
-                {layout.ocr_source != null && (
-                  <Metric
-                    label="OCR source"
-                    value={layout.ocr_source === "google" ? "Google Document AI" : "PaddleOCR"}
-                  />
-                )}
-                <Metric label="Number of regions" value={String(regions.length)} />
-                <Metric
-                  label="Processing time"
-                  value={formatDuration(layout.processing_time_ms)}
-                />
-                <Metric
-                  label="Status"
-                  value={layout.status === "done" ? "Displayable" : "Failed"}
-                />
-                {layout.consensus_confidence != null && (
-                  <Metric
-                    label="Consensus confidence"
-                    value={formatScore(layout.consensus_confidence, 3)}
-                  />
-                )}
-                {layout.google_response_time_ms != null && (
-                  <Metric
-                    label="Google latency"
-                    value={formatDuration(layout.google_response_time_ms)}
-                  />
-                )}
-                {layout.error && (
-                  <div className="rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-xs text-orange-700">
-                    {layout.error}
-                  </div>
+              <Panel title={userMode ? "Layout summary" : "Decision Panel"}>
+                {userMode ? (
+                  <>
+                    <Metric label="Detected areas" value={String(regions.length)} />
+                    <Metric
+                      label="Text blocks"
+                      value={String(regions.filter((region) => region.type === "text_block").length)}
+                    />
+                    <Metric
+                      label="Tables"
+                      value={String(regions.filter((region) => region.type === "table").length)}
+                    />
+                    <Metric
+                      label="Images"
+                      value={String(regions.filter((region) => region.type === "image").length)}
+                    />
+                  </>
+                ) : (
+                  <>
+                    <Metric label="Decision source" value={sourceLabel(source)} />
+                    {layoutInput && (
+                      <Metric
+                        label="Analyzed artifact"
+                        value={artifactRoleLabel(layoutInput.artifact_role)}
+                      />
+                    )}
+                    {layoutInput && (
+                      <Metric
+                        label="Input source"
+                        value={inputSourceLabel(layoutInput.input_source)}
+                      />
+                    )}
+                    {layoutInput && (
+                      <Metric
+                        label="Artifact freshness"
+                        value={
+                          layoutInput.analyzed_artifact_uri ===
+                          layoutInput.source_page_artifact_uri
+                            ? "Direct current artifact"
+                            : "Derivative of current artifact"
+                        }
+                      />
+                    )}
+                    {layout.ocr_source != null && (
+                      <Metric
+                        label="OCR source"
+                        value={layout.ocr_source === "google" ? "Google Document AI" : "PaddleOCR"}
+                      />
+                    )}
+                    <Metric label="Number of regions" value={String(regions.length)} />
+                    <Metric
+                      label="Processing time"
+                      value={formatDuration(layout.processing_time_ms)}
+                    />
+                    <Metric
+                      label="Status"
+                      value={layout.status === "done" ? "Displayable" : "Failed"}
+                    />
+                    {layout.consensus_confidence != null && (
+                      <Metric
+                        label="Consensus confidence"
+                        value={formatScore(layout.consensus_confidence, 3)}
+                      />
+                    )}
+                    {layout.google_response_time_ms != null && (
+                      <Metric
+                        label="Google latency"
+                        value={formatDuration(layout.google_response_time_ms)}
+                      />
+                    )}
+                    {layout.error && (
+                      <div className="rounded-lg border border-orange-200 bg-orange-50 px-3 py-2 text-xs text-orange-700">
+                        {layout.error}
+                      </div>
+                    )}
+                  </>
                 )}
               </Panel>
 
-              <Panel title="Legend">
+              <Panel title={userMode ? "Detected areas" : "Legend"}>
                 <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-1">
                   {(
                     Object.entries(REGION_STYLES) as Array<
@@ -409,47 +469,51 @@ export function LayoutOverlay({
                           {config.label}
                         </span>
                       </div>
-                      <code className="text-[11px] text-slate-400">{type}</code>
+                      {!userMode && (
+                        <code className="text-[11px] text-slate-400">{type}</code>
+                      )}
                     </div>
                   ))}
                 </div>
               </Panel>
 
-              <Panel title="Advanced Panel">
-                <Button
-                  type="button"
-                  size="sm"
-                  variant="secondary"
-                  className="w-full justify-between"
-                  onClick={() => setShowAdvanced((value) => !value)}
-                >
-                  <span>Show IEP2A, IEP2B, and Google metadata</span>
-                  {showAdvanced ? (
-                    <ChevronDown className="h-4 w-4" />
-                  ) : (
-                    <ChevronRight className="h-4 w-4" />
-                  )}
-                </Button>
+              {!userMode && (
+                <Panel title="Advanced Panel">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="secondary"
+                    className="w-full justify-between"
+                    onClick={() => setShowAdvanced((value) => !value)}
+                  >
+                    <span>Show IEP2A, IEP2B, and Google metadata</span>
+                    {showAdvanced ? (
+                      <ChevronDown className="h-4 w-4" />
+                    ) : (
+                      <ChevronRight className="h-4 w-4" />
+                    )}
+                  </Button>
 
-                {showAdvanced && (
-                  <div className="space-y-3">
-                    <AdvancedSection
-                      title="IEP2A result"
-                      data={layout.iep2a_result}
-                      summary={summarizeModel(layout.iep2a_result)}
-                    />
-                    <AdvancedSection
-                      title="IEP2B result"
-                      data={layout.iep2b_result}
-                      summary={summarizeModel(layout.iep2b_result)}
-                    />
-                    <AdvancedSection
-                      title="Google metadata"
-                      data={layout.google_document_ai_result}
-                    />
-                  </div>
-                )}
-              </Panel>
+                  {showAdvanced && (
+                    <div className="space-y-3">
+                      <AdvancedSection
+                        title="IEP2A result"
+                        data={layout.iep2a_result}
+                        summary={summarizeModel(layout.iep2a_result)}
+                      />
+                      <AdvancedSection
+                        title="IEP2B result"
+                        data={layout.iep2b_result}
+                        summary={summarizeModel(layout.iep2b_result)}
+                      />
+                      <AdvancedSection
+                        title="Google metadata"
+                        data={layout.google_document_ai_result}
+                      />
+                    </div>
+                  )}
+                </Panel>
+              )}
             </div>
           </div>
         )}
@@ -462,10 +526,14 @@ function RegionTextPanel({
   regions,
   selectedRegionId,
   onSelectRegion,
+  title = "Extracted Text",
+  emptyText = "No text regions in this layout.",
 }: {
   regions: LayoutRegion[];
   selectedRegionId: string | null;
   onSelectRegion: (id: string | null) => void;
+  title?: string;
+  emptyText?: string;
 }) {
   const textRegions = regions.filter((r) => r.text);
   const scrollRefs = useRef<Map<string, HTMLDivElement>>(new Map());
@@ -478,9 +546,9 @@ function RegionTextPanel({
 
   return (
     <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
-      <p className="mb-3 text-sm font-semibold text-slate-900">Extracted Text</p>
+      <p className="mb-3 text-sm font-semibold text-slate-900">{title}</p>
       {textRegions.length === 0 ? (
-        <p className="text-xs text-slate-400">No text regions in this layout.</p>
+        <p className="text-xs text-slate-400">{emptyText}</p>
       ) : (
         <div className="max-h-72 space-y-2 overflow-y-auto pr-1">
           {textRegions.map((region) => {
