@@ -87,11 +87,13 @@ class TestLocalFileBackend:
 
 
 @pytest.fixture
-def s3_backend() -> Iterator[S3Backend]:
+def s3_backend(monkeypatch: pytest.MonkeyPatch) -> Iterator[S3Backend]:
     """Provide an S3Backend wired to a fresh moto-mocked bucket."""
-    os.environ.setdefault("AWS_ACCESS_KEY_ID", "testing")
-    os.environ.setdefault("AWS_SECRET_ACCESS_KEY", "testing")
-    os.environ.setdefault("AWS_DEFAULT_REGION", _REGION)
+    monkeypatch.setenv("AWS_ACCESS_KEY_ID", "testing")
+    monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "testing")
+    monkeypatch.setenv("AWS_DEFAULT_REGION", _REGION)
+    # Remove any real endpoint URL so moto can intercept boto3 calls
+    monkeypatch.delenv("S3_ENDPOINT_URL", raising=False)
     with mock_aws():
         boto3.client("s3", region_name=_REGION).create_bucket(Bucket=_BUCKET)
         yield S3Backend()
