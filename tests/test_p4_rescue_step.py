@@ -441,12 +441,21 @@ class TestIep1dCall:
                 image_loader=_make_image_loader(),
             )
 
-        # session.add() should have been called with a ServiceInvocation
-        assert session.add.called
-        added = session.add.call_args[0][0]
+        # session.add() should have been called with a ServiceInvocation somewhere
+        # (may be followed by other add() calls, e.g. QualityGateLog)
         from services.eep.app.db.models import ServiceInvocation
 
-        assert isinstance(added, ServiceInvocation)
+        assert session.add.called
+        invocations = [
+            call[0][0]
+            for call in session.add.call_args_list
+            if isinstance(call[0][0], ServiceInvocation)
+        ]
+        assert len(invocations) == 1, (
+            f"Expected exactly one ServiceInvocation added; "
+            f"got {[type(c[0][0]).__name__ for c in session.add.call_args_list]}"
+        )
+        added = invocations[0]
         assert added.service_name == "iep1d"
         assert added.status == "success"
         assert added.metrics is not None

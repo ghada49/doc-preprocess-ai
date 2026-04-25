@@ -210,6 +210,7 @@ jobs:
             TASK_DEF=$(cat "$FILE" \
               | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
               | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
+              | sed "s/CLUSTER_NAME/${CLUSTER}/g" \
               | sed 's|:latest|:${{ github.sha }}|g')
             REVISION=$(aws ecs register-task-definition \
               --cli-input-json "$TASK_DEF" \
@@ -465,6 +466,7 @@ jobs:
             TASK_DEF=$(cat "$FILE" \
               | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
               | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
+              | sed "s/CLUSTER_NAME/${CLUSTER}/g" \
               | sed 's|:latest|:${{ github.sha }}|g')
             REVISION=$(aws ecs register-task-definition \
               --cli-input-json "$TASK_DEF" \

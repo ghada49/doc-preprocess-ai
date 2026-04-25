@@ -64,7 +64,7 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     )
 
     redis_client = get_redis()
-    worker_config = build_worker_config()
+    worker_config = build_worker_config(redis_client=redis_client)
 
     worker_bg = asyncio.create_task(
         run_worker_loop(

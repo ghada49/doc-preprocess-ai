@@ -5,11 +5,6 @@ on:
   schedule:
     - cron: '0 22 * * *'
   workflow_dispatch:
-    inputs:
-      iep1d_enabled:
-        description: "Start iep1d (UVDoc rescue path)? true/false"
-        required: false
-        default: "false"
 
 permissions:
   id-token: write
@@ -19,8 +14,6 @@ env:
   AWS_REGION:  ${{ vars.AWS_REGION }}
   ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
   GPU_ASG:     ${{ vars.GPU_ASG_NAME }}
-  # iep1d is opt-in: set repository variable IEP1D_ENABLED=true or pass as workflow input
-  IEP1D_ENABLED: ${{ inputs.iep1d_enabled || vars.IEP1D_ENABLED || 'false' }}
 
 jobs:
   scale-up:
@@ -83,26 +76,16 @@ jobs:
             echo "Started libraryai-${SVC}"
           done
 
-      - name: Start iep1d if enabled
-        if: env.IEP1D_ENABLED == 'true'
-        run: |
-          aws ecs update-service \
-            --cluster "$ECS_CLUSTER" \
-            --service "libraryai-iep1d" \
-            --desired-count 1 \
-            --no-cli-pager
-          echo "Started libraryai-iep1d (rescue path enabled)"
-
+      # NOTE: libraryai-iep1d is a rescue-path service and is NOT started here.
+      # It remains at desired-count 0 during normal processing.
+      # IEP1D_SCALER_MODE in the eep-worker task controls on-demand startup.
+      # Scale iep1d manually only if IEP1D_SCALER_MODE=disabled and rescue testing is needed.
       - name: Wait for GPU services to become healthy
         run: |
-          SERVICES=(libraryai-iep0 libraryai-iep1a libraryai-iep1b)
-          if [ "$IEP1D_ENABLED" = "true" ]; then
-            SERVICES+=(libraryai-iep1d)
-          fi
-          echo "Waiting for stable: ${SERVICES[*]}"
+          echo "Waiting for stable: libraryai-iep0 libraryai-iep1a libraryai-iep1b"
           aws ecs wait services-stable \
             --cluster "$ECS_CLUSTER" \
-            --services "${SERVICES[@]}"
+            --services libraryai-iep0 libraryai-iep1a libraryai-iep1b
           echo "All GPU services healthy."
 
       # ── Step 4: Start CPU inference services ─────────────────────────────

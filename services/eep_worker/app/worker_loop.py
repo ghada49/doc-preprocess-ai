@@ -75,6 +75,7 @@ from services.eep_worker.app.normalization_step import (
     run_normalization_and_first_validation,
 )
 from services.eep_worker.app.split_step import SplitOutcome, run_split_normalization
+from services.eep_worker.app.iep1d_scaler import Iep1dScaler, Iep1dUnavailableError, build_iep1d_scaler
 from services.eep_worker.app.rescue_step import RescueOutcome, run_rescue_flow
 from services.eep_worker.app.task import build_gate_config
 from services.eep_worker.app.watchdog import TaskWatchdog
@@ -149,6 +150,7 @@ class WorkerConfig:
     iep2b_circuit_breaker: CircuitBreaker
     iep1e_endpoint: str
     iep1e_circuit_breaker: CircuitBreaker
+    iep1d_scaler: Iep1dScaler
 
 
 def _env_float(name: str, default: float) -> float:
@@ -178,7 +180,10 @@ def _service_endpoint(base_env: str, default_base: str, path: str) -> str:
     return f"{base}{path}"
 
 
-def build_worker_config(worker_id: str | None = None) -> WorkerConfig:
+def build_worker_config(
+    worker_id: str | None = None,
+    redis_client: redis_lib.Redis | None = None,
+) -> WorkerConfig:
     """Build runtime worker configuration from environment variables."""
     resolved_worker_id = worker_id or f"eep-worker-{socket.gethostname()}-{os.getpid()}"
     backend_kind = os.environ.get("GPU_BACKEND", "local").strip().lower()
@@ -241,6 +246,7 @@ def build_worker_config(worker_id: str | None = None) -> WorkerConfig:
         iep2b_circuit_breaker=CircuitBreaker("iep2b", cb_cfg),
         iep1e_endpoint=_service_endpoint("IEP1E_URL", "http://iep1e:8007", "/v1/semantic-norm"),
         iep1e_circuit_breaker=CircuitBreaker("iep1e", cb_cfg),
+        iep1d_scaler=build_iep1d_scaler(redis_client),
     )
 
 
@@ -1934,6 +1940,33 @@ async def _run_preprocessing(
             page.sub_page_index,
             ".png",
         )
+
+        # ── On-demand IEP1D scale-up ─────────────────────────────────────────
+        # Starts libraryai-iep1d if IEP1D_SCALER_MODE=ecs, or assumes it is
+        # already running if mode=noop. In disabled mode (default) this raises
+        # Iep1dUnavailableError and the page routes to pending_human_correction.
+        try:
+            await config.iep1d_scaler.ensure_iep1d_ready()
+        except Iep1dUnavailableError as _iep1d_exc:
+            logger.warning(
+                "worker_loop: iep1d unavailable — routing to pending_human_correction "
+                "job=%s page_id=%s reason=%s",
+                job.job_id,
+                page.page_id,
+                _iep1d_exc,
+            )
+            _complete_pending_human_correction(
+                session,
+                page=page,
+                job=job,
+                lineage=lineage,
+                from_state="rectification",
+                review_reason="iep1d_unavailable",
+                total_processing_ms=(time.monotonic() - task_started_at) * 1000.0,
+                output_image_uri=page.output_image_uri,
+                quality_summary=page.quality_summary,
+            )
+            return "ack"
 
         try:
             rescue_outcome: RescueOutcome = await run_rescue_flow(

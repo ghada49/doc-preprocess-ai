@@ -33,6 +33,13 @@
         { "name": "IEP1A_URL", "value": "http://iep1a:8001" },
         { "name": "IEP1B_URL", "value": "http://iep1b:8002" },
         { "name": "IEP1D_URL", "value": "http://iep1d:8003" },
+        { "name": "IEP1D_SCALER_MODE",                  "value": "ecs" },
+        { "name": "IEP1D_SERVICE_NAME",                  "value": "libraryai-iep1d" },
+        { "name": "ECS_CLUSTER",                          "value": "CLUSTER_NAME" },
+        { "name": "IEP1D_READY_URL",                      "value": "http://iep1d.libraryai.local:8003/ready" },
+        { "name": "IEP1D_SCALE_TIMEOUT_SECONDS",         "value": "600" },
+        { "name": "IEP1D_READY_TIMEOUT_SECONDS",         "value": "300" },
+        { "name": "IEP1D_SCALE_DOWN_AFTER_IDLE_SECONDS", "value": "300" },
         { "name": "IEP1E_URL", "value": "http://iep1e:8007" },
         { "name": "IEP2A_URL", "value": "http://iep2a:8004" },
         { "name": "IEP2B_URL", "value": "http://iep2b:8005" }
