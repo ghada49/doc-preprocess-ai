@@ -77,7 +77,14 @@ from sqlalchemy import func, or_
 from sqlalchemy.orm import Session
 
 from services.eep.app.auth import CurrentUser, require_admin
-from services.eep.app.db.models import Job, JobPage, PageLineage, ServiceInvocation
+from services.eep.app.db.models import (
+    Job,
+    JobPage,
+    ModelPromotionAudit,
+    PageLineage,
+    ServiceInvocation,
+    ShadowEvaluation,
+)
 from services.eep.app.db.session import get_session
 from services.eep.app.redis_client import get_redis
 from shared.schemas.queue import QUEUE_PAGE_TASKS_PROCESSING
@@ -393,4 +400,189 @@ def get_service_health(
         rescue_rate=rescue_rate,
         policy_skips_count=policy_skips_count,
         window_hours=window_hours,
+    )
+
+
+# ── Shadow evaluation list ────────────────────────────────────────────────────
+
+
+class ShadowEvaluationRecord(BaseModel):
+    """Single shadow evaluation row for the admin list endpoint."""
+
+    eval_id: str
+    job_id: str
+    page_id: str
+    page_status: str
+    confidence_delta: float | None
+    status: str
+    created_at: datetime
+    completed_at: datetime | None
+
+
+class ShadowEvaluationsResponse(BaseModel):
+    """Paginated list of shadow evaluation records."""
+
+    total: int
+    limit: int
+    offset: int
+    items: list[ShadowEvaluationRecord]
+
+
+@router.get(
+    "/v1/admin/shadow-evaluations",
+    response_model=ShadowEvaluationsResponse,
+    status_code=200,
+    summary="List shadow evaluation records",
+)
+def list_shadow_evaluations(
+    job_id: str | None = Query(default=None, description="Filter by job_id."),
+    status: str | None = Query(
+        default=None,
+        description="Filter by status: pending | completed | failed | no_shadow_model.",
+    ),
+    limit: int = Query(default=50, ge=1, le=200, description="Max records to return."),
+    offset: int = Query(default=0, ge=0, description="Number of records to skip."),
+    db: Session = Depends(get_session),
+    _user: CurrentUser = Depends(require_admin),
+) -> ShadowEvaluationsResponse:
+    """
+    Return a paginated list of shadow evaluation records.
+
+    Filterable by ``job_id`` and/or ``status``.  Results are ordered by
+    ``created_at DESC`` so the most recent evaluations appear first.
+
+    **Auth:** admin role required.
+    """
+    q = db.query(ShadowEvaluation)
+    if job_id is not None:
+        q = q.filter(ShadowEvaluation.job_id == job_id)
+    if status is not None:
+        q = q.filter(ShadowEvaluation.status == status)
+
+    total: int = q.count()
+    rows: list[ShadowEvaluation] = (
+        q.order_by(ShadowEvaluation.created_at.desc()).offset(offset).limit(limit).all()
+    )
+
+    logger.debug(
+        "list_shadow_evaluations: job_id=%r status=%r total=%d offset=%d limit=%d",
+        job_id,
+        status,
+        total,
+        offset,
+        limit,
+    )
+    return ShadowEvaluationsResponse(
+        total=total,
+        limit=limit,
+        offset=offset,
+        items=[
+            ShadowEvaluationRecord(
+                eval_id=row.eval_id,
+                job_id=row.job_id,
+                page_id=row.page_id,
+                page_status=row.page_status,
+                confidence_delta=row.confidence_delta,
+                status=row.status,
+                created_at=row.created_at,
+                completed_at=row.completed_at,
+            )
+            for row in rows
+        ],
+    )
+
+
+# ── Promotion audit list ──────────────────────────────────────────────────────
+
+
+class PromotionAuditRecord(BaseModel):
+    """Single row from the model_promotion_audit table."""
+
+    audit_id: str
+    action: str
+    service_name: str
+    candidate_model_id: str
+    previous_model_id: str | None
+    promoted_by_user_id: str
+    forced: bool
+    failed_gates_bypassed: list[str] | None
+    reason: str | None
+    notes: str | None
+    created_at: datetime
+
+
+class PromotionAuditResponse(BaseModel):
+    """Paginated list of promotion audit records."""
+
+    total: int
+    limit: int
+    offset: int
+    items: list[PromotionAuditRecord]
+
+
+@router.get(
+    "/v1/admin/promotion-audit",
+    response_model=PromotionAuditResponse,
+    status_code=200,
+    summary="List model promotion and rollback audit records",
+)
+def list_promotion_audit(
+    service: str | None = Query(default=None, description="Filter by service name (iep1a, iep1b)."),
+    action: str | None = Query(default=None, description="Filter by action: promote | rollback."),
+    model_id: str | None = Query(default=None, description="Filter by candidate_model_id."),
+    limit: int = Query(default=50, ge=1, le=200, description="Max records to return."),
+    offset: int = Query(default=0, ge=0, description="Number of records to skip."),
+    db: Session = Depends(get_session),
+    _user: CurrentUser = Depends(require_admin),
+) -> PromotionAuditResponse:
+    """
+    Return a paginated, reverse-chronological list of promotion and rollback
+    audit events.
+
+    Each record captures who performed the action, whether gate checks were
+    bypassed, and which model was displaced.
+
+    **Auth:** admin role required.
+    """
+    q = db.query(ModelPromotionAudit)
+    if service is not None:
+        q = q.filter(ModelPromotionAudit.service_name == service)
+    if action is not None:
+        q = q.filter(ModelPromotionAudit.action == action)
+    if model_id is not None:
+        q = q.filter(ModelPromotionAudit.candidate_model_id == model_id)
+
+    total: int = q.count()
+    rows: list[ModelPromotionAudit] = (
+        q.order_by(ModelPromotionAudit.created_at.desc()).offset(offset).limit(limit).all()
+    )
+
+    logger.debug(
+        "list_promotion_audit: service=%r action=%r total=%d offset=%d limit=%d",
+        service,
+        action,
+        total,
+        offset,
+        limit,
+    )
+    return PromotionAuditResponse(
+        total=total,
+        limit=limit,
+        offset=offset,
+        items=[
+            PromotionAuditRecord(
+                audit_id=row.audit_id,
+                action=row.action,
+                service_name=row.service_name,
+                candidate_model_id=row.candidate_model_id,
+                previous_model_id=row.previous_model_id,
+                promoted_by_user_id=row.promoted_by_user_id,
+                forced=row.forced,
+                failed_gates_bypassed=row.failed_gates_bypassed,
+                reason=row.reason,
+                notes=row.notes,
+                created_at=row.created_at,
+            )
+            for row in rows
+        ],
     )

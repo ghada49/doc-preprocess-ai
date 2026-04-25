@@ -32,7 +32,7 @@ from services.eep.app.db.lineage import (
     update_geometry_result,
     update_lineage_completion,
 )
-from services.eep.app.db.models import Job, JobPage, PageLineage
+from services.eep.app.db.models import Job, JobPage, PageLineage, ShadowEvaluation
 from services.eep.app.db.page_state import advance_page_state
 from services.eep.app.db.session import SessionLocal
 from services.eep.app.gates.artifact_validation import make_cv2_image_loader
@@ -92,7 +92,9 @@ from shared.schemas.layout import (
 from shared.schemas.preprocessing import PreprocessBranchResponse
 from shared.schemas.semantic_norm import SemanticNormResponse
 from shared.schemas.ucf import BoundingBox
-from shared.schemas.queue import PageTask
+from shared.schemas.queue import PageTask, ShadowTask
+from shared.metrics import SHADOW_TASKS_ENQUEUED
+from shared.schemas.queue import QUEUE_SHADOW_TASKS
 
 logger = logging.getLogger(__name__)
 
@@ -3023,6 +3025,108 @@ async def _run_layout(
     return "ack"
 
 
+_SHADOW_TERMINAL_STATES: frozenset[str] = frozenset({"accepted", "review", "failed"})
+
+
+def _maybe_enqueue_shadow_task(
+    redis_client: redis_lib.Redis,
+    job_id: str,
+    page_id: str,
+    page_number: int,
+    session_factory: Any,
+) -> None:
+    """
+    Reserve and enqueue a ShadowTask for a shadow-mode terminal page.
+
+    The live worker creates the pending shadow_evaluations row first and links
+    page_lineage.shadow_eval_id to the same UUID used as ShadowTask.task_id.
+    This makes enqueue idempotent and gives the shadow worker a stable row to
+    finalize or recover.
+    """
+    db: Session = session_factory()
+    try:
+        job = db.get(Job, job_id)
+        page = db.get(JobPage, page_id)
+        if job is None or page is None:
+            return
+        if not job.shadow_mode or page.status not in _SHADOW_TERMINAL_STATES:
+            return
+
+        lineage = _find_lineage(db, job_id, page.page_number, page.sub_page_index)
+        if lineage is None:
+            logger.warning(
+                "worker_loop: shadow task skipped missing lineage job=%s page=%d sub=%s",
+                job_id,
+                page.page_number,
+                page.sub_page_index,
+            )
+            return
+
+        if lineage.shadow_eval_id:
+            logger.debug(
+                "worker_loop: shadow task already reserved job=%s page=%d eval_id=%s",
+                job_id,
+                page.page_number,
+                lineage.shadow_eval_id,
+            )
+            return
+
+        existing_eval = (
+            db.query(ShadowEvaluation)
+            .filter_by(page_id=page_id)
+            .order_by(ShadowEvaluation.created_at.desc())
+            .first()
+        )
+        if existing_eval is not None:
+            lineage.shadow_eval_id = existing_eval.eval_id
+            db.commit()
+            logger.info(
+                "worker_loop: linked existing shadow eval job=%s page=%d eval_id=%s",
+                job_id,
+                page.page_number,
+                existing_eval.eval_id,
+            )
+            return
+
+        task = ShadowTask(
+            task_id=str(uuid.uuid4()),
+            job_id=job_id,
+            page_id=page_id,
+            page_number=page_number,
+            page_status=page.status,
+        )
+        db.add(
+            ShadowEvaluation(
+                eval_id=task.task_id,
+                job_id=job_id,
+                page_id=page_id,
+                page_status=page.status,
+                status="pending",
+            )
+        )
+        lineage.shadow_eval_id = task.task_id
+        db.commit()
+
+        redis_client.lpush(QUEUE_SHADOW_TASKS, task.model_dump_json())
+        SHADOW_TASKS_ENQUEUED.inc()
+        logger.info(
+            "worker_loop: shadow task enqueued job=%s page=%d status=%s eval_id=%s",
+            job_id,
+            page_number,
+            page.status,
+            task.task_id,
+        )
+    except Exception:
+        db.rollback()
+        logger.exception(
+            "worker_loop: failed to enqueue shadow task job=%s page_id=%s",
+            job_id,
+            page_id,
+        )
+    finally:
+        db.close()
+
+
 async def process_page_task(
     claimed: ClaimedTask,
     config: WorkerConfig,
@@ -3117,6 +3221,13 @@ async def process_page_task(
     try:
         if resolution == "ack":
             ack_task(redis_client, claimed)
+            _maybe_enqueue_shadow_task(
+                redis_client,
+                job_id=claimed.task.job_id,
+                page_id=claimed.task.page_id,
+                page_number=claimed.task.page_number,
+                session_factory=session_factory,
+            )
         else:
             fail_task(redis_client, claimed, max_retries=config.max_task_retries)
     except redis_lib.RedisError:

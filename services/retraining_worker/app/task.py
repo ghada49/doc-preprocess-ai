@@ -15,14 +15,11 @@ Implements the core task lifecycle for a single retraining trigger:
   5. Offline evaluation — writes gate_results to model_versions in the format
      read by promotion_api._check_gates (spec Section 16.2).
      Default: stub. Set ``LIBRARYAI_RETRAINING_GOLDEN_EVAL=live`` to run
-     ``training/scripts/evaluate_golden_dataset.py`` for **IEP0**, **IEP1A**,
-     and **IEP1B** (IEP1A/B merged to the five-key preprocessing dict; IEP0
-     keeps classifier gates from the evaluator). When live training ran in the
-     same job, evaluators use those ``best.pt`` paths. Cross-model structural +
-     latency measurement uses manifest pairs sharing the same ``image_s3_key``
-     (requires AWS, SHAs, torch/ultralytics). Set ``GOLDEN_SKIP_CROSS_MODEL=1``
-     to skip the extra cross-model pass (faster; structural/latency fall back
-     to placeholders).
+     ``training/scripts/evaluate_golden_dataset.py`` for **IEP1A** and
+     **IEP1B**. Cross-model structural + latency measurement uses manifest
+     pairs sharing the same ``image_s3_key`` (requires AWS, SHAs,
+     torch/ultralytics). Set ``GOLDEN_SKIP_CROSS_MODEL=1`` to skip the extra
+     cross-model pass (faster; structural/latency fall back to placeholders).
   6. Create ModelVersion rows (stage='staging') for each target service with
      the computed gate_results.
   7. Mark job completed, trigger completed.
@@ -40,12 +37,6 @@ promotion_api._check_gates):
     "structural_agreement_rate": {"pass": bool, "value": float},
     "golden_dataset":            {"pass": bool, "regressions": int},
     "latency_p95":               {"pass": bool, "value": float},
-  }
-
-  **iep0** (classifier evaluation):
-  {
-    "classification_confidence": {"pass": bool, "value": float},
-    "golden_dataset":            {"pass": bool, "regressions": int},
   }
 
 Exported:
@@ -69,16 +60,15 @@ from services.retraining_worker.app.dataset_registry import (
     DatasetSelectionError,
     select_retraining_dataset,
 )
-from services.retraining_worker.app.golden_gate_merge import (
-    build_iep1ab_live_gates,
-    build_preprocessing_live_gates,
-)
+from services.retraining_worker.app.golden_gate_merge import build_iep1ab_live_gates
 from services.retraining_worker.app.live_train import (
     RetrainingTrainConfigError,
     run_live_preprocessing_training,
 )
 
 logger = logging.getLogger(__name__)
+
+_MATERIALS: tuple[str, ...] = ("book", "newspaper", "microfilm")
 
 # trigger_type → pipeline_type (spec Section 16.3).
 # None means monitoring-only; no automated job is created.
@@ -90,8 +80,8 @@ _TRIGGER_PIPELINE: dict[str, str | None] = {
     "layout_confidence_degradation": None,
 }
 
-# Services retrained for a preprocessing pipeline job (spec Section 16.1).
-_PREPROCESSING_SERVICES: tuple[str, ...] = ("iep0", "iep1a", "iep1b")
+# Services retrained for a preprocessing pipeline job.
+_PREPROCESSING_SERVICES: tuple[str, ...] = ("iep1a", "iep1b")
 
 
 # ── Stub helpers ──────────────────────────────────────────────────────────────
@@ -117,14 +107,6 @@ def _stub_gate_results() -> dict:
     }
 
 
-def _stub_iep0_gate_results() -> dict:
-    """Placeholder IEP0 gates (matches evaluate_iep0 top-level keys)."""
-    return {
-        "classification_confidence": {"pass": True, "value": 0.92},
-        "golden_dataset": {"pass": True, "regressions": 0},
-    }
-
-
 def _stub_mlflow_train(pipeline_type: str, trigger_id: str) -> tuple[str, str]:
     """
     Placeholder MLflow training run.
@@ -146,6 +128,106 @@ def _stub_mlflow_train(pipeline_type: str, trigger_id: str) -> tuple[str, str]:
 # ── Task entry point ──────────────────────────────────────────────────────────
 
 
+def _resolve_production_weights(service_name: str, db: Session) -> dict[str, str]:
+    """
+    Return a material → S3 URI mapping for the current production ModelVersion.
+
+    Parses the ``notes`` field written by execute_retraining_task when live
+    training uploads weights to S3:
+        "s3_weights:s3://bucket/path/iep1a_book.pt,s3://bucket/path/iep1a_newspaper.pt,..."
+
+    Returns an empty dict (graceful no-op) when:
+      - no production ModelVersion exists for the service
+      - notes field is absent or has no s3_weights section
+      - S3 URIs can't be mapped to known materials
+
+    Failures here must never block retraining — the caller falls back to the
+    COCO base model when this returns empty.
+    """
+    mv: ModelVersion | None = (
+        db.query(ModelVersion)
+        .filter(
+            ModelVersion.service_name == service_name,
+            ModelVersion.stage == "production",
+        )
+        .order_by(ModelVersion.promoted_at.desc())
+        .first()
+    )
+    if mv is None or not mv.notes:
+        return {}
+
+    # Extract s3_weights:... segment (notes may have additional space-delimited fields)
+    s3_weights_str = ""
+    for token in mv.notes.split(" "):
+        if token.startswith("s3_weights:"):
+            s3_weights_str = token[len("s3_weights:"):]
+            break
+    if not s3_weights_str:
+        return {}
+
+    result: dict[str, str] = {}
+    for uri in s3_weights_str.split(","):
+        uri = uri.strip()
+        if not uri.startswith("s3://"):
+            continue
+        # Filename format: {service}_{material}.pt  e.g. "iep1a_book.pt"
+        filename = uri.rsplit("/", 1)[-1]  # last path component
+        stem = filename.removesuffix(".pt")  # "iep1a_book"
+        # Strip any service prefix to isolate the material
+        for prefix in (f"{service_name}_", "iep1a_", "iep1b_"):
+            if stem.startswith(prefix):
+                material = stem[len(prefix):]
+                if material in _MATERIALS:
+                    result[material] = uri
+                break
+
+    logger.debug(
+        "_resolve_production_weights: service=%s model_id=%s found_materials=%s",
+        service_name,
+        mv.model_id,
+        sorted(result.keys()),
+    )
+    return result
+
+
+def _run_manual_evaluation(trigger: RetrainingTrigger, db: Session, now: datetime) -> None:
+    """
+    Run offline evaluation for an existing ModelVersion without retraining.
+
+    Called when trigger_type='manual_evaluation'.  The model_id to evaluate is
+    stored in trigger.notes (written by POST /v1/models/evaluate).  Gate results
+    are written directly to model_versions.gate_results in the format that
+    promotion_api._check_gates expects.
+    """
+    model_id = (trigger.notes or "").strip()
+    if not model_id:
+        raise ValueError("manual_evaluation trigger missing model_id in notes")
+
+    candidate = db.get(ModelVersion, model_id)
+    if candidate is None:
+        raise ValueError(f"model_version not found for manual_evaluation: {model_id!r}")
+
+    eval_mode = os.getenv("LIBRARYAI_RETRAINING_GOLDEN_EVAL", "stub").strip().lower()
+    if eval_mode == "live":
+        repo_root = Path(__file__).resolve().parents[3]
+        gate_results = build_iep1ab_live_gates(repo_root)
+    else:
+        gate_results = _stub_gate_results()
+
+    candidate.gate_results = gate_results
+    trigger.status = "completed"
+    trigger.resolved_at = now
+    db.commit()
+
+    logger.info(
+        "_run_manual_evaluation: wrote gate_results to model_id=%s service=%s tag=%s (%s mode)",
+        model_id,
+        candidate.service_name,
+        candidate.version_tag,
+        eval_mode,
+    )
+
+
 def execute_retraining_task(trigger: RetrainingTrigger, db: Session) -> None:
     """
     Execute a single retraining task for *trigger*.
@@ -161,6 +243,12 @@ def execute_retraining_task(trigger: RetrainingTrigger, db: Session) -> None:
     """
     now = datetime.now(timezone.utc)
     trigger_type = trigger.trigger_type
+
+    # Manual evaluation-only: update gate_results on the existing model, no training
+    if trigger_type == "manual_evaluation":
+        _run_manual_evaluation(trigger, db, now)
+        return
+
     pipeline_type = _TRIGGER_PIPELINE.get(trigger_type)
 
     # Monitoring-only trigger: mark completed immediately, no job
@@ -201,10 +289,6 @@ def execute_retraining_task(trigger: RetrainingTrigger, db: Session) -> None:
     dataset_checksum = ""
     selected_manifest: Path | None = None
     train_mode = os.getenv("LIBRARYAI_RETRAINING_TRAIN", "stub").strip().lower()
-    iep0_mode = os.getenv("RETRAINING_IEP0_MODE", "live").strip().lower()
-    if iep0_mode not in {"live", "stub"}:
-        raise RuntimeError("RETRAINING_IEP0_MODE must be 'live' or 'stub'")
-    include_iep0_live = iep0_mode == "live"
     trained_weights = None
     if train_mode == "live":
         repo_root = Path(__file__).resolve().parents[3]
@@ -233,13 +317,41 @@ def execute_retraining_task(trigger: RetrainingTrigger, db: Session) -> None:
         if not dataset_version:
             dataset_version = f"rt-{job.job_id.replace('-', '')[:12]}"
         dataset_checksum = selection.dataset_checksum
+        # Resolve production weights for fine-tuning (best-effort; falls back to
+        # COCO base model on any failure so retraining is never blocked).
+        pretrained_iep1a: dict[str, str] = {}
+        pretrained_iep1b: dict[str, str] = {}
+        try:
+            pretrained_iep1a = _resolve_production_weights("iep1a", db)
+            pretrained_iep1b = _resolve_production_weights("iep1b", db)
+            if pretrained_iep1a or pretrained_iep1b:
+                logger.info(
+                    "execute_retraining_task: fine-tuning from production weights "
+                    "iep1a_materials=%s iep1b_materials=%s",
+                    sorted(pretrained_iep1a.keys()),
+                    sorted(pretrained_iep1b.keys()),
+                )
+            else:
+                logger.info(
+                    "execute_retraining_task: no production weights found; "
+                    "training from COCO base model"
+                )
+        except Exception:
+            logger.warning(
+                "execute_retraining_task: failed to resolve production weights; "
+                "falling back to COCO base model",
+                exc_info=True,
+            )
+
         try:
             trained_weights = run_live_preprocessing_training(
                 repo_root,
                 job.job_id,
                 dataset_version,
                 manifest_path=selected_manifest,
-                include_iep0=include_iep0_live,
+                include_iep0=False,
+                pretrained_iep1a=pretrained_iep1a or None,
+                pretrained_iep1b=pretrained_iep1b or None,
             )
         except RetrainingTrainConfigError:
             raise
@@ -268,44 +380,29 @@ def execute_retraining_task(trigger: RetrainingTrigger, db: Session) -> None:
     # Offline evaluation — stub by default; set LIBRARYAI_RETRAINING_GOLDEN_EVAL=live
     # for real golden-dataset runs (requires AWS creds, S3, valid case SHAs, torch).
     eval_mode = os.getenv("LIBRARYAI_RETRAINING_GOLDEN_EVAL", "stub").strip().lower()
-    live_gates = None
     iep1ab_live_gates = None
     if eval_mode == "live":
         repo_root = Path(__file__).resolve().parents[3]
         kw: dict[str, Any] = {}
         if trained_weights is not None:
-            if trained_weights.iep0_weights is not None:
-                kw["weights_iep0"] = trained_weights.iep0_weights
             kw["weights_iep1a_by_material"] = trained_weights.iep1a_weights
             kw["weights_iep1b_by_material"] = trained_weights.iep1b_weights
-        if include_iep0_live:
-            live_gates = build_preprocessing_live_gates(repo_root, include_iep0=True, **kw)
-        else:
-            iep1ab_live_gates = build_iep1ab_live_gates(
-                repo_root,
-                weights_iep1a_by_material=kw.get("weights_iep1a_by_material"),
-                weights_iep1b_by_material=kw.get("weights_iep1b_by_material"),
-            )
+        iep1ab_live_gates = build_iep1ab_live_gates(
+            repo_root,
+            weights_iep1a_by_material=kw.get("weights_iep1a_by_material"),
+            weights_iep1b_by_material=kw.get("weights_iep1b_by_material"),
+        )
 
     services = _PREPROCESSING_SERVICES if pipeline_type == "preprocessing" else ()
     created_version_tags: list[str] = []
 
     for service_name in services:
-        if live_gates is not None:
-            gate_results = live_gates.iep0 if service_name == "iep0" else live_gates.iep1ab
-            eval_label = "live golden evaluation"
-        elif iep1ab_live_gates is not None and service_name != "iep0":
+        if iep1ab_live_gates is not None:
             gate_results = iep1ab_live_gates
-            eval_label = "live golden evaluation (IEP1-only)"
+            eval_label = "live golden evaluation"
         else:
-            gate_results = (
-                _stub_iep0_gate_results() if service_name == "iep0" else _stub_gate_results()
-            )
-            eval_label = (
-                "stub evaluation (IEP0 forced stub)"
-                if service_name == "iep0" and not include_iep0_live
-                else "stub evaluation"
-            )
+            gate_results = _stub_gate_results()
+            eval_label = "stub evaluation"
         if train_mode == "live":
             version_tag = f"rt-{job.job_id.replace('-', '')[:12]}-{service_name}"
         else:

@@ -361,6 +361,226 @@ class TestPromote:
         assert resp.status_code == 200
 
 
+# ── POST /v1/models/promote — audit record ────────────────────────────────────
+
+
+class TestPromoteAudit:
+    """Verify that ModelPromotionAudit rows are written on every successful promote."""
+
+    def _added_audits(self, session: MagicMock) -> list[Any]:
+        from services.eep.app.db.models import ModelPromotionAudit
+        return [c[0][0] for c in session.add.call_args_list if isinstance(c[0][0], ModelPromotionAudit)]
+
+    def test_normal_promote_writes_audit_record(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ALL_GATES_PASS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        resp = client.post("/v1/models/promote", json={"service": "iep1a"})
+        assert resp.status_code == 200
+        audits = self._added_audits(session)
+        assert len(audits) == 1
+
+    def test_normal_promote_audit_action_is_promote(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ALL_GATES_PASS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a"})
+        audit = self._added_audits(session)[0]
+        assert audit.action == "promote"
+
+    def test_normal_promote_audit_forced_is_false(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ALL_GATES_PASS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a", "force": False})
+        audit = self._added_audits(session)[0]
+        assert audit.forced is False
+
+    def test_normal_promote_audit_user_id_recorded(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ALL_GATES_PASS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a"})
+        audit = self._added_audits(session)[0]
+        assert audit.promoted_by_user_id == _ADMIN_USER.user_id
+
+    def test_normal_promote_audit_no_bypassed_gates(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ALL_GATES_PASS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a"})
+        audit = self._added_audits(session)[0]
+        assert audit.failed_gates_bypassed is None
+
+    def test_normal_promote_audit_candidate_model_id(self, inject_admin) -> None:
+        staging = _make_mv(model_id="mv-cand", gate_results=_ALL_GATES_PASS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a"})
+        audit = self._added_audits(session)[0]
+        assert audit.candidate_model_id == "mv-cand"
+
+    def test_normal_promote_audit_records_previous_model_id(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ALL_GATES_PASS)
+        production = _make_mv(model_id="mv-old", stage="production")
+        session = _session_for_promote(staging=staging, production=production)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a"})
+        audit = self._added_audits(session)[0]
+        assert audit.previous_model_id == "mv-old"
+
+    def test_normal_promote_audit_previous_model_id_none_when_no_production(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ALL_GATES_PASS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a"})
+        audit = self._added_audits(session)[0]
+        assert audit.previous_model_id is None
+
+    def test_forced_promote_audit_forced_is_true(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ONE_GATE_FAILS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a", "force": True})
+        audit = self._added_audits(session)[0]
+        assert audit.forced is True
+
+    def test_forced_promote_audit_records_bypassed_gates(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ONE_GATE_FAILS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a", "force": True})
+        audit = self._added_audits(session)[0]
+        assert audit.failed_gates_bypassed is not None
+        assert "split_precision" in audit.failed_gates_bypassed
+        assert "latency_p95" in audit.failed_gates_bypassed
+
+    def test_forced_promote_no_bypassed_gates_when_all_pass(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ALL_GATES_PASS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a", "force": True})
+        audit = self._added_audits(session)[0]
+        # All gates passed even with force=true — no gates were bypassed
+        assert audit.failed_gates_bypassed is None
+
+    def test_promote_requires_admin_audit_not_written_on_403(self, mini_app: Any) -> None:
+        """Confirm no audit record is written when auth fails."""
+        mini_app.dependency_overrides.clear()
+        r = MagicMock()
+        session = MagicMock()
+        mini_app.dependency_overrides[get_session] = lambda: session
+        mini_app.dependency_overrides[get_redis] = lambda: r
+        client = TestClient(mini_app, raise_server_exceptions=False)
+        token = create_access_token(user_id="u1", role="user")
+        try:
+            resp = client.post(
+                "/v1/models/promote",
+                json={"service": "iep1a"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 403
+            from services.eep.app.db.models import ModelPromotionAudit
+            added_audits = [
+                c[0][0] for c in session.add.call_args_list
+                if isinstance(c[0][0], ModelPromotionAudit)
+            ]
+            assert added_audits == []
+        finally:
+            mini_app.dependency_overrides.clear()
+
+
+# ── POST /v1/models/rollback — audit record ───────────────────────────────────
+
+
+class TestRollbackAudit:
+    """Verify that ModelPromotionAudit rows are written on every successful rollback."""
+
+    def _added_audits(self, session: MagicMock) -> list[Any]:
+        from services.eep.app.db.models import ModelPromotionAudit
+        return [c[0][0] for c in session.add.call_args_list if isinstance(c[0][0], ModelPromotionAudit)]
+
+    def test_rollback_writes_audit_record(self, inject_admin) -> None:
+        production = _make_mv(stage="production", promoted_at=_NOW)
+        archived = _make_mv(model_id="mv-arch", stage="archived")
+        session = _session_for_rollback(production=production, archived=archived)
+        client = inject_admin(session)
+        resp = client.post("/v1/models/rollback", json={"service": "iep1a", "reason": "manual"})
+        assert resp.status_code == 200
+        audits = self._added_audits(session)
+        assert len(audits) == 1
+
+    def test_rollback_audit_action_is_rollback(self, inject_admin) -> None:
+        production = _make_mv(stage="production", promoted_at=_NOW)
+        archived = _make_mv(model_id="mv-arch", stage="archived")
+        session = _session_for_rollback(production=production, archived=archived)
+        client = inject_admin(session)
+        client.post("/v1/models/rollback", json={"service": "iep1a", "reason": "manual"})
+        audit = self._added_audits(session)[0]
+        assert audit.action == "rollback"
+
+    def test_rollback_audit_forced_is_false(self, inject_admin) -> None:
+        production = _make_mv(stage="production", promoted_at=_NOW)
+        archived = _make_mv(model_id="mv-arch", stage="archived")
+        session = _session_for_rollback(production=production, archived=archived)
+        client = inject_admin(session)
+        client.post("/v1/models/rollback", json={"service": "iep1a", "reason": "manual"})
+        audit = self._added_audits(session)[0]
+        assert audit.forced is False
+
+    def test_rollback_audit_reason_recorded(self, inject_admin) -> None:
+        production = _make_mv(stage="production", promoted_at=_NOW)
+        archived = _make_mv(model_id="mv-arch", stage="archived")
+        session = _session_for_rollback(production=production, archived=archived)
+        client = inject_admin(session)
+        client.post("/v1/models/rollback", json={"service": "iep1a", "reason": "manual"})
+        audit = self._added_audits(session)[0]
+        assert audit.reason == "manual"
+
+    def test_rollback_audit_user_id_recorded(self, inject_admin) -> None:
+        production = _make_mv(stage="production", promoted_at=_NOW)
+        archived = _make_mv(model_id="mv-arch", stage="archived")
+        session = _session_for_rollback(production=production, archived=archived)
+        client = inject_admin(session)
+        client.post("/v1/models/rollback", json={"service": "iep1a", "reason": "manual"})
+        audit = self._added_audits(session)[0]
+        assert audit.promoted_by_user_id == _ADMIN_USER.user_id
+
+    def test_rollback_audit_candidate_is_archived_model(self, inject_admin) -> None:
+        production = _make_mv(model_id="mv-prod", stage="production", promoted_at=_NOW)
+        archived = _make_mv(model_id="mv-arch", stage="archived")
+        session = _session_for_rollback(production=production, archived=archived)
+        client = inject_admin(session)
+        client.post("/v1/models/rollback", json={"service": "iep1a", "reason": "manual"})
+        audit = self._added_audits(session)[0]
+        assert audit.candidate_model_id == "mv-arch"
+
+    def test_rollback_audit_previous_is_current_production(self, inject_admin) -> None:
+        production = _make_mv(model_id="mv-prod", stage="production", promoted_at=_NOW)
+        archived = _make_mv(model_id="mv-arch", stage="archived")
+        session = _session_for_rollback(production=production, archived=archived)
+        client = inject_admin(session)
+        client.post("/v1/models/rollback", json={"service": "iep1a", "reason": "manual"})
+        audit = self._added_audits(session)[0]
+        assert audit.previous_model_id == "mv-prod"
+
+    def test_rollback_audit_automated_reason_recorded(self, inject_admin) -> None:
+        recent = _NOW - timedelta(hours=1)
+        production = _make_mv(stage="production", promoted_at=recent)
+        archived = _make_mv(model_id="mv-arch", stage="archived")
+        session = _session_for_rollback(production=production, archived=archived)
+        with patch("services.eep.app.promotion_api.datetime") as mock_dt:
+            mock_dt.now.return_value = _NOW
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            client = inject_admin(session)
+            client.post(
+                "/v1/models/rollback",
+                json={"service": "iep1a", "reason": "PostPromotionAcceptRateCollapse"},
+            )
+        audit = self._added_audits(session)[0]
+        assert audit.reason == "PostPromotionAcceptRateCollapse"
+
+
 # ── POST /v1/models/rollback ───────────────────────────────────────────────────
 
 

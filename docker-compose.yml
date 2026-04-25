@@ -202,10 +202,7 @@ services:
       sh -c "
         cd /app/services/eep && alembic upgrade head && cd /app &&
         if [ -n \"$$BOOTSTRAP_ADMIN_PASSWORD\" ]; then
-          python -m scripts.create_admin
-            --username \"$$BOOTSTRAP_ADMIN_USERNAME\"
-            --password \"$$BOOTSTRAP_ADMIN_PASSWORD\"
-            --skip-if-exists;
+          python -m scripts.create_admin --username \"$$BOOTSTRAP_ADMIN_USERNAME\" --password \"$$BOOTSTRAP_ADMIN_PASSWORD\" --skip-if-exists;
         fi &&
         uvicorn services.eep.app.main:app --host 0.0.0.0 --port 8000 --reload
       "
@@ -338,32 +335,6 @@ services:
         condition: service_started
     command: ["uvicorn", "services.shadow_worker.app.main:app", "--host", "0.0.0.0", "--port", "9102", "--reload"]
 
-  # ── Shadow recovery ───────────────────────────────────────────────────────────
-
-  shadow-recovery:
-    build:
-      context: .
-      dockerfile: services/shadow_recovery/Dockerfile
-    volumes:
-      - .:/app
-    environment:
-      PYTHONPATH: /app
-      PYTHONDONTWRITEBYTECODE: "1"
-      PYTHONUNBUFFERED: "1"
-      HEALTH_PORT: "9103"
-    env_file: .env
-    expose:
-      - "9103"
-    networks:
-      - libraryai-net
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_started
-      redis:
-        condition: service_started
-    command: ["uvicorn", "services.shadow_recovery.app.main:app", "--host", "0.0.0.0", "--port", "9103", "--reload"]
-
   # ── Retraining worker ─────────────────────────────────────────────────────────
 
   retraining-worker:
@@ -416,32 +387,6 @@ services:
       - libraryai-net
     restart: "no"
     command: ["python", "services/dataset_builder/app/main.py", "--mode", "scheduled", "--approved"]
-
-  # ── Retraining recovery ────────────────────────────────────────────────────────
-
-  retraining-recovery:
-    build:
-      context: .
-      dockerfile: services/retraining_recovery/Dockerfile
-    volumes:
-      - .:/app
-    environment:
-      PYTHONPATH: /app
-      PYTHONDONTWRITEBYTECODE: "1"
-      PYTHONUNBUFFERED: "1"
-      HEALTH_PORT: "9105"
-    env_file: .env
-    expose:
-      - "9105"
-    networks:
-      - libraryai-net
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_started
-      redis:
-        condition: service_started
-    command: ["uvicorn", "services.retraining_recovery.app.main:app", "--host", "0.0.0.0", "--port", "9105", "--reload"]
 
   # ── Artifact cleanup ──────────────────────────────────────────────────────────
 

@@ -1,0 +1,49 @@
+{
+  "family": "libraryai-artifact-cleanup",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/libraryai-task-role",
+  "containerDefinitions": [
+    {
+      "name": "artifact-cleanup",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/libraryai-artifact-cleanup:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "name": "health",
+          "containerPort": 9106,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "PYTHONPATH",               "value": "/app" },
+        { "name": "HEALTH_PORT",              "value": "9106" },
+        { "name": "S3_BUCKET_NAME",           "value": "libraryai" },
+        { "name": "PROMETHEUS_MULTIPROC_DIR", "value": "/tmp/prometheus_multiproc" }
+      ],
+      "secrets": [
+        { "name": "DATABASE_URL",         "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/DATABASE_URL" },
+        { "name": "S3_ACCESS_KEY_ID",     "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/S3_ACCESS_KEY_ID" },
+        { "name": "S3_SECRET_ACCESS_KEY", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/S3_SECRET_ACCESS_KEY" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/libraryai-artifact-cleanup",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "artifact-cleanup"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -sf http://localhost:9106/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 20
+      }
+    }
+  ]
+}

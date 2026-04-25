@@ -30,7 +30,9 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
@@ -50,6 +52,15 @@ _MODEL_FILES: dict[str, str] = {
 }
 
 _loaded_models: dict[str, object] = {}
+
+# ── Reload tracking ─────────────────────────────────────────────────────────
+# Monotonic startup time and wall-clock timestamps are both tracked so
+# callers can distinguish "never reloaded" from "reloaded N times".
+
+_startup_wall: float = time.time()
+_reload_count: int = 0
+_last_reload_wall: float | None = None
+_last_version_tag: str | None = None
 
 
 def _models_dir() -> Path:
@@ -95,6 +106,55 @@ def is_model_ready() -> bool:
     # Check that at least the default model file exists
     default_model = _models_dir() / _MODEL_FILES["book"]
     return default_model.exists()
+
+
+def reload_models(version_tag: str | None = None) -> None:
+    """Clear the in-process model cache so the next request reloads from disk."""
+    global _reload_count, _last_reload_wall, _last_version_tag
+    _loaded_models.clear()
+    _reload_count += 1
+    _last_reload_wall = time.time()
+    _last_version_tag = version_tag or None
+    logger.info(
+        "iep1a: model cache cleared for hot-reload (reload_count=%d version_tag=%r)",
+        _reload_count,
+        _last_version_tag,
+    )
+
+
+def get_model_info() -> dict[str, Any]:
+    """
+    Return a snapshot of the current model-loading state for observability.
+
+    version_tag is always None because iep1a loads weights from local .pt files
+    and has no runtime mapping to the ModelVersion record in the EEP database.
+    TODO: accept an injected version_tag from the reload signal message and
+    store it here so callers can correlate this response with promotion-audit rows.
+    """
+    models_dir = _models_dir()
+    loaded_entries = [
+        {
+            "material": mat,
+            "weight_file": fname,
+            "weight_path": str(models_dir / fname),
+            "cached": fname in _loaded_models,
+        }
+        for mat, fname in _MODEL_FILES.items()
+    ]
+    last_reload_iso: str | None = None
+    if _last_reload_wall is not None:
+        last_reload_iso = datetime.fromtimestamp(_last_reload_wall, tz=timezone.utc).isoformat()
+
+    return {
+        "service": "iep1a",
+        "mock_mode": _is_mock_mode(),
+        "models_dir": str(models_dir),
+        "loaded_models": loaded_entries,
+        "reload_count": _reload_count,
+        "last_reload_at": last_reload_iso,
+        "reloaded_since_startup": _reload_count > 0,
+        "version_tag": _last_version_tag,
+    }
 
 
 # ── Mask → corners conversion ──────────────────────────────────────────────

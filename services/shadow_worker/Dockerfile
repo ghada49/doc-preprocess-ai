@@ -34,6 +34,7 @@ RUN uv pip install --system \
     "bcrypt>=4.0"
 
 COPY shared/ ./shared/
+COPY services/eep/ ./services/eep/
 COPY services/shadow_worker/ ./services/shadow_worker/
 
 EXPOSE 9102

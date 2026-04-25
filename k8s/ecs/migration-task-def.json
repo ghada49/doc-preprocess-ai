@@ -1,0 +1,31 @@
+{
+  "family": "libraryai-migration",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "256",
+  "memory": "512",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/libraryai-task-role",
+  "containerDefinitions": [
+    {
+      "name": "migration",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/libraryai-eep:latest",
+      "essential": true,
+      "command": ["alembic", "-c", "services/eep/alembic.ini", "upgrade", "head"],
+      "environment": [
+        { "name": "PYTHONPATH", "value": "/app" }
+      ],
+      "secrets": [
+        { "name": "DATABASE_URL", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/DATABASE_URL" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/libraryai-migration",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "migration"
+        }
+      }
+    }
+  ]
+}

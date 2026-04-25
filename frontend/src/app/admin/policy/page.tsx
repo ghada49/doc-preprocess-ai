@@ -21,7 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { getApiErrorMessage } from "@/lib/api/client";
+import { getApiErrorMessage, isApiError } from "@/lib/api/client";
 import { formatDate } from "@/lib/utils";
 
 type RectificationPolicy = "conditional" | "disabled_direct_review";
@@ -79,12 +79,17 @@ export default function PolicyPage() {
   const [justification, setJustification] = useState("");
   const [isDirty, setIsDirty] = useState(false);
 
+  const isNoPolicy = isError && isApiError(error) && error.status === 404;
+
   useEffect(() => {
     if (policy) {
       setConfigYaml(policy.config_yaml);
       setIsDirty(false);
+    } else if (isNoPolicy) {
+      setConfigYaml("");
+      setIsDirty(false);
     }
-  }, [policy]);
+  }, [policy, isNoPolicy]);
 
   const saveMut = useMutation({
     mutationFn: () =>
@@ -113,7 +118,7 @@ export default function PolicyPage() {
     );
   }
 
-  if (isError || !policy) {
+  if (isError && !isNoPolicy) {
     return (
       <AdminShell breadcrumbs={[{ label: "Policy" }]}>
         <div className="p-6">
@@ -146,7 +151,7 @@ export default function PolicyPage() {
           description="View and update the active system policy. Changes are versioned and audited."
           icon={Settings}
           iconColor="text-indigo-600"
-          badge={<Badge variant="info">{policy.version}</Badge>}
+          badge={policy ? <Badge variant="info">{policy.version}</Badge> : undefined}
           actions={
             <Button
               variant="ghost"
@@ -160,30 +165,36 @@ export default function PolicyPage() {
         />
 
         {/* Current policy metadata */}
-        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
-          <div className="grid grid-cols-3 gap-4 text-xs">
-            <div>
-              <p className="text-2xs text-slate-400 mb-0.5">Version</p>
-              <Badge variant="info">{policy.version}</Badge>
-            </div>
-            <div>
-              <p className="text-2xs text-slate-400 mb-0.5">Applied At</p>
-              <p className="text-slate-700">{formatDate(policy.applied_at)}</p>
-            </div>
-            <div>
-              <p className="text-2xs text-slate-400 mb-0.5">Applied By</p>
-              <p className="text-slate-700">{policy.applied_by ?? "—"}</p>
-            </div>
+        {isNoPolicy ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-700">
+            No policy has been applied yet. Use the editor below to create the first version.
           </div>
-          {policy.justification && (
-            <div className="mt-4 pt-4 border-t border-slate-200">
-              <p className="text-2xs text-slate-400 mb-1">Justification</p>
-              <p className="text-xs text-slate-500 italic">
-                &ldquo;{policy.justification}&rdquo;
-              </p>
+        ) : policy ? (
+          <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+            <div className="grid grid-cols-3 gap-4 text-xs">
+              <div>
+                <p className="text-2xs text-slate-400 mb-0.5">Version</p>
+                <Badge variant="info">{policy.version}</Badge>
+              </div>
+              <div>
+                <p className="text-2xs text-slate-400 mb-0.5">Applied At</p>
+                <p className="text-slate-700">{formatDate(policy.applied_at)}</p>
+              </div>
+              <div>
+                <p className="text-2xs text-slate-400 mb-0.5">Applied By</p>
+                <p className="text-slate-700">{policy.applied_by ?? "—"}</p>
+              </div>
             </div>
-          )}
-        </div>
+            {policy.justification && (
+              <div className="mt-4 pt-4 border-t border-slate-200">
+                <p className="text-2xs text-slate-400 mb-1">Justification</p>
+                <p className="text-xs text-slate-500 italic">
+                  &ldquo;{policy.justification}&rdquo;
+                </p>
+              </div>
+            )}
+          </div>
+        ) : null}
 
         {/* Editor */}
         <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-sm">
@@ -254,7 +265,7 @@ export default function PolicyPage() {
             )}
             <Button
               onClick={() => {
-                setConfigYaml(policy.config_yaml);
+                setConfigYaml(policy?.config_yaml ?? "");
                 setIsDirty(false);
               }}
               variant="ghost"

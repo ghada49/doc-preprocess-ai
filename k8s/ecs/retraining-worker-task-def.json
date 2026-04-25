@@ -1,0 +1,56 @@
+{
+  "family": "libraryai-retraining-worker",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "2048",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/libraryai-task-role",
+  "containerDefinitions": [
+    {
+      "name": "retraining-worker",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/libraryai-retraining-worker:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "name": "health",
+          "containerPort": 9104,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "PYTHONPATH",                    "value": "/app" },
+        { "name": "HEALTH_PORT",                   "value": "9104" },
+        { "name": "S3_BUCKET_NAME",                "value": "libraryai" },
+        { "name": "LIBRARYAI_RETRAINING_TRAIN",    "value": "stub" },
+        { "name": "LIBRARYAI_RETRAINING_GOLDEN_EVAL", "value": "stub" },
+        { "name": "RETRAINING_DATASET_MODE",       "value": "corrected_hybrid" },
+        { "name": "RETRAINING_DATASET_REGISTRY_PATH", "value": "s3://libraryai/retraining/dataset_registry.json" },
+        { "name": "RETRAINING_POLL_INTERVAL",      "value": "30" },
+        { "name": "MLFLOW_TRACKING_URI",           "value": "http://mlflow.libraryai.local:5000" },
+        { "name": "PROMETHEUS_MULTIPROC_DIR",      "value": "/tmp/prometheus_multiproc" }
+      ],
+      "secrets": [
+        { "name": "DATABASE_URL",         "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/DATABASE_URL" },
+        { "name": "REDIS_URL",            "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/REDIS_URL" },
+        { "name": "S3_ACCESS_KEY_ID",     "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/S3_ACCESS_KEY_ID" },
+        { "name": "S3_SECRET_ACCESS_KEY", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/S3_SECRET_ACCESS_KEY" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/libraryai-retraining-worker",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "retraining-worker"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -sf http://localhost:9104/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 30
+      }
+    }
+  ]
+}

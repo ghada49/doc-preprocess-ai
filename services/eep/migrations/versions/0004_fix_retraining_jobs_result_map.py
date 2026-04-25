@@ -1,7 +1,7 @@
 """Fix retraining_jobs result_map column name.
 
-Revision ID: 0004
-Revises: 0003
+Revision ID: 0004a
+Revises: 0004
 Create Date: 2026-04-21
 """
 
@@ -12,8 +12,8 @@ from collections.abc import Sequence
 from alembic import op
 
 # revision identifiers
-revision: str = "0004"
-down_revision: str | None = "0003"
+revision: str = "0004a"
+down_revision: str | None = "0004"
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

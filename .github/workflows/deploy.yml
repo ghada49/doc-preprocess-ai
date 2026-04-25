@@ -1,0 +1,299 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION:   ${{ vars.AWS_REGION }}
+  ACCOUNT_ID:   ${{ vars.AWS_ACCOUNT_ID }}
+  ECR_REGISTRY: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com
+  ECS_CLUSTER:  ${{ vars.ECS_CLUSTER }}
+
+jobs:
+  # ── 1. unit + migration tests ──────────────────────────────────────────────
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  # ── 2. build and push all service images to ECR ───────────────────────────
+  build-push:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - service: eep
+            context: .
+            dockerfile: services/eep/Dockerfile
+          - service: eep-worker
+            context: .
+            dockerfile: services/eep_worker/Dockerfile
+          - service: eep-recovery
+            context: .
+            dockerfile: services/eep_recovery/Dockerfile
+          - service: shadow-worker
+            context: .
+            dockerfile: services/shadow_worker/Dockerfile
+          - service: retraining-worker
+            context: .
+            dockerfile: services/retraining_worker/Dockerfile
+          - service: artifact-cleanup
+            context: .
+            dockerfile: services/artifact_cleanup/Dockerfile
+          - service: iep0
+            context: .
+            dockerfile: services/iep0/Dockerfile
+          - service: iep1a
+            context: .
+            dockerfile: services/iep1a/Dockerfile
+          - service: iep1b
+            context: .
+            dockerfile: services/iep1b/Dockerfile
+          - service: iep1d
+            context: .
+            dockerfile: services/iep1d/Dockerfile
+          - service: iep1e
+            context: .
+            dockerfile: services/iep1e/Dockerfile
+            build-args: |
+              ENABLE_REAL_MODEL=true
+          - service: dataset-builder
+            context: .
+            dockerfile: services/dataset_builder/Dockerfile
+          - service: iep2a
+            context: .
+            dockerfile: services/iep2a/Dockerfile
+            build-args: |
+              ENABLE_REAL_MODEL=true
+              ENABLE_PADDLE_BACKEND=true
+          - service: iep2b
+            context: .
+            dockerfile: services/iep2b/Dockerfile
+            build-args: |
+              ENABLE_REAL_MODEL=true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push libraryai-${{ matrix.service }}
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/libraryai-${{ matrix.service }}:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/libraryai-${{ matrix.service }}:latest
+          build-args: ${{ matrix.build-args }}
+          cache-from: type=registry,ref=${{ env.ECR_REGISTRY }}/libraryai-${{ matrix.service }}:latest
+          cache-to: type=inline
+
+  # ── 3. run database migration before any service is updated ──────────────
+  migrate:
+    needs: build-push
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Register migration task definition
+        id: reg-migration
+        run: |
+          TASK_DEF=$(cat k8s/ecs/migration-task-def.json \
+            | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
+            | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
+            | sed 's|:latest|:${{ github.sha }}|g')
+          ARN=$(aws ecs register-task-definition \
+            --cli-input-json "$TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Run migration task
+        id: run-migration
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --task-definition ${{ steps.reg-migration.outputs.arn }} \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.ECS_SUBNETS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUPS }}],assignPublicIp=DISABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for migration to complete
+        run: |
+          aws ecs wait tasks-stopped \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --tasks ${{ steps.run-migration.outputs.task_arn }}
+
+      - name: Assert migration exit code 0
+        run: |
+          EXIT=$(aws ecs describe-tasks \
+            --cluster ${{ env.ECS_CLUSTER }} \
+            --tasks ${{ steps.run-migration.outputs.task_arn }} \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          if [ "$EXIT" != "0" ]; then
+            echo "Migration task exited with code $EXIT — aborting deploy"
+            exit 1
+          fi
+          echo "Migration succeeded (exit 0)"
+
+  # ── 4. register task definitions and update running ECS services ──────────
+  deploy:
+    needs: migrate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Register and update all task definitions
+        run: |
+          set -e
+
+          # Returns the Service Connect config JSON for each service.
+          # IEP services expose a named port for discovery; workers are client-only.
+          sc_config() {
+            local svc=$1
+            case "$svc" in
+              eep)
+                echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"eep","clientAliases":[{"port":8000,"dnsName":"eep"}]}]}'
+                ;;
+              iep0)
+                echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep0","clientAliases":[{"port":8006,"dnsName":"iep0"}]}]}'
+                ;;
+              iep1a)
+                echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1a","clientAliases":[{"port":8001,"dnsName":"iep1a"}]}]}'
+                ;;
+              iep1b)
+                echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1b","clientAliases":[{"port":8002,"dnsName":"iep1b"}]}]}'
+                ;;
+              iep1d)
+                echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1d","clientAliases":[{"port":8003,"dnsName":"iep1d"}]}]}'
+                ;;
+              iep1e)
+                echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1e","clientAliases":[{"port":8007,"dnsName":"iep1e"}]}]}'
+                ;;
+              iep2a)
+                echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2a","clientAliases":[{"port":8004,"dnsName":"iep2a"}]}]}'
+                ;;
+              iep2b)
+                echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2b","clientAliases":[{"port":8005,"dnsName":"iep2b"}]}]}'
+                ;;
+              *)
+                # Workers and utility services: join the namespace as clients only.
+                echo '{"enabled":true,"namespace":"libraryai.local"}'
+                ;;
+            esac
+          }
+
+          SERVICES=(
+            eep eep-worker eep-recovery shadow-worker retraining-worker
+            artifact-cleanup dataset-builder iep0 iep1a iep1b iep1d iep1e iep2a iep2b
+          )
+          for SVC in "${SERVICES[@]}"; do
+            FILE="k8s/ecs/${SVC}-task-def.json"
+            TASK_DEF=$(cat "$FILE" \
+              | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
+              | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
+              | sed 's|:latest|:${{ github.sha }}|g')
+            REVISION=$(aws ecs register-task-definition \
+              --cli-input-json "$TASK_DEF" \
+              --query 'taskDefinition.taskDefinitionArn' --output text)
+            echo "Registered $REVISION"
+
+            # Update the ECS service if it exists (desired=0 services are updated
+            # but no task replacement occurs until they are scaled up again).
+            if aws ecs describe-services \
+                --cluster ${{ env.ECS_CLUSTER }} \
+                --services "libraryai-${SVC}" \
+                --query 'services[0].status' --output text 2>/dev/null | grep -qE "ACTIVE|DRAINING"; then
+              SC=$(sc_config "$SVC")
+              aws ecs update-service \
+                --cluster ${{ env.ECS_CLUSTER }} \
+                --service "libraryai-${SVC}" \
+                --task-definition "$REVISION" \
+                --service-connect-configuration "$SC" \
+                --force-new-deployment \
+                --no-cli-pager
+              echo "Updated service libraryai-${SVC} (SC namespace: libraryai.local)"
+            else
+              echo "Service libraryai-${SVC} not yet created — task definition registered, skipping update"
+            fi
+          done
+
+      - name: Wait for currently-running services to stabilise
+        run: |
+          # Collect services that currently have desired > 0
+          ACTIVE=()
+          for SVC in eep eep-worker eep-recovery shadow-worker \
+                     retraining-worker artifact-cleanup dataset-builder \
+                     iep0 iep1a iep1b iep1d iep1e iep2a iep2b; do
+            DESIRED=$(aws ecs describe-services \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --services "libraryai-${SVC}" \
+              --query 'services[0].desiredCount' --output text 2>/dev/null || echo "0")
+            if [ "$DESIRED" != "0" ] && [ "$DESIRED" != "None" ]; then
+              ACTIVE+=("libraryai-${SVC}")
+            fi
+          done
+          if [ ${#ACTIVE[@]} -gt 0 ]; then
+            echo "Waiting for stable: ${ACTIVE[*]}"
+            aws ecs wait services-stable \
+              --cluster ${{ env.ECS_CLUSTER }} \
+              --services "${ACTIVE[@]}"
+          else
+            echo "No services currently running — skipping stability wait"
+          fi
+
+  # ── 5. smoke check against the EEP API ───────────────────────────────────
+  smoke:
+    needs: deploy
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: EEP API health check
+        run: |
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+            "https://${{ vars.ALB_DNS }}/health")
+          if [ "$STATUS" != "200" ]; then
+            echo "Health check failed: HTTP $STATUS"
+            exit 1
+          fi
+          echo "Health check passed: HTTP $STATUS"
+
+      - name: EEP API status check
+        run: |
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+            "https://${{ vars.ALB_DNS }}/v1/status")
+          if [ "$STATUS" != "200" ]; then
+            echo "Status check failed: HTTP $STATUS"
+            exit 1
+          fi
+          echo "Status check passed: HTTP $STATUS"

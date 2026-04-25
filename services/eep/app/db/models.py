@@ -307,6 +307,33 @@ class ModelVersion(Base):
     )
 
 
+class ModelPromotionAudit(Base):
+    """
+    Immutable audit log for every model promote and rollback action.
+
+    action CHECK: 'promote' | 'rollback'
+    forced: True when promote was called with force=true (gate check bypassed).
+    failed_gates_bypassed: snapshot of gate names that were bypassed (force only).
+    reason: populated on rollback (the caller-supplied reason string).
+    """
+
+    __tablename__ = "model_promotion_audit"
+
+    audit_id: Mapped[str] = mapped_column(Text(), primary_key=True)
+    action: Mapped[str] = mapped_column(Text(), nullable=False)
+    service_name: Mapped[str] = mapped_column(Text(), nullable=False)
+    candidate_model_id: Mapped[str] = mapped_column(Text(), nullable=False)
+    previous_model_id: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    promoted_by_user_id: Mapped[str] = mapped_column(Text(), nullable=False)
+    forced: Mapped[bool] = mapped_column(Boolean(), nullable=False, default=False)
+    failed_gates_bypassed: Mapped[Any] = mapped_column(JSONB, nullable=True)
+    reason: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    notes: Mapped[str | None] = mapped_column(Text(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
 class PolicyVersion(Base):
     """
     Immutable log of every applied policy config.
@@ -402,11 +429,40 @@ class RetrainingJob(Base):
     started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     result_model_version: Mapped[str | None] = mapped_column(Text(), nullable=True)
-    result_mAP: Mapped[float | None] = mapped_column(Float(), nullable=True)
+    result_mAP: Mapped[float | None] = mapped_column("result_map", Float(), nullable=True)
     promotion_decision: Mapped[str | None] = mapped_column(Text(), nullable=True)
     error_message: Mapped[str | None] = mapped_column(Text(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+
+
+class ShadowEvaluation(Base):
+    """
+    Shadow evaluation record written by the shadow-worker for every page
+    that completes processing in a shadow_mode=True job.
+
+    status CHECK: 'pending' | 'completed' | 'failed' | 'no_shadow_model'
+    confidence_delta: shadow_model_conf − live_model_conf; NULL when no
+      shadow model version exists in model_versions at processing time.
+    """
+
+    __tablename__ = "shadow_evaluations"
+
+    eval_id: Mapped[str] = mapped_column(Text(), primary_key=True)
+    job_id: Mapped[str] = mapped_column(Text(), nullable=False)
+    page_id: Mapped[str] = mapped_column(Text(), nullable=False)
+    page_status: Mapped[str] = mapped_column(Text(), nullable=False)
+    confidence_delta: Mapped[float | None] = mapped_column(Float(), nullable=True)
+    status: Mapped[str] = mapped_column(Text(), nullable=False, default="pending")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), nullable=False, server_default=func.now()
+    )
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+
+    __table_args__ = (
+        Index("idx_shadow_evaluations_job", "job_id"),
+        Index("idx_shadow_evaluations_status", "status"),
     )
 
 

@@ -1,0 +1,197 @@
+name: Scale Down — Drain and Stop Processing
+
+on:
+  # Schedule: 8 AM UTC daily (after overnight batch). To change, edit this file.
+  schedule:
+    - cron: '0 8 * * *'
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "Force scale-down even if drain check times out? true/false"
+        required: false
+        default: "false"
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION:            ${{ vars.AWS_REGION }}
+  ECS_CLUSTER:           ${{ vars.ECS_CLUSTER }}
+  GPU_ASG:               ${{ vars.GPU_ASG_NAME }}
+  DRAIN_TIMEOUT_MINUTES: ${{ vars.DRAIN_TIMEOUT_MINUTES || '120' }}
+  FORCE:                 ${{ inputs.force || 'false' }}
+  DRAIN_SUBNET:          ${{ vars.DRAIN_SUBNET_ID }}
+  DRAIN_SG:              ${{ vars.DRAIN_SECURITY_GROUP_ID }}
+
+jobs:
+  drain-and-scale-down:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # ── Step 1: Register drain-monitor task definition ───────────────────
+      - name: Register drain-monitor task definition
+        id: register_drain
+        run: |
+          TASK_DEF=$(cat k8s/ecs/drain-monitor-task-def.json \
+            | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
+            | sed "s/REGION/${{ vars.AWS_REGION }}/g")
+          TASK_DEF_ARN=$(echo "$TASK_DEF" | aws ecs register-task-definition \
+            --cli-input-json file:///dev/stdin \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "task_def_arn=$TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
+
+      # ── Step 2: Run drain monitor as Fargate task in VPC ─────────────────
+      # Workers are still running so in-flight pages can complete normally.
+      - name: Run drain monitor (ECS Fargate task in VPC)
+        id: drain_task
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --task-definition "${{ steps.register_drain.outputs.task_def_arn }}" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$DRAIN_SUBNET],securityGroups=[$DRAIN_SG],assignPublicIp=DISABLED}" \
+            --overrides "{\"containerOverrides\":[{\"name\":\"drain-monitor\",\"environment\":[{\"name\":\"DRAIN_TIMEOUT_MINUTES\",\"value\":\"$DRAIN_TIMEOUT_MINUTES\"},{\"name\":\"DRAIN_FORCE\",\"value\":\"$FORCE\"}]}]}" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+          echo "Drain monitor task started: $TASK_ARN"
+
+      - name: Wait for drain monitor to complete
+        run: |
+          echo "Polling drain monitor task until STOPPED..."
+          for i in $(seq 1 60); do
+            STATUS=$(aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --tasks "${{ steps.drain_task.outputs.task_arn }}" \
+              --query 'tasks[0].lastStatus' --output text)
+            echo "  attempt $i/60 — status=$STATUS"
+            if [ "$STATUS" = "STOPPED" ]; then
+              break
+            fi
+            sleep 60
+          done
+          # Verify it actually stopped
+          STATUS=$(aws ecs describe-tasks \
+            --cluster "$ECS_CLUSTER" \
+            --tasks "${{ steps.drain_task.outputs.task_arn }}" \
+            --query 'tasks[0].lastStatus' --output text)
+          if [ "$STATUS" != "STOPPED" ]; then
+            echo "ERROR: Drain monitor task never reached STOPPED state"
+            exit 1
+          fi
+
+      - name: Check drain monitor exit code
+        run: |
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster "$ECS_CLUSTER" \
+            --tasks "${{ steps.drain_task.outputs.task_arn }}" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          echo "Drain monitor exit code: $EXIT_CODE"
+          if [ "$EXIT_CODE" != "0" ]; then
+            echo "ERROR: Drain monitor exited $EXIT_CODE — queues not empty and --force not set"
+            exit 1
+          fi
+          echo "Drain confirmed — safe to stop workers."
+
+      # ── Step 3: Stop workers (queues confirmed empty) ─────────────────────
+      - name: Stop workers (desired count → 0)
+        run: |
+          for SVC in eep-worker eep-recovery; do
+            aws ecs update-service \
+              --cluster "$ECS_CLUSTER" \
+              --service "libraryai-${SVC}" \
+              --desired-count 0 \
+              --no-cli-pager
+            echo "libraryai-${SVC} desired → 0"
+          done
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services libraryai-eep-worker libraryai-eep-recovery
+          echo "Workers stopped."
+
+      # ── Step 4: Stop shadow-worker ────────────────────────────────────────
+      - name: Stop shadow-worker
+        run: |
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service libraryai-shadow-worker \
+            --desired-count 0 \
+            --no-cli-pager
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services libraryai-shadow-worker
+          echo "shadow-worker stopped."
+
+      # ── Step 5: Stop CPU IEP services ────────────────────────────────────
+      - name: Stop CPU IEP services (iep1e, iep2a, iep2b)
+        run: |
+          for SVC in iep1e iep2a iep2b; do
+            aws ecs update-service \
+              --cluster "$ECS_CLUSTER" \
+              --service "libraryai-${SVC}" \
+              --desired-count 0 \
+              --no-cli-pager
+            echo "libraryai-${SVC} desired → 0"
+          done
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services libraryai-iep1e libraryai-iep2a libraryai-iep2b
+          echo "CPU IEP services stopped."
+
+      # ── Step 6: Stop GPU IEP services ────────────────────────────────────
+      - name: Stop GPU IEP services (iep0, iep1a, iep1b, iep1d)
+        run: |
+          for SVC in iep0 iep1a iep1b iep1d; do
+            DESIRED=$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "libraryai-${SVC}" \
+              --query 'services[0].desiredCount' --output text 2>/dev/null || echo "0")
+            if [ "$DESIRED" != "0" ] && [ "$DESIRED" != "None" ]; then
+              aws ecs update-service \
+                --cluster "$ECS_CLUSTER" \
+                --service "libraryai-${SVC}" \
+                --desired-count 0 \
+                --no-cli-pager
+              echo "libraryai-${SVC} desired → 0"
+            else
+              echo "libraryai-${SVC} already at 0 — skipping"
+            fi
+          done
+          RUNNING=()
+          for SVC in iep0 iep1a iep1b iep1d; do
+            COUNT=$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "libraryai-${SVC}" \
+              --query 'services[0].runningCount' --output text 2>/dev/null || echo "0")
+            if [ "$COUNT" != "0" ] && [ "$COUNT" != "None" ]; then
+              RUNNING+=("libraryai-${SVC}")
+            fi
+          done
+          if [ ${#RUNNING[@]} -gt 0 ]; then
+            aws ecs wait services-stable \
+              --cluster "$ECS_CLUSTER" \
+              --services "${RUNNING[@]}"
+          fi
+          echo "GPU IEP services stopped."
+
+      # ── Step 7: Scale GPU EC2 ASG to 0 ───────────────────────────────────
+      - name: Scale GPU ASG to 0
+        run: |
+          aws autoscaling update-auto-scaling-group \
+            --auto-scaling-group-name "$GPU_ASG" \
+            --min-size 0 \
+            --desired-capacity 0
+          echo "GPU ASG desired → 0 (EC2 GPU instances will terminate)"
+
+      - name: Scale-down complete
+        run: |
+          echo "All processing services stopped."
+          echo "Persistent services left running: EEP API, RDS, ElastiCache, S3."
+          echo "GPU EC2 ASG scaled to 0."

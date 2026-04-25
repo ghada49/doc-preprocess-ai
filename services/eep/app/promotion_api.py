@@ -62,6 +62,7 @@ Exported:
 from __future__ import annotations
 
 import logging
+import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
@@ -71,7 +72,7 @@ from pydantic import BaseModel, field_validator
 from sqlalchemy.orm import Session
 
 from services.eep.app.auth import CurrentUser, require_admin
-from services.eep.app.db.models import ModelVersion
+from services.eep.app.db.models import ModelPromotionAudit, ModelVersion
 from services.eep.app.db.session import get_session
 from services.eep.app.redis_client import get_redis
 
@@ -276,23 +277,31 @@ def promote_model(
             detail=f"No staging candidate found for service '{body.service}'",
         )
 
+    # Capture which gates would fail — needed for both the 409 response and the
+    # audit record when force=true bypasses them.
+    gates_status = _check_gates(candidate.gate_results)
+    bypassed_gates: list[str] | None = None
+
     if not body.force:
-        failed_gates = _check_gates(candidate.gate_results)
-        if failed_gates:
+        if gates_status:
             raise HTTPException(
                 status_code=status.HTTP_409_CONFLICT,
                 detail=(
                     f"Promotion blocked: gate check failed for '{body.service}' "
                     f"candidate {candidate.version_tag!r}. "
-                    f"Failed gates: {failed_gates}. "
+                    f"Failed gates: {gates_status}. "
                     "Use force=true to override after offline review."
                 ),
             )
+    else:
+        # Record which gates were bypassed (may be empty if all passed anyway)
+        bypassed_gates = gates_status or None
 
     now = datetime.now(timezone.utc)
 
     # Demote current production → archived
     current_prod = _current_production(db, body.service)
+    prev_model_id = current_prod.model_id if current_prod is not None else None
     if current_prod is not None:
         current_prod.stage = "archived"
         _stub_mlflow_transition(
@@ -314,17 +323,33 @@ def promote_model(
         "production",
     )
 
+    # Audit record — written in the same transaction as the stage transition
+    audit = ModelPromotionAudit(
+        audit_id=str(uuid.uuid4()),
+        action="promote",
+        service_name=body.service,
+        candidate_model_id=candidate.model_id,
+        previous_model_id=prev_model_id,
+        promoted_by_user_id=caller.user_id,
+        forced=body.force,
+        failed_gates_bypassed=bypassed_gates,
+        reason=None,
+        notes=force_note.strip() or None,
+    )
+    db.add(audit)
+
     db.commit()
     db.refresh(candidate)
 
     _publish_reload_signal(r, body.service, candidate.version_tag)
 
     logger.info(
-        "promote_model: service=%s version=%s force=%s promoted_by=%s",
+        "promote_model: service=%s version=%s force=%s promoted_by=%s audit_id=%s",
         body.service,
         candidate.version_tag,
         body.force,
         caller.user_id,
+        audit.audit_id,
     )
     return _to_record(candidate)
 
@@ -389,6 +414,8 @@ def rollback_model(
 
     now = datetime.now(timezone.utc)
 
+    prev_model_id = current_prod.model_id if current_prod is not None else None
+
     # Demote current production → archived
     if current_prod is not None:
         current_prod.stage = "archived"
@@ -409,16 +436,32 @@ def rollback_model(
         "production",
     )
 
+    # Audit record — written in the same transaction as the stage transition
+    audit = ModelPromotionAudit(
+        audit_id=str(uuid.uuid4()),
+        action="rollback",
+        service_name=body.service,
+        candidate_model_id=archived.model_id,
+        previous_model_id=prev_model_id,
+        promoted_by_user_id=caller.user_id,
+        forced=False,
+        failed_gates_bypassed=None,
+        reason=body.reason,
+        notes=None,
+    )
+    db.add(audit)
+
     db.commit()
     db.refresh(archived)
 
     _publish_reload_signal(r, body.service, archived.version_tag)
 
     logger.info(
-        "rollback_model: service=%s restored_version=%s reason=%s by=%s",
+        "rollback_model: service=%s restored_version=%s reason=%s by=%s audit_id=%s",
         body.service,
         archived.version_tag,
         body.reason,
         caller.user_id,
+        audit.audit_id,
     )
     return _to_record(archived)

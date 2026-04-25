@@ -44,9 +44,20 @@ def _repo_root() -> Path:
     return Path(__file__).resolve().parents[3]
 
 
-def _resolve_path(p: str, root: Path) -> Path:
+def _resolve_path(p: str, root: Path) -> "Path | str":
+    if p.startswith("s3://"):
+        return p  # keep as raw string; Path() mangles s3:// on Windows
     path = Path(p)
     return path if path.is_absolute() else (root / path).resolve()
+
+
+def _s3_parts(uri: str) -> tuple[str, str]:
+    """Parse an s3://bucket/key URI into (bucket, key). Raises ValueError on bad format."""
+    without_scheme = uri[len("s3://"):]
+    bucket, sep, key = without_scheme.partition("/")
+    if not bucket or not sep or not key:
+        raise ValueError(f"Invalid S3 registry URI (expected s3://bucket/key): {uri}")
+    return bucket, key
 
 
 def _iter_manifest_paths(manifest: dict[str, Any], root: Path) -> list[Path]:
@@ -402,6 +413,7 @@ def _run_corrected_export(args: argparse.Namespace, root: Path) -> dict[str, Any
         mode="corrected_export",
         source_window=args.source_window,
         approved=approved,
+        s3_client=s3_client,
     )
 
     return {
@@ -417,17 +429,32 @@ def _run_corrected_export(args: argparse.Namespace, root: Path) -> dict[str, Any
     }
 
 
-def _load_registry(path: Path) -> dict[str, Any]:
-    if not path.is_file():
-        return {"version": 1, "generated_at": "", "datasets": []}
-    payload = json.loads(path.read_text(encoding="utf-8"))
+def _load_registry(path: "Path | str", s3_client: Any | None = None) -> dict[str, Any]:
+    uri = str(path)
+    if uri.startswith("s3://"):
+        if s3_client is None:
+            raise RuntimeError(f"S3 registry URI requires an S3 client: {uri}")
+        bucket, key = _s3_parts(uri)
+        try:
+            obj = s3_client.get_object(Bucket=bucket, Key=key)
+            content = obj["Body"].read().decode("utf-8")
+        except Exception as exc:
+            if "NoSuchKey" in type(exc).__name__ or "NoSuchKey" in str(exc) or "404" in str(exc):
+                return {"version": 1, "generated_at": "", "datasets": []}
+            raise
+        payload = json.loads(content)
+    else:
+        local = path if isinstance(path, Path) else Path(path)
+        if not local.is_file():
+            return {"version": 1, "generated_at": "", "datasets": []}
+        payload = json.loads(local.read_text(encoding="utf-8"))
     if not isinstance(payload.get("datasets"), list):
         payload["datasets"] = []
     return payload
 
 
 def _append_registry_entry(
-    registry_path: Path,
+    registry_path: "Path | str",
     *,
     dataset_version: str,
     dataset_checksum: str,
@@ -435,9 +462,10 @@ def _append_registry_entry(
     mode: str,
     source_window: str,
     approved: bool,
+    s3_client: Any | None = None,
 ) -> dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
-    payload = _load_registry(registry_path)
+    payload = _load_registry(registry_path, s3_client=s3_client)
     payload["generated_at"] = now
     payload.setdefault("version", 1)
     payload["datasets"].append(
@@ -451,8 +479,22 @@ def _append_registry_entry(
             "created_at": now,
         }
     )
-    registry_path.parent.mkdir(parents=True, exist_ok=True)
-    registry_path.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+    serialized = json.dumps(payload, indent=2)
+    uri = str(registry_path)
+    if uri.startswith("s3://"):
+        if s3_client is None:
+            raise RuntimeError(f"S3 registry URI requires an S3 client: {uri}")
+        bucket, key = _s3_parts(uri)
+        s3_client.put_object(
+            Bucket=bucket,
+            Key=key,
+            Body=serialized.encode("utf-8"),
+            ContentType="application/json",
+        )
+    else:
+        local = registry_path if isinstance(registry_path, Path) else Path(registry_path)
+        local.parent.mkdir(parents=True, exist_ok=True)
+        local.write_text(serialized, encoding="utf-8")
     return payload
 
 
@@ -513,6 +555,22 @@ def main() -> int:
     approved = args.approved or args.mode == "scheduled"
 
     registry_path = _resolve_path(args.registry_path, root)
+
+    # Build an S3 client if the registry lives in S3
+    reg_s3_client: Any | None = None
+    if str(registry_path).startswith("s3://"):
+        kwargs: dict[str, Any] = {}
+        if os.getenv("S3_ENDPOINT_URL", "").strip():
+            kwargs["endpoint_url"] = os.getenv("S3_ENDPOINT_URL", "").strip()
+        if os.getenv("S3_REGION", "").strip():
+            kwargs["region_name"] = os.getenv("S3_REGION", "").strip()
+        access_key = os.getenv("S3_ACCESS_KEY_ID", "").strip() or os.getenv("AWS_ACCESS_KEY_ID", "").strip()
+        secret_key = os.getenv("S3_SECRET_ACCESS_KEY", "").strip() or os.getenv("AWS_SECRET_ACCESS_KEY", "").strip()
+        if access_key and secret_key:
+            kwargs["aws_access_key_id"] = access_key
+            kwargs["aws_secret_access_key"] = secret_key
+        reg_s3_client = boto3.client("s3", **kwargs)
+
     _append_registry_entry(
         registry_path,
         dataset_version=dataset_version,
@@ -521,6 +579,7 @@ def main() -> int:
         mode=args.mode,
         source_window=args.source_window,
         approved=approved,
+        s3_client=reg_s3_client,
     )
 
     print(

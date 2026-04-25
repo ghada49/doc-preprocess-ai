@@ -38,17 +38,9 @@ scrape_configs:
     static_configs:
       - targets: ["shadow-worker:9102"]
 
-  - job_name: shadow-recovery
-    static_configs:
-      - targets: ["shadow-recovery:9103"]
-
   - job_name: retraining-worker
     static_configs:
       - targets: ["retraining-worker:9104"]
-
-  - job_name: retraining-recovery
-    static_configs:
-      - targets: ["retraining-recovery:9105"]
 
   - job_name: artifact-cleanup
     static_configs:
