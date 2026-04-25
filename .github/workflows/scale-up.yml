@@ -71,6 +71,7 @@ jobs:
           fi
 
       # ── Step 3: Start GPU inference services ─────────────────────────────
+      # NOTE: libraryai-eep is always-on and is NOT managed by this workflow.
       - name: Start GPU services (iep0, iep1a, iep1b)
         run: |
           for SVC in iep0 iep1a iep1b; do

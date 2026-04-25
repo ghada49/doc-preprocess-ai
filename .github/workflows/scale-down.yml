@@ -101,6 +101,8 @@ jobs:
           echo "Drain confirmed — safe to stop workers."
 
       # ── Step 3: Stop workers (queues confirmed empty) ─────────────────────
+      # NOTE: libraryai-eep is always-on and is intentionally NOT stopped here.
+      # It must remain reachable to accept uploads and serve the admin dashboard.
       - name: Stop workers (desired count → 0)
         run: |
           for SVC in eep-worker eep-recovery; do

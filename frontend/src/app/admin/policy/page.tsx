@@ -21,7 +21,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { getApiErrorMessage, isApiError } from "@/lib/api/client";
+import { getApiErrorMessage } from "@/lib/api/client";
 import { formatDate } from "@/lib/utils";
 
 type RectificationPolicy = "conditional" | "disabled_direct_review";
@@ -79,7 +79,8 @@ export default function PolicyPage() {
   const [justification, setJustification] = useState("");
   const [isDirty, setIsDirty] = useState(false);
 
-  const isNoPolicy = isError && isApiError(error) && error.status === 404;
+  // policy === null means 404 (no policy applied yet) — handled cleanly by getPolicy
+  const isNoPolicy = !isLoading && !isError && policy === null;
 
   useEffect(() => {
     if (policy) {
@@ -118,13 +119,13 @@ export default function PolicyPage() {
     );
   }
 
-  if (isError && !isNoPolicy) {
+  if (isError) {
     return (
       <AdminShell breadcrumbs={[{ label: "Policy" }]}>
         <div className="p-6">
           <ErrorBanner
             variant="fullscreen"
-            title="Failed to Load"
+            title="Failed to Load Policy"
             message={getApiErrorMessage(error, "Could not load policy configuration.")}
           />
         </div>

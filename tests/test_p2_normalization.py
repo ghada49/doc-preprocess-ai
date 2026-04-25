@@ -172,6 +172,45 @@ class TestFourPointTransform:
         assert len(bbox) == 4
         assert all(isinstance(v, float) for v in bbox)
 
+    def test_skewed_quad_output_smaller_than_bbox(self) -> None:
+        """
+        Regression: for a skewed (parallelogram-like) quad, output canvas must
+        be sized by actual edge lengths, not bounding-box extents.
+
+        Quad (parallelogram):
+            TL=(100, 0), TR=(500, 0), BL=(0, 200), BR=(400, 200)
+
+        Bounding box: x_min=0, y_min=0, x_max=500, y_max=200
+            bbox_width=500, bbox_height=200
+
+        Actual edge lengths:
+            top   TL→TR = 400  (horizontal)
+            bottom BL→BR = 400  (horizontal)
+            left   TL→BL = sqrt(100²+200²) ≈ 224
+            right  TR→BR = sqrt(100²+200²) ≈ 224
+
+        With edge-length sizing: width=400 < 500 (bbox_width)
+        The old bbox-based sizing produced a canvas 100px wider than the content,
+        filling the extra area with black (the "extra content" rendering bug).
+        """
+        img = _solid(250, 550)
+        corners = [(100.0, 0.0), (500.0, 0.0), (400.0, 200.0), (0.0, 200.0)]
+        warped, bbox, _ = four_point_transform(img, corners)
+        bbox_width = int(round(bbox[2] - bbox[0]))
+        bbox_height = int(round(bbox[3] - bbox[1]))
+        out_w = warped.shape[1]
+        out_h = warped.shape[0]
+        # Edge-length width (400) must be strictly less than bbox width (500)
+        assert out_w < bbox_width, (
+            f"Expected output width ({out_w}) < bbox width ({bbox_width}); "
+            "bbox-based sizing is producing an oversized canvas"
+        )
+        # Edge-length height (~224) must be strictly greater than bbox height (200)
+        assert out_h > bbox_height, (
+            f"Expected output height ({out_h}) > bbox height ({bbox_height}); "
+            "diagonal side edges must be measured correctly"
+        )
+
 
 # ── TestComputeDeskewAngle ─────────────────────────────────────────────────────
 

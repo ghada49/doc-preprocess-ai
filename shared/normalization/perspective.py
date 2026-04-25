@@ -40,19 +40,26 @@ def four_point_transform(
     """
     pts = np.array(corners, dtype="float32")
 
-    # Bounding box of the source corners
+    # Bounding box of the source corners (returned for caller bookkeeping only)
     x_min = float(pts[:, 0].min())
     y_min = float(pts[:, 1].min())
     x_max = float(pts[:, 0].max())
     y_max = float(pts[:, 1].max())
     source_bbox: tuple[float, float, float, float] = (x_min, y_min, x_max, y_max)
 
-    # Output rectangle dimensions (at least 1×1)
-    width = max(1, int(round(x_max - x_min)))
-    height = max(1, int(round(y_max - y_min)))
-
     # Order source corners: top-left, top-right, bottom-right, bottom-left
     rect = _order_corners(pts)
+    tl, tr, br, bl = rect
+
+    # Output dimensions: use actual edge lengths, not bounding-box extents.
+    # Bbox extents overestimate the canvas for skewed quads, producing black
+    # fill at the edges when the warp maps outside the source region.
+    def _dist(a: np.ndarray, b: np.ndarray) -> float:
+        return float(np.linalg.norm(b - a))
+
+    width = max(1, int(round(max(_dist(tl, tr), _dist(bl, br)))))
+    height = max(1, int(round(max(_dist(tl, bl), _dist(tr, br)))))
+
     dst = np.array(
         [[0, 0], [width - 1, 0], [width - 1, height - 1], [0, height - 1]],
         dtype="float32",

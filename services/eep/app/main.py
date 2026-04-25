@@ -41,6 +41,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.eep.app.admin.dashboard import router as admin_dashboard_router
+from services.eep.app.admin.infra import router as admin_infra_router
 from services.eep.app.admin.users import router as admin_users_router
 from services.eep.app.artifacts_api import router as artifacts_router
 from services.eep.app.auth import router as auth_router
@@ -110,6 +111,7 @@ app.include_router(job_status_router)
 
 # ── Phase 7 admin routers ──────────────────────────────────────────────────────
 app.include_router(admin_dashboard_router)
+app.include_router(admin_infra_router)
 app.include_router(admin_users_router)
 app.include_router(lineage_router)
 

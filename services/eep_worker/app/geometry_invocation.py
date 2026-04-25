@@ -263,7 +263,13 @@ async def _invoke_one(
             duration_ms,
             "success",
             None,
-            None,
+            {
+                "page_count": response.page_count,
+                "split_required": response.split_required,
+                "geometry_confidence": response.geometry_confidence,
+                "tta_structural_agreement_rate": response.tta_structural_agreement_rate,
+                "tta_prediction_variance": response.tta_prediction_variance,
+            },
         )
         return _ServiceCallOutcome(
             response=response,
