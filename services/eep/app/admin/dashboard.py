@@ -403,11 +403,11 @@ def get_service_health(
     )
 
 
-# ── Shadow evaluation list ────────────────────────────────────────────────────
+# ── Model gate comparison list ────────────────────────────────────────────────
 
 
-class ShadowEvaluationRecord(BaseModel):
-    """Single shadow evaluation row for the admin list endpoint."""
+class ModelGateComparisonRecord(BaseModel):
+    """Single model gate comparison row for the admin list endpoint."""
 
     eval_id: str
     job_id: str
@@ -419,22 +419,22 @@ class ShadowEvaluationRecord(BaseModel):
     completed_at: datetime | None
 
 
-class ShadowEvaluationsResponse(BaseModel):
-    """Paginated list of shadow evaluation records."""
+class ModelGateComparisonsResponse(BaseModel):
+    """Paginated list of model gate comparison records."""
 
     total: int
     limit: int
     offset: int
-    items: list[ShadowEvaluationRecord]
+    items: list[ModelGateComparisonRecord]
 
 
 @router.get(
-    "/v1/admin/shadow-evaluations",
-    response_model=ShadowEvaluationsResponse,
+    "/v1/admin/model-gate-comparisons",
+    response_model=ModelGateComparisonsResponse,
     status_code=200,
-    summary="List shadow evaluation records",
+    summary="List offline model gate comparison records",
 )
-def list_shadow_evaluations(
+def list_model_gate_comparisons(
     job_id: str | None = Query(default=None, description="Filter by job_id."),
     status: str | None = Query(
         default=None,
@@ -444,12 +444,17 @@ def list_shadow_evaluations(
     offset: int = Query(default=0, ge=0, description="Number of records to skip."),
     db: Session = Depends(get_session),
     _user: CurrentUser = Depends(require_admin),
-) -> ShadowEvaluationsResponse:
+) -> ModelGateComparisonsResponse:
     """
-    Return a paginated list of shadow evaluation records.
+    Return a paginated list of offline model gate comparison records.
+
+    Each record represents the shadow worker comparing the geometry IoU gate
+    score of the current ``shadow``-stage model against the current
+    ``production``-stage model.  ``confidence_delta`` is a model-level metric
+    from offline evaluation — no candidate inference runs on live pages.
 
     Filterable by ``job_id`` and/or ``status``.  Results are ordered by
-    ``created_at DESC`` so the most recent evaluations appear first.
+    ``created_at DESC`` so the most recent records appear first.
 
     **Auth:** admin role required.
     """
@@ -465,19 +470,19 @@ def list_shadow_evaluations(
     )
 
     logger.debug(
-        "list_shadow_evaluations: job_id=%r status=%r total=%d offset=%d limit=%d",
+        "list_model_gate_comparisons: job_id=%r status=%r total=%d offset=%d limit=%d",
         job_id,
         status,
         total,
         offset,
         limit,
     )
-    return ShadowEvaluationsResponse(
+    return ModelGateComparisonsResponse(
         total=total,
         limit=limit,
         offset=offset,
         items=[
-            ShadowEvaluationRecord(
+            ModelGateComparisonRecord(
                 eval_id=row.eval_id,
                 job_id=row.job_id,
                 page_id=row.page_id,

@@ -24,6 +24,7 @@ from typing import Any, cast
 from sqlalchemy.orm import Session
 
 from services.eep.app.db.lineage import confirm_layout_artifact, update_lineage_completion
+from shared.metrics import EEP_CONSENSUS_ROUTE, EEP_LAYOUT_CONSENSUS_CONFIDENCE
 from services.eep.app.db.models import JobPage, PageLineage
 from services.eep.app.db.page_state import advance_page_state
 from services.eep.app.gates.layout_gate import evaluate_layout_adjudication
@@ -248,6 +249,10 @@ def _persist_completed_layout(
     output_layout_uri: str | None,
 ) -> LayoutStepResult:
     routing = build_layout_routing_decision(adjudication)
+    _regions = routing.final_layout_result
+    _mean_conf = sum(r.confidence for r in _regions) / len(_regions) if _regions else 0.0
+    EEP_LAYOUT_CONSENSUS_CONFIDENCE.observe(_mean_conf)
+    EEP_CONSENSUS_ROUTE.labels(route=routing.acceptance_decision).inc()
     processing_ms = (
         total_processing_ms if total_processing_ms is not None else adjudication.processing_time_ms
     )

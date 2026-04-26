@@ -21,6 +21,7 @@ dependencies = [
     "python-multipart>=0.0.9",
     "PyYAML>=6.0",
     "bcrypt>=4.0",
+    "mlflow>=2.12",
 ]
 
 [tool.uv]

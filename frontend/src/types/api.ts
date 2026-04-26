@@ -496,12 +496,14 @@ export interface DeploymentStatusResponse {
   feature_flags: FeatureFlags;
   s3_bucket: string | null;
   redis_url_configured: boolean;
+  mlflow_tracking_uri: string | null;
+  mlflow_reachable: boolean;
   as_of: string;
 }
 
-// ---- Admin — Shadow Evaluations -------------------------------------------------------
+// ---- Admin — Model Gate Comparisons -------------------------------------------------------
 
-export interface ShadowEvaluationRecord {
+export interface ModelGateComparisonRecord {
   eval_id: string;
   job_id: string;
   page_id: string;
@@ -512,11 +514,11 @@ export interface ShadowEvaluationRecord {
   completed_at: string | null;
 }
 
-export interface ShadowEvaluationsResponse {
+export interface ModelGateComparisonsResponse {
   total: number;
   limit: number;
   offset: number;
-  items: ShadowEvaluationRecord[];
+  items: ModelGateComparisonRecord[];
 }
 
 // ---- Admin — Promotion Audit -------------------------------------------------------
@@ -641,6 +643,7 @@ export interface ModelVersionRecord {
   promoted_at: string | null;
   notes: string | null;
   created_at: string;
+  mlflow_transition_result: string | null;
 }
 
 export interface ModelEvaluationResponse {

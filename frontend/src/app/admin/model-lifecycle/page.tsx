@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { Layers, RefreshCw, AlertTriangle, CheckCircle2, XCircle, ArrowUp, RotateCcw } from "lucide-react";
-import { getPromotionAudit, getShadowEvaluations, getDeploymentStatus } from "@/lib/api/admin";
+import { getPromotionAudit, getModelGateComparisons, getDeploymentStatus } from "@/lib/api/admin";
 import { getModelEvaluations } from "@/lib/api/models";
 import { getRetrainingStatus } from "@/lib/api/retraining";
 import { AdminShell } from "@/components/layout/admin-shell";
@@ -136,8 +136,8 @@ export default function ModelLifecyclePage() {
   });
 
   const { data: shadowData, isLoading: shadowLoading } = useQuery({
-    queryKey: ["shadow-evaluations-lifecycle", { limit: 20 }],
-    queryFn: () => getShadowEvaluations({ limit: 20 }),
+    queryKey: ["model-gate-comparisons-lifecycle", { limit: 20 }],
+    queryFn: () => getModelGateComparisons({ limit: 20 }),
     staleTime: 30_000,
   });
 
@@ -332,15 +332,16 @@ export default function ModelLifecyclePage() {
           )}
         </div>
 
-        {/* Shadow evaluation summary */}
+        {/* Model gate comparison summary */}
         <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
           <div className="flex items-center justify-between mb-1">
-            <h2 className="text-sm font-semibold text-slate-800">Shadow Evaluations</h2>
+            <h2 className="text-sm font-semibold text-slate-800">Offline Model Gate Comparisons</h2>
             <span className="text-2xs text-slate-400">Total: {shadowData?.total ?? "—"}</span>
           </div>
           <p className="text-2xs text-slate-400 mb-3">
-            Pages from <code className="font-mono">shadow_mode=true</code> jobs are evaluated against
-            the production model to measure confidence delta without affecting live results.
+            Compares the geometry IoU gate score of the current <code className="font-mono">shadow</code>-stage
+            model against the current <code className="font-mono">production</code>-stage model. The delta is a
+            model-level metric from offline evaluation — no candidate inference ran on live pages.
           </p>
           {shadowLoading ? (
             <Skeleton className="h-24" />

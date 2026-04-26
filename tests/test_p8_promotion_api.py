@@ -349,7 +349,7 @@ class TestPromote:
         expected_fields = {
             "model_id", "service_name", "version_tag", "stage",
             "gate_results", "promoted_at", "notes", "mlflow_run_id",
-            "dataset_version", "created_at",
+            "dataset_version", "created_at", "mlflow_transition_result",
         }
         assert set(data.keys()) == expected_fields
 
@@ -709,6 +709,115 @@ class TestRollback:
         expected = {
             "model_id", "service_name", "version_tag", "stage",
             "gate_results", "promoted_at", "notes", "mlflow_run_id",
-            "dataset_version", "created_at",
+            "dataset_version", "created_at", "mlflow_transition_result",
         }
         assert set(resp.json().keys()) == expected
+
+
+# ── MLflow transition behaviour ────────────────────────────────────────────────
+
+
+class TestMlflowTransition:
+    """
+    Verify _mlflow_transition semantics:
+      - "skipped_no_metadata" when mlflow_run_id is None
+      - "skipped_no_metadata" when MLFLOW_TRACKING_URI is not set
+      - "skipped_unavailable" when MlflowClient raises (server down)
+      - "executed" when client.transition_model_version_stage succeeds
+      - DB promotion succeeds (HTTP 200) even when MLflow is unavailable
+    """
+
+    def test_promote_returns_skipped_no_metadata_when_run_id_none(self, inject_admin) -> None:
+        """No mlflow_run_id → skipped_no_metadata, DB promote still succeeds."""
+        staging = _make_mv(gate_results=_ALL_GATES_PASS, mlflow_run_id=None)
+        session = _session_for_promote(staging=staging, production=None)
+        import os
+        with patch.dict(os.environ, {"MLFLOW_TRACKING_URI": "http://mlflow:5000"}):
+            client = inject_admin(session)
+            resp = client.post("/v1/models/promote", json={"service": "iep1a"})
+        assert resp.status_code == 200
+        assert resp.json()["mlflow_transition_result"] == "skipped_no_metadata"
+
+    def test_promote_returns_skipped_no_metadata_when_uri_not_set(self, inject_admin) -> None:
+        """No MLFLOW_TRACKING_URI → skipped_no_metadata."""
+        import os
+        staging = _make_mv(gate_results=_ALL_GATES_PASS, mlflow_run_id="run-abc")
+        session = _session_for_promote(staging=staging, production=None)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MLFLOW_TRACKING_URI", None)
+            client = inject_admin(session)
+            resp = client.post("/v1/models/promote", json={"service": "iep1a"})
+        assert resp.status_code == 200
+        assert resp.json()["mlflow_transition_result"] == "skipped_no_metadata"
+
+    def _mock_mlflow_modules(self, mock_client_cls: Any) -> Any:
+        """
+        Return a patch.dict context manager that injects mock mlflow modules into
+        sys.modules so that `from mlflow.tracking import MlflowClient` inside
+        _mlflow_transition finds the mock regardless of whether mlflow is installed.
+        """
+        import sys
+        mock_tracking = MagicMock()
+        mock_tracking.MlflowClient = mock_client_cls
+        mock_mlflow = MagicMock()
+        mock_mlflow.tracking = mock_tracking
+        return patch.dict(sys.modules, {
+            "mlflow": mock_mlflow,
+            "mlflow.tracking": mock_tracking,
+        })
+
+    def test_promote_returns_skipped_unavailable_when_mlflow_raises(self, inject_admin) -> None:
+        """MLflow server error → skipped_unavailable, DB promote still returns 200."""
+        import os
+        staging = _make_mv(gate_results=_ALL_GATES_PASS, mlflow_run_id="run-xyz")
+        session = _session_for_promote(staging=staging, production=None)
+
+        mock_client = MagicMock()
+        mock_client.search_model_versions.side_effect = Exception("connection refused")
+
+        with patch.dict(os.environ, {"MLFLOW_TRACKING_URI": "http://mlflow:5000"}):
+            with self._mock_mlflow_modules(MagicMock(return_value=mock_client)):
+                client = inject_admin(session)
+                resp = client.post("/v1/models/promote", json={"service": "iep1a"})
+        assert resp.status_code == 200
+        assert resp.json()["mlflow_transition_result"] == "skipped_unavailable"
+
+    def test_promote_returns_executed_when_mlflow_succeeds(self, inject_admin) -> None:
+        """When MlflowClient succeeds → mlflow_transition_result == 'executed'."""
+        import os
+        staging = _make_mv(gate_results=_ALL_GATES_PASS, mlflow_run_id="run-ok")
+        session = _session_for_promote(staging=staging, production=None)
+
+        mock_mv = MagicMock()
+        mock_mv.name = "libraryai-iep1a"
+        mock_mv.version = "3"
+        mock_client = MagicMock()
+        mock_client.search_model_versions.return_value = [mock_mv]
+
+        with patch.dict(os.environ, {"MLFLOW_TRACKING_URI": "http://mlflow:5000"}):
+            with self._mock_mlflow_modules(MagicMock(return_value=mock_client)):
+                client = inject_admin(session)
+                resp = client.post("/v1/models/promote", json={"service": "iep1a"})
+        assert resp.status_code == 200
+        assert resp.json()["mlflow_transition_result"] == "executed"
+        mock_client.transition_model_version_stage.assert_called_once_with(
+            name="libraryai-iep1a",
+            version="3",
+            to_stage="Production",
+            archive_existing_versions=True,
+        )
+
+    def test_db_promotion_succeeds_even_when_mlflow_unavailable(self, inject_admin) -> None:
+        """MLflow being down (ImportError) must never block DB promotion."""
+        import os
+        import sys
+        staging = _make_mv(gate_results=_ALL_GATES_PASS, mlflow_run_id="run-fail")
+        session = _session_for_promote(staging=staging, production=None)
+
+        # Simulate mlflow not installed by removing it from sys.modules
+        with patch.dict(os.environ, {"MLFLOW_TRACKING_URI": "http://mlflow:5000"}):
+            with patch.dict(sys.modules, {"mlflow": None, "mlflow.tracking": None}):
+                client = inject_admin(session)
+                resp = client.post("/v1/models/promote", json={"service": "iep1a"})
+        assert resp.status_code == 200
+        assert staging.stage == "production"

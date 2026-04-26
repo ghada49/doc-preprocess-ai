@@ -118,7 +118,28 @@ jobs:
             --services libraryai-eep-worker libraryai-eep-recovery
           echo "Workers stopped."
 
-      # ── Step 4: Stop shadow-worker ────────────────────────────────────────
+      # ── Step 4: Stop retraining-worker (if running) ──────────────────────
+      - name: Stop retraining-worker
+        run: |
+          DESIRED=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services libraryai-retraining-worker \
+            --query 'services[0].desiredCount' --output text 2>/dev/null || echo "0")
+          if [ "$DESIRED" != "0" ] && [ "$DESIRED" != "None" ]; then
+            aws ecs update-service \
+              --cluster "$ECS_CLUSTER" \
+              --service libraryai-retraining-worker \
+              --desired-count 0 \
+              --no-cli-pager
+            aws ecs wait services-stable \
+              --cluster "$ECS_CLUSTER" \
+              --services libraryai-retraining-worker
+            echo "retraining-worker stopped."
+          else
+            echo "retraining-worker already at 0 — skipping"
+          fi
+
+      # ── Step 5: Stop shadow-worker ────────────────────────────────────────
       - name: Stop shadow-worker
         run: |
           aws ecs update-service \
@@ -131,7 +152,7 @@ jobs:
             --services libraryai-shadow-worker
           echo "shadow-worker stopped."
 
-      # ── Step 5: Stop CPU IEP services ────────────────────────────────────
+      # ── Step 6: Stop CPU IEP services ────────────────────────────────────
       - name: Stop CPU IEP services (iep1e, iep2a, iep2b)
         run: |
           for SVC in iep1e iep2a iep2b; do
@@ -147,7 +168,7 @@ jobs:
             --services libraryai-iep1e libraryai-iep2a libraryai-iep2b
           echo "CPU IEP services stopped."
 
-      # ── Step 6: Stop GPU IEP services ────────────────────────────────────
+      # ── Step 7: Stop GPU IEP services ────────────────────────────────────
       - name: Stop GPU IEP services (iep0, iep1a, iep1b, iep1d)
         run: |
           for SVC in iep0 iep1a iep1b iep1d; do
@@ -183,7 +204,7 @@ jobs:
           fi
           echo "GPU IEP services stopped."
 
-      # ── Step 7: Scale GPU EC2 ASG to 0 ───────────────────────────────────
+      # ── Step 8: Scale GPU EC2 ASG to 0 ───────────────────────────────────
       - name: Scale GPU ASG to 0
         run: |
           aws autoscaling update-auto-scaling-group \

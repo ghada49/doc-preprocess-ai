@@ -54,6 +54,12 @@ from typing import Literal
 from fastapi import APIRouter, HTTPException
 
 from services.iep2a.app.postprocess import postprocess_regions
+from shared.metrics import (
+    IEP2A_GPU_INFERENCE_SECONDS,
+    IEP2A_MEAN_PAGE_CONFIDENCE,
+    IEP2A_REGION_CONFIDENCE,
+    IEP2A_REGIONS_PER_PAGE,
+)
 from shared.schemas.layout import (
     ColumnStructure,
     LayoutConfSummary,
@@ -277,6 +283,11 @@ def _assemble_response(
         histogram[r.type.value] += 1
 
     elapsed_ms = (time.monotonic() - t0) * 1000.0
+    IEP2A_GPU_INFERENCE_SECONDS.observe(elapsed_ms / 1000.0)
+    IEP2A_MEAN_PAGE_CONFIDENCE.observe(mean_conf)
+    IEP2A_REGIONS_PER_PAGE.observe(n)
+    for r in regions:
+        IEP2A_REGION_CONFIDENCE.observe(r.confidence)
 
     return LayoutDetectResponse(
         region_schema_version="v1",

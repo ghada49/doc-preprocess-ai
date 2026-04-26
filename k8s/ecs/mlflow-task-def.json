@@ -1,0 +1,52 @@
+{
+  "family": "libraryai-mlflow",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/libraryai-mlflow-task-role",
+  "containerDefinitions": [
+    {
+      "name": "mlflow",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/libraryai-mlflow:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "name": "http",
+          "containerPort": 5000,
+          "protocol": "tcp"
+        }
+      ],
+      "command": [
+        "sh", "-c",
+        "mlflow server --host 0.0.0.0 --port 5000 --backend-store-uri $MLFLOW_BACKEND_STORE_URI --default-artifact-root $MLFLOW_ARTIFACT_ROOT"
+      ],
+      "environment": [
+        { "name": "PYTHONPATH",            "value": "/app" },
+        { "name": "MLFLOW_ARTIFACT_ROOT",  "value": "s3://libraryai/mlflow-artifacts" }
+      ],
+      "secrets": [
+        {
+          "name": "MLFLOW_BACKEND_STORE_URI",
+          "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/MLFLOW_BACKEND_STORE_URI"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/libraryai-mlflow",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "mlflow"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -sf http://localhost:5000/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      }
+    }
+  ]
+}

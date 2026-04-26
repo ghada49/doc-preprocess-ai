@@ -267,7 +267,7 @@ export default function AdminDashboardPage() {
           </p>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
             <KPICard
-              label="Shadow Evaluations"
+              label="Shadow-Mode Jobs"
               value={summary?.shadow_evaluations_count ?? null}
               icon={BarChart3}
               iconColor="text-slate-600"

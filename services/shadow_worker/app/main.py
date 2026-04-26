@@ -270,8 +270,9 @@ def _process_shadow_task(task: ShadowTask, db: Session) -> None:
 
     if shadow_model is not None:
         # Compute confidence_delta as the geometry_iou gap between shadow and
-        # production models.  This is a model-level proxy until per-page shadow
-        # inference is instrumented in the EEP worker pipeline.
+        # production models.  This is a model-level comparison using stored
+        # gate_results from offline evaluation.  Per-page live inference is not
+        # implemented — the same delta applies to every page in a shadow-mode job.
         production_model = (
             db.query(ModelVersion)
             .filter(ModelVersion.stage == "production")

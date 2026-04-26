@@ -2,7 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { Activity, RefreshCw, AlertTriangle } from "lucide-react";
-import { getDashboardSummary, getServiceHealth, getQueueStatus, getShadowEvaluations } from "@/lib/api/admin";
+import { getDashboardSummary, getServiceHealth, getQueueStatus, getModelGateComparisons } from "@/lib/api/admin";
 import { AdminShell } from "@/components/layout/admin-shell";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -99,8 +99,8 @@ export default function ObservabilityPage() {
   });
 
   const { data: shadowData, isLoading: shadowLoading } = useQuery({
-    queryKey: ["shadow-evaluations", { limit: 10 }],
-    queryFn: () => getShadowEvaluations({ limit: 10 }),
+    queryKey: ["model-gate-comparisons", { limit: 10 }],
+    queryFn: () => getModelGateComparisons({ limit: 10 }),
     staleTime: 30_000,
   });
 
@@ -241,16 +241,17 @@ export default function ObservabilityPage() {
             )}
           </div>
 
-          {/* Shadow evaluations */}
+          {/* Model gate comparisons */}
           <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
             <div className="flex items-center justify-between mb-3">
-              <h2 className="text-sm font-semibold text-slate-800">Recent Shadow Evaluations</h2>
+              <h2 className="text-sm font-semibold text-slate-800">Recent Model Gate Comparisons</h2>
               <span className="text-2xs text-slate-400">
                 Total: {shadowData?.total ?? "—"}
               </span>
             </div>
             <p className="text-2xs text-slate-400 mb-3">
-              Pages from shadow-mode jobs evaluated against the production model. See{" "}
+              Offline comparison of shadow vs. production model gate scores. No candidate inference
+              ran on live pages. See{" "}
               <a href="/admin/model-lifecycle" className="text-indigo-500 hover:underline">
                 Model Lifecycle
               </a>{" "}
@@ -261,7 +262,7 @@ export default function ObservabilityPage() {
                 {Array.from({ length: 5 }).map((_, i) => <Skeleton key={i} className="h-10" />)}
               </div>
             ) : !shadowData?.items.length ? (
-              <p className="text-xs text-slate-400 italic">No shadow evaluations yet.</p>
+              <p className="text-xs text-slate-400 italic">No model gate comparisons yet.</p>
             ) : (
               <div className="space-y-2">
                 {shadowData.items.map((ev) => (
@@ -304,17 +305,53 @@ export default function ObservabilityPage() {
           </div>
         </div>
 
-        {/* Observability disclaimer */}
-        <div className="flex items-start gap-2 text-xs text-slate-600 bg-slate-50 border border-slate-200 rounded-lg px-4 py-3">
-          <AlertTriangle className="h-4 w-4 text-slate-400 shrink-0 mt-0.5" />
-          <div>
-            <p className="font-semibold text-slate-700">Prometheus / Grafana Integration</p>
-            <p className="mt-0.5 text-slate-500">
-              This page uses DB and Redis queries. For time-series dashboards, Prometheus scrapes
-              the <code className="font-mono">/metrics</code> endpoint (configured via{" "}
-              <code className="font-mono">shared/middleware.py</code>) and Grafana displays the
-              pre-built dashboards in <code className="font-mono">monitoring/grafana/dashboards/</code>.
-              Alertmanager routes degradation alerts to the retraining webhook.
+        {/* Prometheus / Grafana demo services notice */}
+        <div className="border border-slate-200 rounded-xl overflow-hidden">
+          <div className="flex items-center gap-2 px-4 py-3 bg-slate-50 border-b border-slate-200">
+            <AlertTriangle className="h-4 w-4 text-amber-500 shrink-0" />
+            <p className="text-xs font-semibold text-slate-700">Prometheus &amp; Grafana — Demo / Batch Observability</p>
+          </div>
+          <div className="px-4 py-3 space-y-2 text-xs text-slate-600">
+            <p>
+              Prometheus and Grafana are <strong>standalone demo and batch monitoring services</strong> —
+              they are <strong>off by default</strong> (desired count 0) to avoid idle Fargate costs.
+              They are not started by the normal deploy or scale-up workflows.
+            </p>
+            <ul className="list-disc list-inside space-y-1 text-slate-500">
+              <li>
+                <strong>To start dashboards:</strong> run{" "}
+                <code className="font-mono text-indigo-600">observability-up.yml</code> via GitHub Actions
+                → Actions → Observability Up.
+              </li>
+              <li>
+                <strong>After demo or testing:</strong> run{" "}
+                <code className="font-mono text-indigo-600">observability-down.yml</code> to stop both
+                services and avoid idle costs.
+              </li>
+              <li>
+                Dashboards take a <strong>few minutes to populate</strong> after Prometheus starts
+                (15-second scrape interval).
+              </li>
+              <li>
+                <strong>Prometheus history is ephemeral</strong> — no EFS or persistent storage is
+                attached. History is lost on restart.
+              </li>
+              <li>
+                Grafana is <strong>not always running</strong>. Access is via the task&apos;s private
+                IP (see observability-up.yml output for the exact address and port-forward instructions).
+              </li>
+              <li>
+                <strong>This admin dashboard and CloudWatch remain fully available</strong> when
+                Grafana is off. The metrics shown above are always served from the DB and Redis.
+              </li>
+            </ul>
+            <p className="text-slate-400">
+              Prometheus scrapes the{" "}
+              <code className="font-mono">/metrics</code> endpoint on all active services (configured
+              via <code className="font-mono">shared/middleware.py</code>). Four pre-built Grafana
+              dashboards are provisioned from{" "}
+              <code className="font-mono">monitoring/grafana/provisioning/dashboards/</code>:
+              api-service, gate-decisions, model-signals, workers-queue.
             </p>
           </div>
         </div>

@@ -336,3 +336,48 @@ class TestDeploymentStatus:
             r = client.get("/v1/admin/deployment-status")
         assert r.status_code == 200
         assert r.json()["redis_url_configured"] is True
+
+    def test_mlflow_tracking_uri_null_when_not_set(self, admin_client: Any) -> None:
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MLFLOW_TRACKING_URI", None)
+            client = admin_client(_make_session_no_invocations(), _make_redis())
+            r = client.get("/v1/admin/deployment-status")
+        assert r.status_code == 200
+        body = r.json()
+        assert "mlflow_tracking_uri" in body
+        assert body["mlflow_tracking_uri"] is None
+        assert body["mlflow_reachable"] is False
+
+    def test_mlflow_tracking_uri_present_when_set(self, admin_client: Any) -> None:
+        uri = "http://mlflow.libraryai.local:5000"
+        with patch.dict(os.environ, {"MLFLOW_TRACKING_URI": uri}):
+            # urllib.request.urlopen raises so mlflow_reachable=False, but URI is returned
+            with patch("urllib.request.urlopen", side_effect=OSError("connection refused")):
+                client = admin_client(_make_session_no_invocations(), _make_redis())
+                r = client.get("/v1/admin/deployment-status")
+        assert r.status_code == 200
+        body = r.json()
+        assert body["mlflow_tracking_uri"] == uri
+        assert body["mlflow_reachable"] is False
+
+    def test_mlflow_reachable_true_when_health_200(self, admin_client: Any) -> None:
+        uri = "http://mlflow.libraryai.local:5000"
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = lambda s: s
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.status = 200
+        with patch.dict(os.environ, {"MLFLOW_TRACKING_URI": uri}):
+            with patch("urllib.request.urlopen", return_value=mock_resp):
+                client = admin_client(_make_session_no_invocations(), _make_redis())
+                r = client.get("/v1/admin/deployment-status")
+        assert r.status_code == 200
+        assert r.json()["mlflow_reachable"] is True
+
+    def test_eep_port_in_service_catalog(self, admin_client: Any) -> None:
+        """EEP must be listed at port 8000, not 8888."""
+        client = admin_client(_make_session_no_invocations(), _make_redis())
+        r = client.get("/v1/admin/service-inventory")
+        assert r.status_code == 200
+        items = {i["service_name"]: i for i in r.json()["items"]}
+        assert "eep" in items
+        assert items["eep"]["port"] == 8000

@@ -38,6 +38,14 @@ import cv2
 import numpy as np
 
 from services.iep1a.app.tta import compute_mock_tta_stats, compute_real_tta_stats
+from shared.metrics import (
+    IEP1A_GEOMETRY_CONFIDENCE,
+    IEP1A_GPU_INFERENCE_SECONDS,
+    IEP1A_PAGE_COUNT,
+    IEP1A_SPLIT_DETECTION_RATE,
+    IEP1A_TTA_PREDICTION_VARIANCE,
+    IEP1A_TTA_STRUCTURAL_AGREEMENT_RATE,
+)
 from shared.schemas.geometry import GeometryRequest, GeometryResponse, PageRegion
 from shared.schemas.preprocessing import PreprocessError
 
@@ -406,7 +414,15 @@ def run_inference(req: GeometryRequest) -> GeometryResponse:
     tta_stats = compute_real_tta_stats(model, image, conf_threshold, tta_passes)
 
     elapsed_ms = (time.monotonic() - t0) * 1000.0
-    return _detections_to_response(detections, tta_stats, elapsed_ms)
+    resp = _detections_to_response(detections, tta_stats, elapsed_ms)
+    IEP1A_GPU_INFERENCE_SECONDS.observe(elapsed_ms / 1000.0)
+    IEP1A_GEOMETRY_CONFIDENCE.observe(resp.geometry_confidence)
+    IEP1A_TTA_STRUCTURAL_AGREEMENT_RATE.observe(resp.tta_structural_agreement_rate)
+    IEP1A_TTA_PREDICTION_VARIANCE.observe(resp.tta_prediction_variance)
+    IEP1A_PAGE_COUNT.observe(resp.page_count)
+    if resp.split_required:
+        IEP1A_SPLIT_DETECTION_RATE.inc()
+    return resp
 
 
 def _load_image(image_uri: str) -> np.ndarray | None:
@@ -479,7 +495,7 @@ def run_mock_inference(req: GeometryRequest) -> GeometryResponse:
     tta = compute_mock_tta_stats(tta_passes)
     elapsed_ms = (time.monotonic() - t0) * 1000.0
 
-    return GeometryResponse(
+    resp = GeometryResponse(
         page_count=page_count,
         pages=pages,
         split_required=split_required,
@@ -492,3 +508,11 @@ def run_mock_inference(req: GeometryRequest) -> GeometryResponse:
         warnings=[],
         processing_time_ms=elapsed_ms,
     )
+    IEP1A_GPU_INFERENCE_SECONDS.observe(elapsed_ms / 1000.0)
+    IEP1A_GEOMETRY_CONFIDENCE.observe(resp.geometry_confidence)
+    IEP1A_TTA_STRUCTURAL_AGREEMENT_RATE.observe(resp.tta_structural_agreement_rate)
+    IEP1A_TTA_PREDICTION_VARIANCE.observe(resp.tta_prediction_variance)
+    IEP1A_PAGE_COUNT.observe(resp.page_count)
+    if resp.split_required:
+        IEP1A_SPLIT_DETECTION_RATE.inc()
+    return resp

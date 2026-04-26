@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import logging
 import os
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from typing import cast
 
@@ -114,7 +115,7 @@ _SERVICE_CATALOG = [
         "service_name": "eep",
         "role": "Central Orchestrator / API Gateway",
         "deployment_type": "Fargate",
-        "port": 8888,
+        "port": 8000,
         "invocation_pattern": None,  # EEP itself — always shown as healthy
         "model_applicable": False,
     },
@@ -358,6 +359,8 @@ class DeploymentStatusResponse(BaseModel):
     feature_flags: FeatureFlags
     s3_bucket: str | None
     redis_url_configured: bool
+    mlflow_tracking_uri: str | None
+    mlflow_reachable: bool
     as_of: datetime
 
 
@@ -405,6 +408,18 @@ def get_deployment_status(
 
     redis_url = os.environ.get("REDIS_URL", "")
 
+    # MLflow reachability probe — 1-second timeout, never raises
+    mlflow_tracking_uri: str | None = os.environ.get("MLFLOW_TRACKING_URI") or None
+    mlflow_reachable = False
+    if mlflow_tracking_uri:
+        try:
+            health_url = mlflow_tracking_uri.rstrip("/") + "/health"
+            req = urllib.request.Request(health_url, method="GET")
+            with urllib.request.urlopen(req, timeout=1) as resp:
+                mlflow_reachable = resp.status == 200
+        except Exception:
+            mlflow_reachable = False
+
     return DeploymentStatusResponse(
         image_tag=os.environ.get("LIBRARYAI_IMAGE_TAG") or os.environ.get("IMAGE_TAG"),
         git_sha=os.environ.get("GIT_SHA") or os.environ.get("COMMIT_SHA"),
@@ -418,5 +433,7 @@ def get_deployment_status(
         ),
         s3_bucket=os.environ.get("S3_BUCKET_NAME"),
         redis_url_configured=bool(redis_url),
+        mlflow_tracking_uri=mlflow_tracking_uri,
+        mlflow_reachable=mlflow_reachable,
         as_of=datetime.now(timezone.utc),
     )

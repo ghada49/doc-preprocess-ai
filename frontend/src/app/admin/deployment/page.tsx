@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Rocket, RefreshCw, AlertTriangle, CheckCircle2, XCircle, CircleDashed } from "lucide-react";
+import { Rocket, RefreshCw, AlertTriangle, CheckCircle2, XCircle, CircleDashed, Database } from "lucide-react";
 import { getDeploymentStatus, getQueueStatus } from "@/lib/api/admin";
 import { AdminShell } from "@/components/layout/admin-shell";
 import { Button } from "@/components/ui/button";
@@ -134,6 +134,47 @@ export default function DeploymentPage() {
                     <code className="font-mono">LIBRARYAI_IMAGE_TAG</code> and{" "}
                     <code className="font-mono">GIT_SHA</code> environment variables are not set.
                     Set them in your ECS task definition or docker-compose for traceability.
+                  </span>
+                </div>
+              )}
+            </div>
+
+            {/* MLflow status */}
+            <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+              <div className="flex items-center gap-2 mb-3">
+                <Database className="h-4 w-4 text-slate-400" />
+                <h2 className="text-sm font-semibold text-slate-800">MLflow Tracking Server</h2>
+              </div>
+              <InfoRow
+                label="Tracking URI"
+                value={deployment?.mlflow_tracking_uri}
+                mono
+                missing={!deployment?.mlflow_tracking_uri}
+              />
+              <div className="flex items-start justify-between py-2.5 border-b border-slate-100 last:border-0">
+                <span className="text-xs text-slate-500">Reachable</span>
+                <span className="flex items-center gap-1.5 text-xs font-semibold">
+                  {deployment?.mlflow_reachable ? (
+                    <>
+                      <CheckCircle2 className="h-3.5 w-3.5 text-emerald-500" />
+                      <span className="text-emerald-700">yes</span>
+                    </>
+                  ) : (
+                    <>
+                      <XCircle className="h-3.5 w-3.5 text-slate-400" />
+                      <span className="text-slate-400">
+                        {deployment?.mlflow_tracking_uri ? "unreachable" : "not configured"}
+                      </span>
+                    </>
+                  )}
+                </span>
+              </div>
+              {deployment && !deployment.mlflow_tracking_uri && (
+                <div className="mt-3 flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                  <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
+                  <span>
+                    <code className="font-mono">MLFLOW_TRACKING_URI</code> is not set. Model
+                    promotions will complete but MLflow stage transitions will be skipped.
                   </span>
                 </div>
               )}

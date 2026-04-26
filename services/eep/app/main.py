@@ -4,6 +4,7 @@ services/eep/app/main.py
 EEP — Execution Engine Pipeline API service.
 
 Real implementations:
+  GET  /v1/status              → LIVE (CI/CD smoke test + ALB health)
   POST /v1/auth/token          → LIVE (Packet 7.1)
   POST /v1/uploads/jobs/presign → LIVE (Packet 1.7b)
   POST /v1/jobs                → LIVE (Packet 1.8)
@@ -99,6 +100,12 @@ if cors_allow_origins:
     )
 
 configure_observability(app, service_name="eep")
+
+
+@app.get("/v1/status", include_in_schema=True, tags=["meta"])
+def v1_status() -> dict:
+    """Lightweight liveness probe for CI/CD smoke tests and ALB health checks."""
+    return {"status": "ok", "service": "eep"}
 
 # ── Phase 7 routers ────────────────────────────────────────────────────────────
 app.include_router(auth_router)

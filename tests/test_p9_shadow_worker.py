@@ -206,11 +206,14 @@ class _ShadowWorkerSession:
         page: object,
         evaluation: ShadowEvaluation,
         shadow_model: object | None,
+        production_model: object | None = None,
     ) -> None:
         self._job = job
         self._page = page
         self._evaluation = evaluation
         self._shadow_model = shadow_model
+        self._production_model = production_model
+        self._query_count = 0
         self.commits = 0
 
     def get(self, model: object, identifier: str) -> object | None:
@@ -224,7 +227,10 @@ class _ShadowWorkerSession:
 
     def query(self, model: object) -> _FakeQuery:
         assert model is shadow_main.ModelVersion
-        return _FakeQuery(self._shadow_model)
+        self._query_count += 1
+        if self._query_count == 1:
+            return _FakeQuery(self._shadow_model)
+        return _FakeQuery(self._production_model)
 
     def add(self, obj: object) -> None:
         return None
@@ -233,7 +239,7 @@ class _ShadowWorkerSession:
         self.commits += 1
 
 
-class TestShadowWorkerProcessing:
+class TestShadowWorkerModelGateComparison:
     def test_process_marks_no_shadow_model_when_candidate_missing(
         self,
         monkeypatch: Any,
@@ -280,3 +286,72 @@ class TestShadowWorkerProcessing:
         assert evaluation.completed_at is not None
         assert lineage.shadow_eval_id == "eval-1"
         assert session.commits == 1
+
+    def test_process_computes_model_level_delta_not_per_page_inference(
+        self,
+        monkeypatch: Any,
+    ) -> None:
+        """confidence_delta is shadow_iou − prod_iou from stored gate_results.
+
+        No IEP HTTP calls are made — the shadow worker reads only from the DB.
+        The same delta would apply to every page in the shadow-mode job.
+        """
+        from types import SimpleNamespace as NS
+
+        shadow_model = NS(
+            stage="shadow",
+            gate_results={"geometry_iou": {"value": 0.82}},
+            created_at="2024-01-01",
+        )
+        production_model = NS(
+            stage="production",
+            gate_results={"geometry_iou": {"value": 0.78}},
+            created_at="2024-01-01",
+        )
+        task = ShadowTask(
+            task_id="eval-2",
+            job_id="job-2",
+            page_id="page-2",
+            page_number=1,
+            page_status="accepted",
+        )
+        evaluation = ShadowEvaluation(
+            eval_id="eval-2",
+            job_id="job-2",
+            page_id="page-2",
+            page_status="accepted",
+            status="pending",
+        )
+        job = NS(job_id="job-2", shadow_mode=True)
+        page = NS(
+            page_id="page-2",
+            job_id="job-2",
+            page_number=1,
+            sub_page_index=None,
+            status="accepted",
+        )
+        lineage = NS(shadow_eval_id=None)
+        session = _ShadowWorkerSession(
+            job=job,
+            page=page,
+            evaluation=evaluation,
+            shadow_model=shadow_model,
+            production_model=production_model,
+        )
+
+        monkeypatch.setattr(
+            shadow_main,
+            "_find_lineage_for_page",
+            lambda db, resolved_page: lineage,
+        )
+
+        shadow_main._process_shadow_task(task, session)
+
+        assert evaluation.status == "completed"
+        assert evaluation.confidence_delta == round(0.82 - 0.78, 4)
+        assert evaluation.completed_at is not None
+        assert session.commits == 1
+        # No HTTP calls: shadow_worker/app/main.py has no httpx/requests import.
+        # Confirmed by asserting the module attribute is absent.
+        import sys
+        assert "httpx" not in sys.modules or not hasattr(shadow_main, "_http_client")

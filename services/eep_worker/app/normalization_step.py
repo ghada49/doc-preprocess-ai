@@ -55,6 +55,7 @@ from services.eep.app.gates.artifact_validation import (
 )
 from services.eep.app.gates.geometry_selection import PreprocessingGateConfig
 from shared.io.storage import StorageBackend
+from shared.metrics import EEP_ARTIFACT_VALIDATION_ROUTE
 from shared.normalization.normalize import (
     NormalizeResult,
     normalize_result_to_branch_response,
@@ -353,6 +354,12 @@ def run_normalization_and_first_validation(
 
     # Combined routing decision
     route = _decide_route(geometry_route_decision, validation_result)
+    _av_label = (
+        "valid" if route == "accept_now"
+        else "rectification_triggered" if validation_result.passed
+        else "invalid"
+    )
+    EEP_ARTIFACT_VALIDATION_ROUTE.labels(route=_av_label).inc()
 
     duration_ms = (time.monotonic() - t0) * 1000.0
 

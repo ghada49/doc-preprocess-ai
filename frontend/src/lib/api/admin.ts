@@ -6,7 +6,7 @@ import type {
   QueueStatusResponse,
   ServiceHealthResponse,
   ServiceInventoryResponse,
-  ShadowEvaluationsResponse,
+  ModelGateComparisonsResponse,
 } from "@/types/api";
 
 export function getDashboardSummary(): Promise<DashboardSummary> {
@@ -29,19 +29,19 @@ export function getDeploymentStatus(): Promise<DeploymentStatusResponse> {
   return apiGet<DeploymentStatusResponse>("/v1/admin/deployment-status");
 }
 
-export function getShadowEvaluations(params?: {
+export function getModelGateComparisons(params?: {
   job_id?: string;
   status?: string;
   limit?: number;
   offset?: number;
-}): Promise<ShadowEvaluationsResponse> {
+}): Promise<ModelGateComparisonsResponse> {
   const q = new URLSearchParams();
   if (params?.job_id) q.set("job_id", params.job_id);
   if (params?.status) q.set("status", params.status);
   if (params?.limit != null) q.set("limit", String(params.limit));
   if (params?.offset != null) q.set("offset", String(params.offset));
   const qs = q.toString();
-  return apiGet<ShadowEvaluationsResponse>(`/v1/admin/shadow-evaluations${qs ? `?${qs}` : ""}`);
+  return apiGet<ModelGateComparisonsResponse>(`/v1/admin/model-gate-comparisons${qs ? `?${qs}` : ""}`);
 }
 
 export function getPromotionAudit(params?: {

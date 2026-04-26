@@ -1,16 +1,26 @@
+# monitoring/prometheus/prometheus.ecs.yml
+#
+# ECS-specific Prometheus configuration for the LibraryAI demo/batch
+# observability stack.
+#
+# Key differences from prometheus.yml (docker-compose):
+#   - All targets use ECS Service Connect DNS (*.libraryai.local)
+#   - No Alertmanager block — Alertmanager is not deployed in the ECS stack.
+#     Alert rules are still loaded so they are visible in the Prometheus UI,
+#     but no automated webhook actions will fire.
+#   - The cleanup service is not deployed; no scrape target for it exists here.
+#
+# This file is baked into the libraryai-prometheus-ecs Docker image by
+# monitoring/prometheus/Dockerfile.ecs and becomes /etc/prometheus/prometheus.yml
+# inside the container.
+
 global:
   scrape_interval: 15s
   evaluation_interval: 15s
 
-alerting:
-  alertmanagers:
-    - static_configs:
-        - targets:
-            - alertmanager:9093
+# Alertmanager intentionally omitted — not deployed in ECS stack.
+# (alerting block removed; see docker-compose prometheus.yml for the full config)
 
-# Packet 9.6 — alert rule files loaded from the rules directory.
-# In Docker/Kubernetes the alert_rules/ directory is mounted at
-# /etc/prometheus/rules/ (see docker-compose / Helm values).
 rule_files:
   - "/etc/prometheus/rules/*.yml"
 
@@ -23,12 +33,9 @@ scrape_configs:
   # ── EEP API ───────────────────────────────────────────────────────────────
   - job_name: eep
     static_configs:
-      - targets: ["eep:8000"]
+      - targets: ["eep.libraryai.local:8000"]
 
-  # ── Background workers and recovery services ─────────────────────────────
-  # Workers use FQDN because their ECS Service Connect configs have no
-  # clientAliases (deploy.yml falls through to the default `*` case).
-  # Short-name resolution is only available for services with explicit aliases.
+  # ── Background workers and recovery services ──────────────────────────────
   - job_name: eep-worker
     static_configs:
       - targets: ["eep-worker.libraryai.local:9100"]
@@ -45,32 +52,31 @@ scrape_configs:
     static_configs:
       - targets: ["retraining-worker.libraryai.local:9104"]
 
-
   # ── IEP services ──────────────────────────────────────────────────────────
   - job_name: iep0
     static_configs:
-      - targets: ["iep0:8006"]
+      - targets: ["iep0.libraryai.local:8006"]
 
   - job_name: iep1a
     static_configs:
-      - targets: ["iep1a:8001"]
+      - targets: ["iep1a.libraryai.local:8001"]
 
   - job_name: iep1b
     static_configs:
-      - targets: ["iep1b:8002"]
+      - targets: ["iep1b.libraryai.local:8002"]
 
   - job_name: iep1d
     static_configs:
-      - targets: ["iep1d:8003"]
+      - targets: ["iep1d.libraryai.local:8003"]
 
   - job_name: iep1e
     static_configs:
-      - targets: ["iep1e:8007"]
+      - targets: ["iep1e.libraryai.local:8007"]
 
   - job_name: iep2a
     static_configs:
-      - targets: ["iep2a:8004"]
+      - targets: ["iep2a.libraryai.local:8004"]
 
   - job_name: iep2b
     static_configs:
-      - targets: ["iep2b:8005"]
+      - targets: ["iep2b.libraryai.local:8005"]

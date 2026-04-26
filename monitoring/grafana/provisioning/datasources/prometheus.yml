@@ -4,7 +4,9 @@ datasources:
   - name: Prometheus
     type: prometheus
     uid: prometheus
-    url: http://prometheus:9090
+    # PROMETHEUS_URL is injected by the ECS task definition for ECS deployments
+    # (http://prometheus.libraryai.local:9090). Falls back to docker-compose name.
+    url: ${PROMETHEUS_URL:-http://prometheus:9090}
     access: proxy
     isDefault: true
     editable: false
