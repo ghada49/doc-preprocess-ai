@@ -1,6 +1,6 @@
 # Background worker and recovery Deployments.
 # Includes: retraining-worker, retraining-recovery, shadow-worker,
-#           shadow-recovery, artifact-cleanup.
+#           shadow-recovery.
 #
 # None of these services expose a public endpoint — ClusterIP is omitted
 # intentionally (health scrape goes pod-direct via Prometheus annotations).
@@ -221,55 +221,3 @@ spec:
         runAsNonRoot: true
         runAsUser: 1000
 
----
-# ── artifact-cleanup ──────────────────────────────────────────────────────────
-apiVersion: apps/v1
-kind: Deployment
-metadata:
-  name: artifact-cleanup
-  namespace: libraryai
-  labels:
-    app: artifact-cleanup
-    app.kubernetes.io/part-of: libraryai
-spec:
-  replicas: 1
-  selector:
-    matchLabels:
-      app: artifact-cleanup
-  template:
-    metadata:
-      labels:
-        app: artifact-cleanup
-    spec:
-      containers:
-        - name: artifact-cleanup
-          image: your-registry/libraryai-artifact-cleanup:latest
-          imagePullPolicy: Always
-          ports:
-            - containerPort: 9106
-              name: health
-          envFrom:
-            - configMapRef:
-                name: libraryai-config
-            - secretRef:
-                name: libraryai-secret
-          env:
-            - name: PYTHONPATH
-              value: /app
-          resources:
-            requests:
-              cpu: "50m"
-              memory: "128Mi"
-            limits:
-              cpu: "200m"
-              memory: "256Mi"
-          livenessProbe:
-            httpGet:
-              path: /health
-              port: 9106
-            initialDelaySeconds: 20
-            periodSeconds: 15
-            failureThreshold: 3
-      securityContext:
-        runAsNonRoot: true
-        runAsUser: 1000

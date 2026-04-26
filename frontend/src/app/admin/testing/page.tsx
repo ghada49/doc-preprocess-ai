@@ -101,11 +101,6 @@ const KNOWN_LIMITATIONS: KnownLimitation[] = [
       "LIBRARYAI_RETRAINING_TRAIN=live is not enabled. The full pipeline, gate checks, staging, promotion, and rollback are all implemented and unit-tested — but the compute step that calls the training script is stubbed in the current deployment.",
   },
   {
-    category: "Artifact Cleanup",
-    description:
-      "The artifact_cleanup service exists in docker-compose and ECS task definitions but the safe S3 retention/deletion logic is not implemented. Bucket grows unbounded.",
-  },
-  {
     category: "MLflow Stage Transitions",
     description:
       "MLflow run ID is stored and logged on promote/rollback, but the MLflow client stage-transition call is currently stubbed. Gate results and audit records are fully written.",

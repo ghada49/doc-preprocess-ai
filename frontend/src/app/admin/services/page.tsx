@@ -11,7 +11,7 @@ import { cn, formatDate } from "@/lib/utils";
 import type { ServiceInventoryItem } from "@/types/api";
 
 // EEP is the orchestrator — separate from IEP inference services
-const EEP_SERVICES = ["eep", "eep_worker", "eep_recovery", "shadow_worker", "retraining_worker", "dataset_builder", "artifact_cleanup"];
+const EEP_SERVICES = ["eep", "eep_worker", "eep_recovery", "shadow_worker", "retraining_worker", "dataset_builder"];
 
 function deploymentBadgeVariant(type: string): "danger" | "warning" | "muted" {
   if (type.toLowerCase().includes("disabled") || type.toLowerCase().includes("not implemented")) return "danger";
@@ -215,18 +215,6 @@ export default function ServicesPage() {
               items={iepServices}
             />
 
-            {/* Disclaimer */}
-            <div className="flex items-start gap-2 text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-4 py-3">
-              <AlertTriangle className="h-4 w-4 shrink-0 mt-0.5" />
-              <div>
-                <p className="font-semibold">Artifact Cleanup — Not Implemented</p>
-                <p className="mt-0.5">
-                  The <code className="font-mono">artifact_cleanup</code> service is listed because
-                  it exists in the docker-compose / ECS definitions, but safe retention and deletion
-                  logic has not been implemented. It does not run in production.
-                </p>
-              </div>
-            </div>
 
             <p className="text-2xs text-slate-400 text-right">
               {data?.as_of && <>Data as of {formatDate(data.as_of)} · window {data.window_hours}h</>}

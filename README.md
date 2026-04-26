@@ -24,7 +24,7 @@ recoverability.
 | IEP2B     | 8005 | DocLayout-YOLO layout detection |
 
 Background processes: `eep_worker`, `eep_recovery`, `shadow_worker`, `shadow_recovery`,
-`retraining_worker`, `retraining_recovery`, `artifact_cleanup`.
+`retraining_worker`, `retraining_recovery`.
 
 ## Prerequisites
 
@@ -116,7 +116,6 @@ services/                  — FastAPI service entrypoints and business logic
   shadow_recovery/         — Shadow recovery service
   retraining_worker/       — Retraining trigger worker
   retraining_recovery/     — Retraining recovery service
-  artifact_cleanup/        — Artifact lifecycle cleanup service
   iep1a/                   — IEP1A YOLOv8-seg geometry service
   iep1b/                   — IEP1B YOLOv8-pose geometry service
   iep1d/                   — IEP1D UVDoc rectification service

@@ -154,11 +154,6 @@ export default function DeploymentPage() {
                     value={deployment.feature_flags.golden_eval_mode}
                     description="Controlled by LIBRARYAI_RETRAINING_GOLDEN_EVAL env var. stub = gate thresholds are evaluated against synthetic scores."
                   />
-                  <FlagRow
-                    label="Artifact Cleanup"
-                    value={deployment.feature_flags.artifact_cleanup}
-                    description="Not implemented. Safe S3 retention/deletion logic is pending. The service exists in docker-compose but does not run."
-                  />
                 </>
               )}
               <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
@@ -225,8 +220,11 @@ export default function DeploymentPage() {
                   <p className="font-semibold text-slate-700 mb-1">S3 Storage</p>
                   <p>
                     All input, intermediate, and output artifacts are stored in the configured
-                    S3 bucket. Artifact cleanup is disabled — bucket size grows with processed
-                    jobs. Retention policy has not been implemented.
+                    S3 bucket. Temporary cleanup is handled by S3 Lifecycle: intermediate
+                    artifacts (raw scans, geometry masks) purged after 90 days; final outputs
+                    retained indefinitely. DB-referenced artifacts (page_lineage, job outputs)
+                    are never deleted by a lifecycle rule — those require a separate DB-guided
+                    sweep which is not yet implemented.
                   </p>
                 </div>
               </div>

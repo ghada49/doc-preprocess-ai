@@ -229,7 +229,7 @@ class TestServiceInventory:
         r = client.get("/v1/admin/service-inventory")
         assert r.status_code == 200
         names = {item["service_name"] for item in r.json()["items"]}
-        expected = {"eep", "eep_worker", "iep0", "iep1a", "iep1b", "iep1d", "iep2a", "iep2b", "artifact_cleanup"}
+        expected = {"eep", "eep_worker", "iep0", "iep1a", "iep1b", "iep1d", "iep2a", "iep2b"}
         assert expected.issubset(names), f"Missing services: {expected - names}"
 
     def test_iep_services_have_invocation_pattern(self, admin_client: Any) -> None:
@@ -241,17 +241,6 @@ class TestServiceInventory:
             assert svc in items
             # health_signal key must exist (even if null values inside it)
             assert "health_signal" in items[svc]
-
-    def test_artifact_cleanup_role_honest(self, admin_client: Any) -> None:
-        client = admin_client(_make_session_no_invocations(), _make_redis())
-        r = client.get("/v1/admin/service-inventory")
-        items = {i["service_name"]: i for i in r.json()["items"]}
-        cleanup = items["artifact_cleanup"]
-        # Role must mention "not implemented" or "disabled"
-        role_lower = cleanup["role"].lower()
-        assert "not implemented" in role_lower or "disabled" in role_lower, (
-            f"artifact_cleanup role should admit it's not implemented, got: {cleanup['role']!r}"
-        )
 
     def test_item_has_required_fields(self, admin_client: Any) -> None:
         client = admin_client(_make_session_no_invocations(), _make_redis())

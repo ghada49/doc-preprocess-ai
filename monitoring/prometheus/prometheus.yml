@@ -42,9 +42,6 @@ scrape_configs:
     static_configs:
       - targets: ["retraining-worker:9104"]
 
-  - job_name: artifact-cleanup
-    static_configs:
-      - targets: ["artifact-cleanup:9106"]
 
   # ── IEP services ──────────────────────────────────────────────────────────
   - job_name: iep1a

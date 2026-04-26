@@ -388,31 +388,6 @@ services:
     restart: "no"
     command: ["python", "services/dataset_builder/app/main.py", "--mode", "scheduled", "--approved"]
 
-  # ── Artifact cleanup ──────────────────────────────────────────────────────────
-
-  artifact-cleanup:
-    build:
-      context: .
-      dockerfile: services/artifact_cleanup/Dockerfile
-    volumes:
-      - .:/app
-    environment:
-      PYTHONPATH: /app
-      PYTHONDONTWRITEBYTECODE: "1"
-      PYTHONUNBUFFERED: "1"
-      HEALTH_PORT: "9106"
-    env_file: .env
-    expose:
-      - "9106"
-    networks:
-      - libraryai-net
-    restart: unless-stopped
-    depends_on:
-      postgres:
-        condition: service_started
-      minio:
-        condition: service_started
-    command: ["uvicorn", "services.artifact_cleanup.app.main:app", "--host", "0.0.0.0", "--port", "9106", "--reload"]
 
   # ── IEP0 — Material-type classification service ──────────────────────────────
 

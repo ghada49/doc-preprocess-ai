@@ -214,14 +214,8 @@ _SERVICE_CATALOG = [
         "invocation_pattern": None,
         "model_applicable": False,
     },
-    {
-        "service_name": "artifact_cleanup",
-        "role": "S3 Artifact Cleanup (NOT IMPLEMENTED — retention logic pending)",
-        "deployment_type": "Disabled",
-        "port": 9106,
-        "invocation_pattern": None,
-        "model_applicable": False,
-    },
+    # Artifact cleanup is not a deployed service.
+    # Temporary cleanup is handled by S3 Lifecycle. DB-referenced artifacts are retained.
 ]
 
 
@@ -265,7 +259,7 @@ def get_service_inventory(
     Return the static service catalog annotated with health signals from
     the ``service_invocations`` table over the last 24 hours.
 
-    Services without invocation records (e.g. workers, artifact_cleanup)
+    Services without invocation records (e.g. workers)
     return ``health_signal: null``.
 
     **Auth:** admin role required.

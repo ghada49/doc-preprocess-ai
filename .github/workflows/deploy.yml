@@ -52,9 +52,6 @@ jobs:
           - service: retraining-worker
             context: .
             dockerfile: services/retraining_worker/Dockerfile
-          - service: artifact-cleanup
-            context: .
-            dockerfile: services/artifact_cleanup/Dockerfile
           - service: iep0
             context: .
             dockerfile: services/iep0/Dockerfile
@@ -203,7 +200,7 @@ jobs:
 
           SERVICES=(
             eep eep-worker eep-recovery shadow-worker retraining-worker
-            artifact-cleanup dataset-builder iep0 iep1a iep1b iep1d iep1e iep2a iep2b
+            dataset-builder iep0 iep1a iep1b iep1d iep1e iep2a iep2b
           )
           for SVC in "${SERVICES[@]}"; do
             FILE="k8s/ecs/${SVC}-task-def.json"
@@ -240,7 +237,7 @@ jobs:
         run: |
           ACTIVE=()
           for SVC in eep eep-worker eep-recovery shadow-worker \
-                     retraining-worker artifact-cleanup dataset-builder \
+                     retraining-worker dataset-builder \
                      iep0 iep1a iep1b iep1d iep1e iep2a iep2b; do
             DESIRED=$(aws ecs describe-services \
               --cluster "$CLUSTER" \
@@ -459,7 +456,7 @@ jobs:
 
           SERVICES=(
             eep eep-worker eep-recovery shadow-worker retraining-worker
-            artifact-cleanup dataset-builder iep0 iep1a iep1b iep1d iep1e iep2a iep2b
+            dataset-builder iep0 iep1a iep1b iep1d iep1e iep2a iep2b
           )
           for SVC in "${SERVICES[@]}"; do
             FILE="k8s/ecs/${SVC}-task-def.json"
@@ -496,7 +493,7 @@ jobs:
         run: |
           ACTIVE=()
           for SVC in eep eep-worker eep-recovery shadow-worker \
-                     retraining-worker artifact-cleanup dataset-builder \
+                     retraining-worker dataset-builder \
                      iep0 iep1a iep1b iep1d iep1e iep2a iep2b; do
             DESIRED=$(aws ecs describe-services \
               --cluster "$CLUSTER" \

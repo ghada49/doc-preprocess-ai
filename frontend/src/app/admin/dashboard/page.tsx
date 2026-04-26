@@ -415,7 +415,7 @@ export default function AdminDashboardPage() {
 function FeatureFlagStrip({
   flags,
 }: {
-  flags: { retraining_mode: string; golden_eval_mode: string; artifact_cleanup: string };
+  flags: { retraining_mode: string; golden_eval_mode: string };
 }) {
   return (
     <div className="flex flex-wrap gap-2">
@@ -431,12 +431,6 @@ function FeatureFlagStrip({
         liveColor="text-emerald-700 bg-emerald-50 border-emerald-200"
         stubColor="text-amber-700 bg-amber-50 border-amber-200"
       />
-      <span className="inline-flex items-center gap-1.5 rounded-md border px-2.5 py-1 text-xs font-medium text-slate-500 bg-slate-50 border-slate-200">
-        <CircleDashed className="h-3 w-3" />
-        Artifact Cleanup:{" "}
-        <span className="font-semibold text-red-600">disabled</span>
-        <span className="text-slate-400 font-normal">(not implemented)</span>
-      </span>
     </div>
   );
 }
