@@ -1,0 +1,645 @@
+name: Deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      target:
+        description: "Deploy target (staging-only skips production promotion)"
+        required: false
+        default: "full"
+        type: choice
+        options: [full, staging-only]
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION:    ${{ vars.AWS_REGION }}
+  ACCOUNT_ID:    ${{ vars.AWS_ACCOUNT_ID }}
+  ECR_REGISTRY:  ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com
+
+# ---------------------------------------------------------------------------
+# Shared OIDC credentials step — inlined into each job (GHA requirement).
+# ---------------------------------------------------------------------------
+
+jobs:
+  # ── 1. unit + migration tests ──────────────────────────────────────────────
+  test:
+    uses: ./.github/workflows/ci.yml
+
+  # ── 2. build and push all service images to ECR ───────────────────────────
+  build-push:
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - service: eep
+            context: .
+            dockerfile: services/eep/Dockerfile
+          - service: eep-worker
+            context: .
+            dockerfile: services/eep_worker/Dockerfile
+          - service: eep-recovery
+            context: .
+            dockerfile: services/eep_recovery/Dockerfile
+          - service: shadow-worker
+            context: .
+            dockerfile: services/shadow_worker/Dockerfile
+          - service: retraining-worker
+            context: .
+            dockerfile: services/retraining_worker/Dockerfile
+          - service: iep0
+            context: .
+            dockerfile: services/iep0/Dockerfile
+          - service: iep1a
+            context: .
+            dockerfile: services/iep1a/Dockerfile
+          - service: iep1b
+            context: .
+            dockerfile: services/iep1b/Dockerfile
+          - service: iep1d
+            context: .
+            dockerfile: services/iep1d/Dockerfile
+          - service: iep1e
+            context: .
+            dockerfile: services/iep1e/Dockerfile
+            build-args: |
+              ENABLE_REAL_MODEL=true
+          - service: dataset-builder
+            context: .
+            dockerfile: services/dataset_builder/Dockerfile
+          - service: iep2a
+            context: .
+            dockerfile: services/iep2a/Dockerfile
+            build-args: |
+              ENABLE_REAL_MODEL=true
+              ENABLE_PADDLE_BACKEND=true
+          - service: iep2b
+            context: .
+            dockerfile: services/iep2b/Dockerfile
+            build-args: |
+              ENABLE_REAL_MODEL=true
+          - service: mlflow
+            context: .
+            dockerfile: services/mlflow/Dockerfile
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ── Model-weight download (iep1d / iep2a / iep2b only) ────────────────
+      # Weights are NOT committed to Git (see .gitignore).  They must be stored
+      # in S3 and referenced via GitHub Actions repository variables:
+      #
+      #   IEP1D_WEIGHTS_URI   s3://…/iep1d/best_model.pkl          (single file)
+      #   IEP2A_WEIGHTS_URI   s3://…/iep2a/pp-doclayoutv2.tar.gz   (tar.gz archive)
+      #     Archive must contain one top-level directory whose contents unpack to:
+      #       models/iep2a/paddle/PP-DocLayoutV2/{config.json,inference.yml,inference.pdiparams,…}
+      #   IEP2B_WEIGHTS_URI   s3://…/iep2b/doclayout_yolo_docstructbench_imgsz1024.pt (single file)
+      #
+      # Optional SHA-256 checksums (verified before extraction / use):
+      #   IEP1D_WEIGHTS_SHA256 / IEP2A_WEIGHTS_SHA256 / IEP2B_WEIGHTS_SHA256
+      #
+      # IAM requirement: the github-actions-deploy OIDC role needs
+      #   s3:GetObject on arn:aws:s3:::libraryai-models/iep*
+      # No long-lived keys — OIDC credentials from the step above are reused.
+      - name: Download model weights
+        if: contains(fromJSON('["iep1d","iep2a","iep2b"]'), matrix.service)
+        env:
+          IEP1D_WEIGHTS_URI:    ${{ vars.IEP1D_WEIGHTS_URI }}
+          IEP2A_WEIGHTS_URI:    ${{ vars.IEP2A_WEIGHTS_URI }}
+          IEP2B_WEIGHTS_URI:    ${{ vars.IEP2B_WEIGHTS_URI }}
+          IEP1D_WEIGHTS_SHA256: ${{ vars.IEP1D_WEIGHTS_SHA256 }}
+          IEP2A_WEIGHTS_SHA256: ${{ vars.IEP2A_WEIGHTS_SHA256 }}
+          IEP2B_WEIGHTS_SHA256: ${{ vars.IEP2B_WEIGHTS_SHA256 }}
+        run: |
+          set -euo pipefail
+          SVC="${{ matrix.service }}"
+
+          # ── IEP2A: tar.gz archive → models/iep2a/paddle/PP-DocLayoutV2/ ──
+          if [ "$SVC" = "iep2a" ]; then
+            URI="${IEP2A_WEIGHTS_URI:-}"
+            SHA256="${IEP2A_WEIGHTS_SHA256:-}"
+            DEST_DIR="models/iep2a/paddle/PP-DocLayoutV2"
+            ARCHIVE="/tmp/iep2a-weights.tar.gz"
+
+            if [ -z "$URI" ]; then
+              echo "::error::IEP2A_WEIGHTS_URI not set. Add it in GitHub → Settings → Actions → Variables."
+              exit 1
+            fi
+
+            mkdir -p "$DEST_DIR"
+            echo "Downloading iep2a archive → $ARCHIVE"
+            aws s3 cp "$URI" "$ARCHIVE"
+            test -s "$ARCHIVE" || { echo "::error::Downloaded iep2a archive is empty: $ARCHIVE"; exit 1; }
+
+            if [ -n "$SHA256" ]; then
+              echo "$SHA256  $ARCHIVE" | sha256sum --check --strict
+              echo "iep2a checksum OK."
+            else
+              echo "No checksum configured for iep2a — skipping verification."
+            fi
+
+            # Archive is expected to have one top-level directory; --strip-components=1
+            # drops it so contents land directly in $DEST_DIR.
+            tar -xzf "$ARCHIVE" -C "$DEST_DIR" --strip-components=1
+            rm -f "$ARCHIVE"
+
+            for required in config.json inference.yml inference.pdiparams; do
+              if ! test -f "$DEST_DIR/$required"; then
+                echo "::error::Required iep2a model file missing after extraction: $DEST_DIR/$required"
+                exit 1
+              fi
+            done
+            echo "iep2a model files verified."
+
+          # ── IEP1D / IEP2B: single-file download ─────────────────────────
+          else
+            case "$SVC" in
+              iep1d)
+                URI="${IEP1D_WEIGHTS_URI:-}"
+                DEST="models/iep1d/best_model.pkl"
+                SHA256="${IEP1D_WEIGHTS_SHA256:-}"
+                ;;
+              iep2b)
+                URI="${IEP2B_WEIGHTS_URI:-}"
+                DEST="models/iep2b/doclayout_yolo_docstructbench_imgsz1024.pt"
+                SHA256="${IEP2B_WEIGHTS_SHA256:-}"
+                ;;
+            esac
+
+            if [ -z "${URI:-}" ]; then
+              echo "::error::${SVC} weight URI not set. Add the corresponding WEIGHTS_URI variable in GitHub → Settings → Actions → Variables."
+              exit 1
+            fi
+
+            mkdir -p "$(dirname "$DEST")"
+            echo "Downloading $SVC weights → $DEST"
+            aws s3 cp "$URI" "$DEST"
+            test -s "$DEST" || { echo "::error::Downloaded weight file is empty or missing: $DEST"; exit 1; }
+
+            if [ -n "${SHA256:-}" ]; then
+              echo "$SHA256  $DEST" | sha256sum --check --strict
+              echo "$SVC checksum OK."
+            else
+              echo "No checksum configured for $SVC — skipping verification."
+            fi
+          fi
+
+      - name: Build and push libraryai-${{ matrix.service }}
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ matrix.context }}
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: |
+            ${{ env.ECR_REGISTRY }}/libraryai-${{ matrix.service }}:${{ github.sha }}
+            ${{ env.ECR_REGISTRY }}/libraryai-${{ matrix.service }}:latest
+          build-args: ${{ matrix.build-args }}
+          cache-from: type=registry,ref=${{ env.ECR_REGISTRY }}/libraryai-${{ matrix.service }}:latest
+          cache-to: type=inline
+
+  # ── 3. migrate staging database ───────────────────────────────────────────
+  migrate-staging:
+    needs: build-push
+    runs-on: ubuntu-latest
+    env:
+      CLUSTER: ${{ vars.ECS_CLUSTER_STAGING }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Register migration task definition
+        id: reg-migration
+        run: |
+          TASK_DEF=$(cat k8s/ecs/migration-task-def.json \
+            | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
+            | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
+            | sed 's|:latest|:${{ github.sha }}|g')
+          ARN=$(aws ecs register-task-definition \
+            --cli-input-json "$TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Run migration task on staging
+        id: run-migration
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$CLUSTER" \
+            --task-definition ${{ steps.reg-migration.outputs.arn }} \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.ECS_SUBNETS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUPS }}],assignPublicIp=DISABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for migration to complete
+        run: |
+          aws ecs wait tasks-stopped \
+            --cluster "$CLUSTER" \
+            --tasks ${{ steps.run-migration.outputs.task_arn }}
+
+      - name: Assert migration exit code 0
+        run: |
+          EXIT=$(aws ecs describe-tasks \
+            --cluster "$CLUSTER" \
+            --tasks ${{ steps.run-migration.outputs.task_arn }} \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          if [ "$EXIT" != "0" ]; then
+            echo "Staging migration exited with code $EXIT — aborting"
+            exit 1
+          fi
+          echo "Staging migration succeeded (exit 0)"
+
+  # ── 4. deploy to staging ECS cluster ──────────────────────────────────────
+  deploy-staging:
+    needs: migrate-staging
+    runs-on: ubuntu-latest
+    env:
+      CLUSTER: ${{ vars.ECS_CLUSTER_STAGING }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Register and update all task definitions (staging)
+        run: |
+          set -e
+
+          sc_config() {
+            local svc=$1
+            case "$svc" in
+              eep)      echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"eep","clientAliases":[{"port":8000,"dnsName":"eep"}]}]}' ;;
+              iep0)     echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep0","clientAliases":[{"port":8006,"dnsName":"iep0"}]}]}' ;;
+              iep1a)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1a","clientAliases":[{"port":8001,"dnsName":"iep1a"}]}]}' ;;
+              iep1b)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1b","clientAliases":[{"port":8002,"dnsName":"iep1b"}]}]}' ;;
+              iep1d)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1d","clientAliases":[{"port":8003,"dnsName":"iep1d"}]}]}' ;;
+              iep1e)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1e","clientAliases":[{"port":8007,"dnsName":"iep1e"}]}]}' ;;
+              iep2a)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2a","clientAliases":[{"port":8004,"dnsName":"iep2a"}]}]}' ;;
+              iep2b)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2b","clientAliases":[{"port":8005,"dnsName":"iep2b"}]}]}' ;;
+              mlflow)   echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"mlflow","clientAliases":[{"port":5000,"dnsName":"mlflow.libraryai.local"}]}]}' ;;
+              *)        echo '{"enabled":true,"namespace":"libraryai.local"}' ;;
+            esac
+          }
+
+          SERVICES=(
+            eep eep-worker eep-recovery shadow-worker retraining-worker
+            dataset-builder iep0 iep1a iep1b iep1d iep1e iep2a iep2b mlflow
+          )
+          for SVC in "${SERVICES[@]}"; do
+            FILE="k8s/ecs/${SVC}-task-def.json"
+            TASK_DEF=$(cat "$FILE" \
+              | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
+              | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
+              | sed "s/CLUSTER_NAME/${CLUSTER}/g" \
+              | sed 's|:latest|:${{ github.sha }}|g')
+            REVISION=$(aws ecs register-task-definition \
+              --cli-input-json "$TASK_DEF" \
+              --query 'taskDefinition.taskDefinitionArn' --output text)
+            echo "Registered $REVISION"
+
+            if aws ecs describe-services \
+                --cluster "$CLUSTER" \
+                --services "libraryai-${SVC}" \
+                --query 'services[0].status' --output text 2>/dev/null \
+                | grep -qE "ACTIVE|DRAINING"; then
+              SC=$(sc_config "$SVC")
+              aws ecs update-service \
+                --cluster "$CLUSTER" \
+                --service "libraryai-${SVC}" \
+                --task-definition "$REVISION" \
+                --service-connect-configuration "$SC" \
+                --force-new-deployment \
+                --no-cli-pager
+              echo "Updated staging service libraryai-${SVC}"
+            else
+              echo "libraryai-${SVC} not yet created in staging — skipping update"
+            fi
+          done
+
+      - name: Wait for staging services to stabilise
+        run: |
+          ACTIVE=()
+          for SVC in eep eep-worker eep-recovery shadow-worker \
+                     retraining-worker dataset-builder \
+                     iep0 iep1a iep1b iep1d iep1e iep2a iep2b mlflow; do
+            DESIRED=$(aws ecs describe-services \
+              --cluster "$CLUSTER" \
+              --services "libraryai-${SVC}" \
+              --query 'services[0].desiredCount' --output text 2>/dev/null || echo "0")
+            if [ "$DESIRED" != "0" ] && [ "$DESIRED" != "None" ]; then
+              ACTIVE+=("libraryai-${SVC}")
+            fi
+          done
+          if [ ${#ACTIVE[@]} -gt 0 ]; then
+            echo "Waiting for stable: ${ACTIVE[*]}"
+            aws ecs wait services-stable \
+              --cluster "$CLUSTER" \
+              --services "${ACTIVE[@]}"
+          else
+            echo "No staging services currently running — skipping stability wait"
+          fi
+
+  # ── 5. end-to-end tests against staging ───────────────────────────────────
+  # TODO: expand E2E coverage to full upload→process→download cycle:
+  #   - Upload a real TIFF via POST /v1/jobs, wait for state=completed
+  #   - Assert page_lineage records written and output artifact downloadable from S3
+  #   - Requires s3://libraryai-e2e-fixtures/ populated with a known test image
+  e2e-tests:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    env:
+      BASE_URL: https://${{ vars.ALB_DNS_STAGING }}
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Health check
+        run: |
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "$BASE_URL/health")
+          [ "$STATUS" = "200" ] || { echo "Health check failed: HTTP $STATUS"; exit 1; }
+          echo "Health OK"
+
+      - name: Status check
+        run: |
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" "$BASE_URL/v1/status")
+          [ "$STATUS" = "200" ] || { echo "Status check failed: HTTP $STATUS"; exit 1; }
+          echo "Status OK"
+
+      - name: Admin login — obtain JWT
+        id: auth
+        run: |
+          RESP=$(curl -sf -X POST "$BASE_URL/v1/auth/token" \
+            --data "username=admin&password=${{ secrets.E2E_ADMIN_PASSWORD }}")
+          TOKEN=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
+          echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
+          echo "Admin login OK"
+
+      - name: Admin API — queue-status accessible
+        run: |
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+            -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
+            "$BASE_URL/v1/admin/queue-status")
+          [ "$STATUS" = "200" ] || { echo "queue-status failed: HTTP $STATUS"; exit 1; }
+          echo "Admin queue-status OK"
+
+      - name: Submit E2E test job
+        id: submit
+        run: |
+          RESP=$(curl -sf -X POST "$BASE_URL/v1/jobs" \
+            -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
+            -H "Content-Type: application/json" \
+            -d '{"source_url":"s3://libraryai-e2e-fixtures/smoke-test-page.tiff","material_type":"book"}')
+          JOB_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+          echo "job_id=$JOB_ID" >> "$GITHUB_OUTPUT"
+          echo "Job submitted: $JOB_ID"
+
+      - name: Poll job status until queued or processing (max 60 s)
+        run: |
+          for i in $(seq 1 12); do
+            STATE=$(curl -sf \
+              -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
+              "$BASE_URL/v1/jobs/${{ steps.submit.outputs.job_id }}" \
+              | python3 -c "import sys,json; print(json.load(sys.stdin).get('state',''))")
+            echo "Poll $i: state=$STATE"
+            case "$STATE" in
+              pending|queued|processing|geometry_invocation) echo "Pipeline is moving — E2E passed"; exit 0 ;;
+              failed|rejected) echo "Job reached terminal failure state: $STATE"; exit 1 ;;
+            esac
+            sleep 5
+          done
+          echo "Job did not progress past 'pending' within 60 s"
+          exit 1
+
+  # ── 6a. rollback staging if E2E failed ────────────────────────────────────
+  rollback-staging:
+    needs: e2e-tests
+    if: always() && needs.e2e-tests.result == 'failure'
+    runs-on: ubuntu-latest
+    env:
+      CLUSTER: ${{ vars.ECS_CLUSTER_STAGING }}
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Stop staging workers (EEP API intentionally left running)
+        run: |
+          echo "E2E tests failed — stopping processing workers in staging."
+          echo "libraryai-eep is NOT touched: the API must remain reachable for diagnostics."
+          for SVC in eep-worker eep-recovery shadow-worker iep0 iep1a iep1b iep1d iep1e iep2a iep2b; do
+            DESIRED=$(aws ecs describe-services \
+              --cluster "$CLUSTER" \
+              --services "libraryai-${SVC}" \
+              --query 'services[0].desiredCount' --output text 2>/dev/null || echo "0")
+            if [ "$DESIRED" != "0" ] && [ "$DESIRED" != "None" ]; then
+              aws ecs update-service \
+                --cluster "$CLUSTER" \
+                --service "libraryai-${SVC}" \
+                --desired-count 0 \
+                --no-cli-pager || true
+              echo "libraryai-${SVC} → 0"
+            fi
+          done
+          echo "Rollback complete. EEP API still running. Investigate staging before re-promoting."
+
+  # ── 6b. migrate production database (only on E2E pass) ────────────────────
+  migrate-production:
+    needs: e2e-tests
+    if: |
+      needs.e2e-tests.result == 'success' &&
+      (github.event_name != 'workflow_dispatch' || github.event.inputs.target == 'full')
+    runs-on: ubuntu-latest
+    env:
+      CLUSTER: ${{ vars.ECS_CLUSTER_PROD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Register migration task definition
+        id: reg-migration
+        run: |
+          TASK_DEF=$(cat k8s/ecs/migration-task-def.json \
+            | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
+            | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
+            | sed 's|:latest|:${{ github.sha }}|g')
+          ARN=$(aws ecs register-task-definition \
+            --cli-input-json "$TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "arn=$ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Run migration task on production
+        id: run-migration
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$CLUSTER" \
+            --task-definition ${{ steps.reg-migration.outputs.arn }} \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.ECS_SUBNETS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUPS }}],assignPublicIp=DISABLED}" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+
+      - name: Wait for production migration to complete
+        run: |
+          aws ecs wait tasks-stopped \
+            --cluster "$CLUSTER" \
+            --tasks ${{ steps.run-migration.outputs.task_arn }}
+
+      - name: Assert production migration exit code 0
+        run: |
+          EXIT=$(aws ecs describe-tasks \
+            --cluster "$CLUSTER" \
+            --tasks ${{ steps.run-migration.outputs.task_arn }} \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          if [ "$EXIT" != "0" ]; then
+            echo "Production migration exited with code $EXIT — aborting production deploy"
+            exit 1
+          fi
+          echo "Production migration succeeded (exit 0)"
+
+  # ── 7. deploy to production ECS cluster ───────────────────────────────────
+  deploy-production:
+    needs: migrate-production
+    runs-on: ubuntu-latest
+    env:
+      CLUSTER: ${{ vars.ECS_CLUSTER_PROD }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Register and update all task definitions (production)
+        run: |
+          set -e
+
+          sc_config() {
+            local svc=$1
+            case "$svc" in
+              eep)      echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"eep","clientAliases":[{"port":8000,"dnsName":"eep"}]}]}' ;;
+              iep0)     echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep0","clientAliases":[{"port":8006,"dnsName":"iep0"}]}]}' ;;
+              iep1a)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1a","clientAliases":[{"port":8001,"dnsName":"iep1a"}]}]}' ;;
+              iep1b)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1b","clientAliases":[{"port":8002,"dnsName":"iep1b"}]}]}' ;;
+              iep1d)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1d","clientAliases":[{"port":8003,"dnsName":"iep1d"}]}]}' ;;
+              iep1e)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1e","clientAliases":[{"port":8007,"dnsName":"iep1e"}]}]}' ;;
+              iep2a)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2a","clientAliases":[{"port":8004,"dnsName":"iep2a"}]}]}' ;;
+              iep2b)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2b","clientAliases":[{"port":8005,"dnsName":"iep2b"}]}]}' ;;
+              mlflow)   echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"mlflow","clientAliases":[{"port":5000,"dnsName":"mlflow.libraryai.local"}]}]}' ;;
+              *)        echo '{"enabled":true,"namespace":"libraryai.local"}' ;;
+            esac
+          }
+
+          SERVICES=(
+            eep eep-worker eep-recovery shadow-worker retraining-worker
+            dataset-builder iep0 iep1a iep1b iep1d iep1e iep2a iep2b mlflow
+          )
+          for SVC in "${SERVICES[@]}"; do
+            FILE="k8s/ecs/${SVC}-task-def.json"
+            TASK_DEF=$(cat "$FILE" \
+              | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
+              | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
+              | sed "s/CLUSTER_NAME/${CLUSTER}/g" \
+              | sed 's|:latest|:${{ github.sha }}|g')
+            REVISION=$(aws ecs register-task-definition \
+              --cli-input-json "$TASK_DEF" \
+              --query 'taskDefinition.taskDefinitionArn' --output text)
+            echo "Registered $REVISION"
+
+            if aws ecs describe-services \
+                --cluster "$CLUSTER" \
+                --services "libraryai-${SVC}" \
+                --query 'services[0].status' --output text 2>/dev/null \
+                | grep -qE "ACTIVE|DRAINING"; then
+              SC=$(sc_config "$SVC")
+              aws ecs update-service \
+                --cluster "$CLUSTER" \
+                --service "libraryai-${SVC}" \
+                --task-definition "$REVISION" \
+                --service-connect-configuration "$SC" \
+                --force-new-deployment \
+                --no-cli-pager
+              echo "Updated production service libraryai-${SVC}"
+            else
+              echo "libraryai-${SVC} not yet created in production — skipping update"
+            fi
+          done
+
+      - name: Wait for production services to stabilise
+        run: |
+          ACTIVE=()
+          for SVC in eep eep-worker eep-recovery shadow-worker \
+                     retraining-worker dataset-builder \
+                     iep0 iep1a iep1b iep1d iep1e iep2a iep2b mlflow; do
+            DESIRED=$(aws ecs describe-services \
+              --cluster "$CLUSTER" \
+              --services "libraryai-${SVC}" \
+              --query 'services[0].desiredCount' --output text 2>/dev/null || echo "0")
+            if [ "$DESIRED" != "0" ] && [ "$DESIRED" != "None" ]; then
+              ACTIVE+=("libraryai-${SVC}")
+            fi
+          done
+          if [ ${#ACTIVE[@]} -gt 0 ]; then
+            echo "Waiting for stable: ${ACTIVE[*]}"
+            aws ecs wait services-stable \
+              --cluster "$CLUSTER" \
+              --services "${ACTIVE[@]}"
+          else
+            echo "No production services currently running — skipping stability wait"
+          fi
+
+  # ── 8. production smoke check ─────────────────────────────────────────────
+  smoke-production:
+    needs: deploy-production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Production health check
+        run: |
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+            "https://${{ vars.ALB_DNS_PROD }}/health")
+          [ "$STATUS" = "200" ] || { echo "Production health check failed: HTTP $STATUS"; exit 1; }
+          echo "Production health OK"
+
+      - name: Production status check
+        run: |
+          STATUS=$(curl -sf -o /dev/null -w "%{http_code}" \
+            "https://${{ vars.ALB_DNS_PROD }}/v1/status")
+          [ "$STATUS" = "200" ] || { echo "Production status check failed: HTTP $STATUS"; exit 1; }
+          echo "Production status OK"

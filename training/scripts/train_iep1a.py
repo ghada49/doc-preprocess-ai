@@ -93,6 +93,15 @@ def main() -> int:
         default=None,
         help="Override epochs from material preset (e.g. smoke runs)",
     )
+    parser.add_argument(
+        "--pretrained",
+        default=None,
+        help=(
+            "Path to existing weights (.pt) to fine-tune from instead of the COCO "
+            "base model.  If the file is absent the script falls back to the base model "
+            "and emits a warning."
+        ),
+    )
     args = parser.parse_args()
 
     if not args.data.is_file():
@@ -118,7 +127,25 @@ def main() -> int:
     run_name = args.name or args.material
     base_model = cfg.pop("model")
 
-    print(f"Training IEP1A — material={args.material}, model={base_model}")
+    # Resolve starting weights: prefer --pretrained if the file exists
+    start_model = base_model
+    pretrained_source = "base_model"
+    if args.pretrained:
+        pretrained_path = Path(args.pretrained)
+        if pretrained_path.is_file():
+            start_model = str(pretrained_path)
+            pretrained_source = str(pretrained_path)
+        else:
+            print(
+                f"WARNING: --pretrained {args.pretrained!r} not found; "
+                f"falling back to base model {base_model!r}",
+                flush=True,
+            )
+
+    print(
+        f"Training IEP1A — material={args.material} "
+        f"start_model={start_model} (source={pretrained_source})"
+    )
 
     dataset_checksum = _compute_dataset_checksum(args.data)
 
@@ -129,9 +156,10 @@ def main() -> int:
         mlflow.log_param("dataset_checksum", dataset_checksum)
         mlflow.log_param("material_type", args.material)
         mlflow.log_param("base_model", base_model)
+        mlflow.log_param("pretrained_source", pretrained_source)
         mlflow.log_params(cfg)
 
-        model = YOLO(base_model)
+        model = YOLO(start_model)
         model.train(
             data=str(args.data),
             project=str(args.project),

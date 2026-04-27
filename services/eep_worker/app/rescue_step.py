@@ -68,9 +68,11 @@ from services.eep.app.gates.artifact_validation import (
     ArtifactImageDimensions,
     ArtifactValidationResult,
 )
+from services.eep.app.db.quality_gate import log_gate
 from services.eep.app.gates.geometry_selection import (
     GeometrySelectionResult,
     PreprocessingGateConfig,
+    build_geometry_gate_log_record,
 )
 from services.eep_worker.app.circuit_breaker import CircuitBreaker
 from services.eep_worker.app.geometry_invocation import (
@@ -686,6 +688,15 @@ async def run_rescue_flow(
     """
     t0 = time.monotonic()
 
+    logger.info(
+        {
+            "event": "rescue_flow_start",
+            "job_id": job_id,
+            "page_number": page_number,
+            "iep1d_input_artifact_uri": artifact_uri,
+        }
+    )
+
     # ── Step 6 — IEP1D rectification ─────────────────────────────────────────
     rectify_response, _iep1d_error = await _call_iep1d(
         artifact_uri=artifact_uri,
@@ -750,12 +761,45 @@ async def run_rescue_flow(
 
     _artifact_uri = rectify_response.rectified_image_uri if _use_rectified else artifact_uri
 
+    logger.info(
+        {
+            "event": "rescue_iep1d_artifact_choice",
+            "job_id": job_id,
+            "page_number": page_number,
+            "use_rectified": _use_rectified,
+            "chosen_artifact_uri": _artifact_uri,
+            "iep1d_rectified_uri": rectify_response.rectified_image_uri,
+            "first_pass_uri": artifact_uri,
+        }
+    )
+
     # ── Step 6.5 — Load chosen artifact and derive proxy ─────────────────────
     raw_bytes = storage.get_bytes(_artifact_uri)
     rectified_image = decode_otiff(raw_bytes, uri=_artifact_uri)
 
+    _rect_h, _rect_w = rectified_image.shape[:2]
+    logger.info(
+        {
+            "event": "rescue_rectified_image_loaded",
+            "job_id": job_id,
+            "page_number": page_number,
+            "chosen_artifact_uri": _artifact_uri,
+            "rectified_image_wh": [_rect_w, _rect_h],
+        }
+    )
+
     proxy_h, proxy_w = _derive_and_store_proxy(
         rectified_image, material_type, rectified_proxy_uri, storage, proxy_config
+    )
+
+    logger.info(
+        {
+            "event": "rescue_proxy_derived",
+            "job_id": job_id,
+            "page_number": page_number,
+            "rectified_proxy_uri": rectified_proxy_uri,
+            "proxy_wh": [proxy_w, proxy_h],
+        }
     )
 
     # ── Step 6.5 — Second geometry pass (IEP1A + IEP1B in parallel) ──────────
@@ -787,6 +831,18 @@ async def run_rescue_flow(
         )
 
     selection_result = invocation_result.selection_result
+
+    # ── Log post-rectification geometry gate ──────────────────────────────────
+    post_gate_record = build_geometry_gate_log_record(
+        result=selection_result,
+        job_id=job_id,
+        page_number=page_number,
+        gate_type="geometry_selection_post_rectification",
+        iep1a_response=invocation_result.iep1a_result,
+        iep1b_response=invocation_result.iep1b_result,
+        processing_time_ms=(time.monotonic() - t0) * 1000.0,
+    )
+    log_gate(session, **post_gate_record)
 
     # ── Step 6.5 — Unexpected split guard (split children only) ──────────────
     if is_split_child and _any_model_reports_split(
@@ -869,6 +925,18 @@ async def run_rescue_flow(
         image_loader=image_loader,
         page_index=page_index,
         gate_config=gate_config,
+    )
+
+    logger.info(
+        {
+            "event": "rescue_normalization_complete",
+            "job_id": job_id,
+            "page_number": page_number,
+            "rescue_output_uri": rescue_output_uri,
+            "norm_route": norm_outcome.route,
+            "artifact_validation_passed": norm_outcome.validation_result.passed,
+            "processing_time_ms": norm_outcome.duration_ms,
+        }
     )
 
     # ── Step 7 — Final validation routing ─────────────────────────────────────

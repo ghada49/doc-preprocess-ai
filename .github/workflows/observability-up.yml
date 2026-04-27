@@ -1,0 +1,223 @@
+name: Observability Up — Start Prometheus & Grafana
+
+# Demo/batch observability only.
+# Prometheus and Grafana are standalone services that run independently of
+# the main processing pipeline. Start them here for demos or batch monitoring;
+# stop them with observability-down.yml when done to avoid idle Fargate costs.
+#
+# These services are NOT started by deploy.yml, scale-up.yml, or scale-down.yml.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION:   ${{ vars.AWS_REGION }}
+  ACCOUNT_ID:   ${{ vars.AWS_ACCOUNT_ID }}
+  ECR_REGISTRY: ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com
+  ECS_CLUSTER:  ${{ vars.ECS_CLUSTER }}
+
+jobs:
+  observability-up:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Log in to ECR
+        uses: aws-actions/amazon-ecr-login@v2
+
+      # ── Build and push Prometheus ECS image ──────────────────────────────
+      - name: Build and push libraryai-prometheus-ecs
+        run: |
+          IMAGE="$ECR_REGISTRY/libraryai-prometheus-ecs:latest"
+          docker build \
+            -f monitoring/prometheus/Dockerfile.ecs \
+            -t "$IMAGE" \
+            .
+          docker push "$IMAGE"
+          echo "Pushed $IMAGE"
+
+      # ── Build and push Grafana ECS image ─────────────────────────────────
+      - name: Build and push libraryai-grafana-ecs
+        run: |
+          IMAGE="$ECR_REGISTRY/libraryai-grafana-ecs:latest"
+          docker build \
+            -f monitoring/grafana/Dockerfile.ecs \
+            -t "$IMAGE" \
+            .
+          docker push "$IMAGE"
+          echo "Pushed $IMAGE"
+
+      # ── Substitute placeholders and register Prometheus task definition ──
+      - name: Register Prometheus task definition
+        run: |
+          sed \
+            -e "s|ACCOUNT_ID|$ACCOUNT_ID|g" \
+            -e "s|REGION|$AWS_REGION|g" \
+            k8s/ecs/prometheus-task-def.json \
+            > /tmp/prometheus-task-def.json
+          aws ecs register-task-definition \
+            --cli-input-json file:///tmp/prometheus-task-def.json
+          echo "Prometheus task definition registered."
+
+      # ── Substitute placeholders and register Grafana task definition ─────
+      - name: Register Grafana task definition
+        run: |
+          sed \
+            -e "s|ACCOUNT_ID|$ACCOUNT_ID|g" \
+            -e "s|REGION|$AWS_REGION|g" \
+            k8s/ecs/grafana-task-def.json \
+            > /tmp/grafana-task-def.json
+          aws ecs register-task-definition \
+            --cli-input-json file:///tmp/grafana-task-def.json
+          echo "Grafana task definition registered."
+
+      # ── Start Prometheus ─────────────────────────────────────────────────
+      - name: Start libraryai-prometheus (desired=1)
+        run: |
+          # Enable Service Connect so Prometheus is reachable as prometheus.libraryai.local:9090
+          SC_CONFIG='{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"metrics","discoveryName":"prometheus","clientAliases":[{"port":9090,"dnsName":"prometheus.libraryai.local"}]}]}'
+          TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition libraryai-prometheus \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service libraryai-prometheus \
+            --task-definition "$TASK_DEF" \
+            --desired-count 1 \
+            --service-connect-configuration "$SC_CONFIG" \
+            --force-new-deployment
+          echo "libraryai-prometheus scaled to 1."
+
+      - name: Wait for Prometheus to stabilize
+        run: |
+          echo "Waiting for libraryai-prometheus to reach stable state..."
+          for i in $(seq 1 30); do
+            STATUS=$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services libraryai-prometheus \
+              --query 'services[0].deployments[0].rolloutState' \
+              --output text 2>/dev/null || echo "UNKNOWN")
+            RUNNING=$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services libraryai-prometheus \
+              --query 'services[0].runningCount' \
+              --output text 2>/dev/null || echo "0")
+            echo "  Attempt $i/30 — rolloutState=$STATUS runningCount=$RUNNING"
+            if [ "$STATUS" = "COMPLETED" ] && [ "$RUNNING" -ge 1 ]; then
+              echo "Prometheus is stable."
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "Prometheus did not stabilize within 5 minutes."
+              exit 1
+            fi
+            sleep 10
+          done
+
+      # ── Start Grafana ─────────────────────────────────────────────────────
+      - name: Start libraryai-grafana (desired=1)
+        run: |
+          # Enable Service Connect so Grafana is reachable within the cluster
+          SC_CONFIG='{"enabled":true,"namespace":"libraryai.local"}'
+          TASK_DEF=$(aws ecs describe-task-definition \
+            --task-definition libraryai-grafana \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service libraryai-grafana \
+            --task-definition "$TASK_DEF" \
+            --desired-count 1 \
+            --service-connect-configuration "$SC_CONFIG" \
+            --force-new-deployment
+          echo "libraryai-grafana scaled to 1."
+
+      - name: Wait for Grafana to stabilize
+        run: |
+          echo "Waiting for libraryai-grafana to reach stable state..."
+          for i in $(seq 1 30); do
+            STATUS=$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services libraryai-grafana \
+              --query 'services[0].deployments[0].rolloutState' \
+              --output text 2>/dev/null || echo "UNKNOWN")
+            RUNNING=$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services libraryai-grafana \
+              --query 'services[0].runningCount' \
+              --output text 2>/dev/null || echo "0")
+            echo "  Attempt $i/30 — rolloutState=$STATUS runningCount=$RUNNING"
+            if [ "$STATUS" = "COMPLETED" ] && [ "$RUNNING" -ge 1 ]; then
+              echo "Grafana is stable."
+              break
+            fi
+            if [ "$i" -eq 30 ]; then
+              echo "Grafana did not stabilize within 5 minutes."
+              exit 1
+            fi
+            sleep 10
+          done
+
+      # ── Print access instructions ─────────────────────────────────────────
+      - name: Print Grafana access instructions
+        run: |
+          # Resolve Grafana task private IP for access instructions
+          TASK_ARN=$(aws ecs list-tasks \
+            --cluster "$ECS_CLUSTER" \
+            --service-name libraryai-grafana \
+            --desired-status RUNNING \
+            --query 'taskArns[0]' --output text 2>/dev/null || echo "NONE")
+          GRAFANA_IP="<not resolved>"
+          if [ "$TASK_ARN" != "NONE" ] && [ -n "$TASK_ARN" ]; then
+            ENI_ID=$(aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --tasks "$TASK_ARN" \
+              --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value | [0]" \
+              --output text 2>/dev/null || echo "")
+            if [ -n "$ENI_ID" ] && [ "$ENI_ID" != "None" ]; then
+              GRAFANA_IP=$(aws ec2 describe-network-interfaces \
+                --network-interface-ids "$ENI_ID" \
+                --query 'NetworkInterfaces[0].PrivateIpAddress' \
+                --output text 2>/dev/null || echo "<not resolved>")
+            fi
+          fi
+
+          echo ""
+          echo "============================================================"
+          echo "  Prometheus & Grafana are running"
+          echo "============================================================"
+          echo ""
+          echo "  Grafana private IP: $GRAFANA_IP"
+          echo "  Grafana port:       3000"
+          echo "  Default user:       admin"
+          echo "  Password:           from Secrets Manager: libraryai/GRAFANA_ADMIN_PASSWORD"
+          echo ""
+          echo "  Access options:"
+          echo "  1. If you have VPN/bastion access to the VPC:"
+          echo "     http://$GRAFANA_IP:3000"
+          echo ""
+          echo "  2. Port forward via SSM (requires Session Manager plugin):"
+          echo "     aws ssm start-session \\"
+          echo "       --target <bastion-instance-id> \\"
+          echo "       --document-name AWS-StartPortForwardingSessionToRemoteHost \\"
+          echo "       --parameters '{\"host\":[\"$GRAFANA_IP\"],\"portNumber\":[\"3000\"],\"localPortNumber\":[\"3000\"]}'"
+          echo "     Then open: http://localhost:3000"
+          echo ""
+          echo "  3. Temporarily add to your existing ALB target group on port 3000."
+          echo ""
+          echo "  Notes:"
+          echo "  - Dashboards may take a few minutes to populate with data."
+          echo "  - Prometheus scrapes all libraryai.local services on a 15s interval."
+          echo "  - No persistence: Prometheus history is ephemeral (lost on restart)."
+          echo "  - Run observability-down.yml when done to stop these services."
+          echo "============================================================"

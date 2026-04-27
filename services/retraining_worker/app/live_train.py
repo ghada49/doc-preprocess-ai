@@ -162,6 +162,74 @@ def _run_script(
     return out, rid, wpath
 
 
+def _download_pretrained_weights(
+    s3_uris: dict[str, str],
+    dest_dir: Path,
+    service: str,
+) -> dict[str, Path]:
+    """
+    Download per-material pretrained weights from S3 to *dest_dir*.
+
+    Returns a material → local Path dict containing only the materials that
+    downloaded successfully.  Failures are logged and skipped so the caller
+    can still attempt training (falling back to the COCO base model for any
+    material whose download failed).
+
+    Args:
+        s3_uris:  material → s3:// URI for the weights to download.
+        dest_dir: local directory to write downloaded .pt files into.
+        service:  "iep1a" or "iep1b" (used only for log messages).
+    """
+    if not s3_uris:
+        return {}
+    try:
+        import boto3
+    except ImportError:
+        logger.warning(
+            "_download_pretrained_weights: boto3 not available; skipping pretrained download for %s",
+            service,
+        )
+        return {}
+
+    endpoint = os.getenv("S3_ENDPOINT_URL", "").strip() or None
+    region = os.getenv("S3_REGION", os.getenv("AWS_DEFAULT_REGION", "us-east-1"))
+    client = boto3.client("s3", endpoint_url=endpoint, region_name=region)
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    result: dict[str, Path] = {}
+    for mat, uri in s3_uris.items():
+        if not uri.startswith("s3://"):
+            logger.warning(
+                "_download_pretrained_weights: skipping non-S3 URI for %s/%s: %r",
+                service,
+                mat,
+                uri,
+            )
+            continue
+        without_scheme = uri[len("s3://"):]
+        bucket, _, key = without_scheme.partition("/")
+        local_path = dest_dir / f"{service}_{mat}.pt"
+        try:
+            client.download_file(bucket, key, str(local_path))
+            result[mat] = local_path
+            logger.info(
+                "_download_pretrained_weights: %s/%s → %s",
+                service,
+                mat,
+                local_path,
+            )
+        except Exception as exc:
+            logger.warning(
+                "_download_pretrained_weights: failed to download %s/%s from %s — %s; "
+                "will use base model for this material",
+                service,
+                mat,
+                uri,
+                exc,
+            )
+    return result
+
+
 def _maybe_upload_s3(local_path: Path, job_id: str, label: str) -> str | None:
     bucket = os.getenv("S3_BUCKET_NAME", "").strip()
     if not bucket:
@@ -199,6 +267,8 @@ def run_live_preprocessing_training(
     *,
     manifest_path: str | Path | None = None,
     include_iep0: bool = True,
+    pretrained_iep1a: dict[str, str] | None = None,
+    pretrained_iep1b: dict[str, str] | None = None,
 ) -> PreprocessingTrainArtifacts:
     """
     Run ``train_iep0`` / ``train_iep1a`` / ``train_iep1b`` for all materials.
@@ -206,6 +276,15 @@ def run_live_preprocessing_training(
     Uses ``RETRAINING_DEVICE`` (default ``cpu``), ``RETRAINING_QUICK=1`` for
     ``--epochs 1`` smoke runs, and ``RETRAINING_SUBPROCESS_TIMEOUT`` seconds
     per subprocess (default 86400).
+
+    Args:
+        pretrained_iep1a: Optional material → S3 URI mapping for IEP1A pretrained
+            weights.  When provided, weights are downloaded to a local temp dir and
+            passed as ``--pretrained`` to the training subprocess so training starts
+            from the current production model rather than the generic COCO base.
+            S3 download failures are non-fatal — affected materials fall back to the
+            COCO base model and a warning is logged.
+        pretrained_iep1b: Same as above for IEP1B.
     """
     iep0_root, iep1a_yamls, iep1b_yamls = _resolve_train_paths(manifest_path=manifest_path)
 
@@ -216,6 +295,21 @@ def run_live_preprocessing_training(
 
     base_project = repo_root / "runs" / "retraining" / job_id
     base_project.mkdir(parents=True, exist_ok=True)
+
+    # Download pretrained weights from S3 to a job-local directory.
+    # Failures are non-fatal: _download_pretrained_weights logs warnings and
+    # returns only successfully downloaded materials.
+    pretrained_dir = base_project / "pretrained_weights"
+    local_pretrained_iep1a: dict[str, Path] = {}
+    local_pretrained_iep1b: dict[str, Path] = {}
+    if pretrained_iep1a:
+        local_pretrained_iep1a = _download_pretrained_weights(
+            pretrained_iep1a, pretrained_dir, "iep1a"
+        )
+    if pretrained_iep1b:
+        local_pretrained_iep1b = _download_pretrained_weights(
+            pretrained_iep1b, pretrained_dir, "iep1b"
+        )
 
     py = sys.executable
     run_ids: list[str] = []
@@ -268,6 +362,8 @@ def run_live_preprocessing_training(
             device,
         ]
         argv_a.extend(quick_epochs)
+        if mat in local_pretrained_iep1a:
+            argv_a.extend(["--pretrained", str(local_pretrained_iep1a[mat])])
         _, rid_a, wa = _run_script(repo_root, argv_a, timeout_s=timeout_s)
         if rid_a:
             run_ids.append(rid_a)
@@ -294,6 +390,8 @@ def run_live_preprocessing_training(
             device,
         ]
         argv_b.extend(quick_epochs)
+        if mat in local_pretrained_iep1b:
+            argv_b.extend(["--pretrained", str(local_pretrained_iep1b[mat])])
         _, rid_b, wb = _run_script(repo_root, argv_b, timeout_s=timeout_s)
         if rid_b:
             run_ids.append(rid_b)

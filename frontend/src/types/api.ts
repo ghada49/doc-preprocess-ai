@@ -440,6 +440,110 @@ export interface LineageResponse {
   quality_gates: LineageQualityGate[];
 }
 
+// ---- Admin — Queue Status -------------------------------------------------------
+
+export interface QueueStatusResponse {
+  page_tasks_queued: number;
+  page_tasks_processing: number;
+  page_tasks_dead_letter: number;
+  shadow_tasks_queued: number;
+  shadow_tasks_processing: number;
+  worker_slots_available: number | null;
+  worker_slots_max: number;
+  as_of: string;
+}
+
+// ---- Admin — Service Inventory -------------------------------------------------------
+
+export interface ServiceHealthSignal {
+  total_invocations: number;
+  success_count: number;
+  error_count: number;
+  success_rate: number | null;
+  last_invoked_at: string | null;
+  p95_latency_ms: number | null;
+}
+
+export interface ServiceInventoryItem {
+  service_name: string;
+  role: string;
+  deployment_type: string;
+  port: number | null;
+  model_applicable: boolean;
+  health_signal: ServiceHealthSignal | null;
+}
+
+export interface ServiceInventoryResponse {
+  items: ServiceInventoryItem[];
+  window_hours: number;
+  as_of: string;
+}
+
+// ---- Admin — Deployment Status -------------------------------------------------------
+
+export interface FeatureFlags {
+  retraining_mode: "live" | "stub";
+  golden_eval_mode: "live" | "stub";
+  artifact_cleanup: "disabled";
+}
+
+export interface DeploymentStatusResponse {
+  image_tag: string | null;
+  git_sha: string | null;
+  ecs_cluster: string | null;
+  ecs_service: string | null;
+  alembic_version: string | null;
+  feature_flags: FeatureFlags;
+  s3_bucket: string | null;
+  redis_url_configured: boolean;
+  mlflow_tracking_uri: string | null;
+  mlflow_reachable: boolean;
+  as_of: string;
+}
+
+// ---- Admin — Model Gate Comparisons -------------------------------------------------------
+
+export interface ModelGateComparisonRecord {
+  eval_id: string;
+  job_id: string;
+  page_id: string;
+  page_status: string;
+  confidence_delta: number | null;
+  status: string;
+  created_at: string;
+  completed_at: string | null;
+}
+
+export interface ModelGateComparisonsResponse {
+  total: number;
+  limit: number;
+  offset: number;
+  items: ModelGateComparisonRecord[];
+}
+
+// ---- Admin — Promotion Audit -------------------------------------------------------
+
+export interface PromotionAuditRecord {
+  audit_id: string;
+  action: "promote" | "rollback";
+  service_name: string;
+  candidate_model_id: string;
+  previous_model_id: string | null;
+  promoted_by_user_id: string;
+  forced: boolean;
+  failed_gates_bypassed: string[] | null;
+  reason: string | null;
+  notes: string | null;
+  created_at: string;
+}
+
+export interface PromotionAuditResponse {
+  total: number;
+  limit: number;
+  offset: number;
+  items: PromotionAuditRecord[];
+}
+
 // ---- Admin -------------------------------------------------------
 
 export interface DashboardSummary {
@@ -503,7 +607,6 @@ export interface PolicyRecord {
 export interface UpdatePolicyRequest {
   config_yaml: string;
   justification: string;
-  version: string;
 }
 
 // ---- Model Management -------------------------------------------------------
@@ -540,6 +643,7 @@ export interface ModelVersionRecord {
   promoted_at: string | null;
   notes: string | null;
   created_at: string;
+  mlflow_transition_result: string | null;
 }
 
 export interface ModelEvaluationResponse {

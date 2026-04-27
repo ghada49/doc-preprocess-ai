@@ -28,6 +28,7 @@ from shared.schemas.queue import (
     QUEUE_SHADOW_TASKS_PROCESSING,
     WORKER_SLOTS_KEY,
     PageTask,
+    ShadowTask,
 )
 
 # ── Key constant helpers ────────────────────────────────────────────────────
@@ -219,3 +220,38 @@ class TestPageTaskSerialization:
     def test_round_trip_with_none_sub_page_index(self) -> None:
         t = PageTask(task_id="t", job_id="j", page_id="p", page_number=1)
         assert PageTask.model_validate_json(t.model_dump_json()) == t
+
+
+class TestShadowTaskSchema:
+    def _task(self, **overrides: object) -> ShadowTask:
+        payload: dict[str, object] = {
+            "task_id": "shadow-task-001",
+            "job_id": "job-001",
+            "page_id": "page-001",
+            "page_number": 2,
+            "page_status": "accepted",
+        }
+        payload.update(overrides)
+        return ShadowTask(**payload)  # type: ignore[arg-type]
+
+    def test_shadow_task_defaults_retry_count_to_zero(self) -> None:
+        assert self._task().retry_count == 0
+
+    def test_shadow_task_round_trips_as_json(self) -> None:
+        original = self._task(retry_count=2, page_status="review")
+        restored = ShadowTask.model_validate_json(original.model_dump_json())
+        assert restored == original
+
+    def test_shadow_task_rejects_invalid_page_number(self) -> None:
+        with pytest.raises(ValidationError):
+            ShadowTask(
+                task_id="shadow-task-001",
+                job_id="job-001",
+                page_id="page-001",
+                page_number=0,
+                page_status="accepted",
+            )
+
+    def test_shadow_task_rejects_negative_retry_count(self) -> None:
+        with pytest.raises(ValidationError):
+            self._task(retry_count=-1)

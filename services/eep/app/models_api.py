@@ -59,7 +59,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
 from services.eep.app.auth import CurrentUser, require_admin
-from services.eep.app.db.models import ModelVersion, RetrainingJob
+from services.eep.app.db.models import ModelVersion, RetrainingTrigger
 from services.eep.app.db.session import get_session
 
 logger = logging.getLogger(__name__)
@@ -352,11 +352,12 @@ def trigger_model_evaluate(
         )
 
     # Guard against duplicate evaluation requests
-    existing: RetrainingJob | None = (
-        db.query(RetrainingJob)
+    existing: RetrainingTrigger | None = (
+        db.query(RetrainingTrigger)
         .filter(
-            RetrainingJob.result_model_version == candidate.model_id,
-            RetrainingJob.status.in_(["pending", "running"]),
+            RetrainingTrigger.trigger_type == "manual_evaluation",
+            RetrainingTrigger.notes == candidate.model_id,
+            RetrainingTrigger.status.in_(["pending", "processing"]),
         )
         .first()
     )
@@ -365,44 +366,32 @@ def trigger_model_evaluate(
             status_code=status.HTTP_409_CONFLICT,
             detail=(
                 f"An evaluation is already {existing.status} for model_id="
-                f"{candidate.model_id!r} (job_id={existing.job_id!r})."
+                f"{candidate.model_id!r} (trigger_id={existing.trigger_id!r})."
             ),
         )
 
-    # Map service to an appropriate pipeline_type
-    # TODO (Packet 8.5): replace with a dedicated 'offline_evaluation' pipeline_type
-    # when the evaluation worker differentiates eval from full retraining runs.
-    _service_to_pipeline: dict[str, str] = {
-        "iep1a": "preprocessing",
-        "iep1b": "preprocessing",
-        "iep1c": "preprocessing",
-        "iep1d": "rectification",
-        "iep2a": "layout_detection",
-        "iep2b": "doclayout_yolo",
-    }
-    pipeline_type = _service_to_pipeline.get(body.service, "preprocessing")
-
-    eval_job = RetrainingJob(
-        job_id=str(uuid.uuid4()),
-        trigger_id=None,  # manually triggered evaluation
-        pipeline_type=pipeline_type,
+    # Create a RetrainingTrigger that the retraining worker will pick up.
+    # trigger_type="manual_evaluation" causes execute_retraining_task to skip
+    # training and run evaluation only, writing gate_results back to this model_id
+    # (stored in notes).  metric_* fields are required by the schema; zeros are
+    # used as sentinels for manually triggered evaluations.
+    eval_trigger = RetrainingTrigger(
+        trigger_id=str(uuid.uuid4()),
+        trigger_type="manual_evaluation",
+        metric_name="manual",
+        metric_value=0.0,
+        threshold_value=0.0,
+        persistence_hours=0.0,
         status="pending",
-        dataset_version=candidate.dataset_version,
-        mlflow_run_id=None,
-        started_at=None,
-        completed_at=None,
-        result_model_version=candidate.model_id,
-        result_mAP=None,
-        promotion_decision=None,
-        error_message=None,
+        notes=candidate.model_id,
     )
-    db.add(eval_job)
+    db.add(eval_trigger)
     db.commit()
-    db.refresh(eval_job)
+    db.refresh(eval_trigger)
 
     logger.info(
-        "trigger_model_evaluate: queued eval job_id=%s model_id=%s service=%s tag=%s by=%s",
-        eval_job.job_id,
+        "trigger_model_evaluate: queued eval trigger_id=%s model_id=%s service=%s tag=%s by=%s",
+        eval_trigger.trigger_id,
         candidate.model_id,
         body.service,
         body.candidate_tag,
@@ -410,7 +399,7 @@ def trigger_model_evaluate(
     )
 
     return EvaluateResponse(
-        evaluation_job_id=eval_job.job_id,
+        evaluation_job_id=eval_trigger.trigger_id,
         model_id=candidate.model_id,
         service_name=body.service,
         version_tag=body.candidate_tag,

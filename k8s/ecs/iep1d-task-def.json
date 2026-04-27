@@ -1,0 +1,49 @@
+{
+  "family": "libraryai-iep1d",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["EC2"],
+  "cpu": "2048",
+  "memory": "4096",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/libraryai-task-role",
+  "containerDefinitions": [
+    {
+      "name": "iep1d",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/libraryai-iep1d:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "name": "http",
+          "containerPort": 8003,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "PYTHONPATH",          "value": "/app" },
+        { "name": "IEP1D_WEIGHTS_PATH", "value": "/opt/models/iep1d/best_model.pkl" },
+        { "name": "IEP1D_DEVICE",       "value": "cuda" }
+      ],
+      "resourceRequirements": [
+        {
+          "type": "GPU",
+          "value": "1"
+        }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/libraryai-iep1d",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "iep1d"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -sf http://localhost:8003/ready || exit 1"],
+        "interval": 15,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      }
+    }
+  ]
+}

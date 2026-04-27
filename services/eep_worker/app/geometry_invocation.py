@@ -45,6 +45,7 @@ from sqlalchemy.orm import Session
 
 from monitoring.drift_observer import observe_and_check
 from services.eep.app.db.models import ServiceInvocation
+from shared.metrics import EEP_GEOMETRY_SELECTION_ROUTE
 from services.eep.app.gates.geometry_selection import (
     GeometrySelectionResult,
     PreprocessingGateConfig,
@@ -263,7 +264,13 @@ async def _invoke_one(
             duration_ms,
             "success",
             None,
-            None,
+            {
+                "page_count": response.page_count,
+                "split_required": response.split_required,
+                "geometry_confidence": response.geometry_confidence,
+                "tta_structural_agreement_rate": response.tta_structural_agreement_rate,
+                "tta_prediction_variance": response.tta_prediction_variance,
+            },
         )
         return _ServiceCallOutcome(
             response=response,
@@ -394,6 +401,7 @@ def _observe_geometry_metrics(
         1.0 if route_decision == "accepted" else 0.0,
         session,
     )
+    EEP_GEOMETRY_SELECTION_ROUTE.labels(route=route_decision).inc()
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────

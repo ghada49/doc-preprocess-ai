@@ -12,6 +12,11 @@ import {
   Settings,
   Users,
   LogOut,
+  Server,
+  Activity,
+  Rocket,
+  TestTube2,
+  Layers,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth/auth-context";
 import { Sidebar, type NavItem } from "./sidebar";
@@ -20,12 +25,17 @@ import { Spinner } from "@/components/ui/spinner";
 import { cn } from "@/lib/utils";
 
 const adminNavItems: NavItem[] = [
-  { label: "Dashboard", href: "/admin/dashboard", icon: LayoutDashboard },
+  { label: "Overview", href: "/admin/dashboard", icon: LayoutDashboard },
   { label: "Jobs", href: "/admin/jobs", icon: Briefcase },
   { label: "Correction Queue", href: "/admin/queue", icon: ClipboardList },
-  { label: "Lineage", href: "/admin/lineage", icon: GitBranch },
+  { label: "Lineage / Audit Trail", href: "/admin/lineage", icon: GitBranch },
+  { label: "Services", href: "/admin/services", icon: Server },
+  { label: "Observability", href: "/admin/observability", icon: Activity },
+  { label: "Model Lifecycle", href: "/admin/model-lifecycle", icon: Layers },
   { label: "Model Evaluation", href: "/admin/models", icon: FlaskConical },
   { label: "Retraining", href: "/admin/retraining", icon: RefreshCw },
+  { label: "Deployment", href: "/admin/deployment", icon: Rocket },
+  { label: "Testing Evidence", href: "/admin/testing", icon: TestTube2 },
   { label: "Policy", href: "/admin/policy", icon: Settings },
   { label: "Users", href: "/admin/users", icon: Users },
 ];

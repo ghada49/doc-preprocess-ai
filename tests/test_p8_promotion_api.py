@@ -349,7 +349,7 @@ class TestPromote:
         expected_fields = {
             "model_id", "service_name", "version_tag", "stage",
             "gate_results", "promoted_at", "notes", "mlflow_run_id",
-            "dataset_version", "created_at",
+            "dataset_version", "created_at", "mlflow_transition_result",
         }
         assert set(data.keys()) == expected_fields
 
@@ -359,6 +359,226 @@ class TestPromote:
         client = inject_admin(session)
         resp = client.post("/v1/models/promote", json={"service": "iep1b"})
         assert resp.status_code == 200
+
+
+# ── POST /v1/models/promote — audit record ────────────────────────────────────
+
+
+class TestPromoteAudit:
+    """Verify that ModelPromotionAudit rows are written on every successful promote."""
+
+    def _added_audits(self, session: MagicMock) -> list[Any]:
+        from services.eep.app.db.models import ModelPromotionAudit
+        return [c[0][0] for c in session.add.call_args_list if isinstance(c[0][0], ModelPromotionAudit)]
+
+    def test_normal_promote_writes_audit_record(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ALL_GATES_PASS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        resp = client.post("/v1/models/promote", json={"service": "iep1a"})
+        assert resp.status_code == 200
+        audits = self._added_audits(session)
+        assert len(audits) == 1
+
+    def test_normal_promote_audit_action_is_promote(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ALL_GATES_PASS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a"})
+        audit = self._added_audits(session)[0]
+        assert audit.action == "promote"
+
+    def test_normal_promote_audit_forced_is_false(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ALL_GATES_PASS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a", "force": False})
+        audit = self._added_audits(session)[0]
+        assert audit.forced is False
+
+    def test_normal_promote_audit_user_id_recorded(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ALL_GATES_PASS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a"})
+        audit = self._added_audits(session)[0]
+        assert audit.promoted_by_user_id == _ADMIN_USER.user_id
+
+    def test_normal_promote_audit_no_bypassed_gates(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ALL_GATES_PASS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a"})
+        audit = self._added_audits(session)[0]
+        assert audit.failed_gates_bypassed is None
+
+    def test_normal_promote_audit_candidate_model_id(self, inject_admin) -> None:
+        staging = _make_mv(model_id="mv-cand", gate_results=_ALL_GATES_PASS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a"})
+        audit = self._added_audits(session)[0]
+        assert audit.candidate_model_id == "mv-cand"
+
+    def test_normal_promote_audit_records_previous_model_id(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ALL_GATES_PASS)
+        production = _make_mv(model_id="mv-old", stage="production")
+        session = _session_for_promote(staging=staging, production=production)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a"})
+        audit = self._added_audits(session)[0]
+        assert audit.previous_model_id == "mv-old"
+
+    def test_normal_promote_audit_previous_model_id_none_when_no_production(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ALL_GATES_PASS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a"})
+        audit = self._added_audits(session)[0]
+        assert audit.previous_model_id is None
+
+    def test_forced_promote_audit_forced_is_true(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ONE_GATE_FAILS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a", "force": True})
+        audit = self._added_audits(session)[0]
+        assert audit.forced is True
+
+    def test_forced_promote_audit_records_bypassed_gates(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ONE_GATE_FAILS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a", "force": True})
+        audit = self._added_audits(session)[0]
+        assert audit.failed_gates_bypassed is not None
+        assert "split_precision" in audit.failed_gates_bypassed
+        assert "latency_p95" in audit.failed_gates_bypassed
+
+    def test_forced_promote_no_bypassed_gates_when_all_pass(self, inject_admin) -> None:
+        staging = _make_mv(gate_results=_ALL_GATES_PASS)
+        session = _session_for_promote(staging=staging, production=None)
+        client = inject_admin(session)
+        client.post("/v1/models/promote", json={"service": "iep1a", "force": True})
+        audit = self._added_audits(session)[0]
+        # All gates passed even with force=true — no gates were bypassed
+        assert audit.failed_gates_bypassed is None
+
+    def test_promote_requires_admin_audit_not_written_on_403(self, mini_app: Any) -> None:
+        """Confirm no audit record is written when auth fails."""
+        mini_app.dependency_overrides.clear()
+        r = MagicMock()
+        session = MagicMock()
+        mini_app.dependency_overrides[get_session] = lambda: session
+        mini_app.dependency_overrides[get_redis] = lambda: r
+        client = TestClient(mini_app, raise_server_exceptions=False)
+        token = create_access_token(user_id="u1", role="user")
+        try:
+            resp = client.post(
+                "/v1/models/promote",
+                json={"service": "iep1a"},
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            assert resp.status_code == 403
+            from services.eep.app.db.models import ModelPromotionAudit
+            added_audits = [
+                c[0][0] for c in session.add.call_args_list
+                if isinstance(c[0][0], ModelPromotionAudit)
+            ]
+            assert added_audits == []
+        finally:
+            mini_app.dependency_overrides.clear()
+
+
+# ── POST /v1/models/rollback — audit record ───────────────────────────────────
+
+
+class TestRollbackAudit:
+    """Verify that ModelPromotionAudit rows are written on every successful rollback."""
+
+    def _added_audits(self, session: MagicMock) -> list[Any]:
+        from services.eep.app.db.models import ModelPromotionAudit
+        return [c[0][0] for c in session.add.call_args_list if isinstance(c[0][0], ModelPromotionAudit)]
+
+    def test_rollback_writes_audit_record(self, inject_admin) -> None:
+        production = _make_mv(stage="production", promoted_at=_NOW)
+        archived = _make_mv(model_id="mv-arch", stage="archived")
+        session = _session_for_rollback(production=production, archived=archived)
+        client = inject_admin(session)
+        resp = client.post("/v1/models/rollback", json={"service": "iep1a", "reason": "manual"})
+        assert resp.status_code == 200
+        audits = self._added_audits(session)
+        assert len(audits) == 1
+
+    def test_rollback_audit_action_is_rollback(self, inject_admin) -> None:
+        production = _make_mv(stage="production", promoted_at=_NOW)
+        archived = _make_mv(model_id="mv-arch", stage="archived")
+        session = _session_for_rollback(production=production, archived=archived)
+        client = inject_admin(session)
+        client.post("/v1/models/rollback", json={"service": "iep1a", "reason": "manual"})
+        audit = self._added_audits(session)[0]
+        assert audit.action == "rollback"
+
+    def test_rollback_audit_forced_is_false(self, inject_admin) -> None:
+        production = _make_mv(stage="production", promoted_at=_NOW)
+        archived = _make_mv(model_id="mv-arch", stage="archived")
+        session = _session_for_rollback(production=production, archived=archived)
+        client = inject_admin(session)
+        client.post("/v1/models/rollback", json={"service": "iep1a", "reason": "manual"})
+        audit = self._added_audits(session)[0]
+        assert audit.forced is False
+
+    def test_rollback_audit_reason_recorded(self, inject_admin) -> None:
+        production = _make_mv(stage="production", promoted_at=_NOW)
+        archived = _make_mv(model_id="mv-arch", stage="archived")
+        session = _session_for_rollback(production=production, archived=archived)
+        client = inject_admin(session)
+        client.post("/v1/models/rollback", json={"service": "iep1a", "reason": "manual"})
+        audit = self._added_audits(session)[0]
+        assert audit.reason == "manual"
+
+    def test_rollback_audit_user_id_recorded(self, inject_admin) -> None:
+        production = _make_mv(stage="production", promoted_at=_NOW)
+        archived = _make_mv(model_id="mv-arch", stage="archived")
+        session = _session_for_rollback(production=production, archived=archived)
+        client = inject_admin(session)
+        client.post("/v1/models/rollback", json={"service": "iep1a", "reason": "manual"})
+        audit = self._added_audits(session)[0]
+        assert audit.promoted_by_user_id == _ADMIN_USER.user_id
+
+    def test_rollback_audit_candidate_is_archived_model(self, inject_admin) -> None:
+        production = _make_mv(model_id="mv-prod", stage="production", promoted_at=_NOW)
+        archived = _make_mv(model_id="mv-arch", stage="archived")
+        session = _session_for_rollback(production=production, archived=archived)
+        client = inject_admin(session)
+        client.post("/v1/models/rollback", json={"service": "iep1a", "reason": "manual"})
+        audit = self._added_audits(session)[0]
+        assert audit.candidate_model_id == "mv-arch"
+
+    def test_rollback_audit_previous_is_current_production(self, inject_admin) -> None:
+        production = _make_mv(model_id="mv-prod", stage="production", promoted_at=_NOW)
+        archived = _make_mv(model_id="mv-arch", stage="archived")
+        session = _session_for_rollback(production=production, archived=archived)
+        client = inject_admin(session)
+        client.post("/v1/models/rollback", json={"service": "iep1a", "reason": "manual"})
+        audit = self._added_audits(session)[0]
+        assert audit.previous_model_id == "mv-prod"
+
+    def test_rollback_audit_automated_reason_recorded(self, inject_admin) -> None:
+        recent = _NOW - timedelta(hours=1)
+        production = _make_mv(stage="production", promoted_at=recent)
+        archived = _make_mv(model_id="mv-arch", stage="archived")
+        session = _session_for_rollback(production=production, archived=archived)
+        with patch("services.eep.app.promotion_api.datetime") as mock_dt:
+            mock_dt.now.return_value = _NOW
+            mock_dt.side_effect = lambda *a, **kw: datetime(*a, **kw)
+            client = inject_admin(session)
+            client.post(
+                "/v1/models/rollback",
+                json={"service": "iep1a", "reason": "PostPromotionAcceptRateCollapse"},
+            )
+        audit = self._added_audits(session)[0]
+        assert audit.reason == "PostPromotionAcceptRateCollapse"
 
 
 # ── POST /v1/models/rollback ───────────────────────────────────────────────────
@@ -489,6 +709,115 @@ class TestRollback:
         expected = {
             "model_id", "service_name", "version_tag", "stage",
             "gate_results", "promoted_at", "notes", "mlflow_run_id",
-            "dataset_version", "created_at",
+            "dataset_version", "created_at", "mlflow_transition_result",
         }
         assert set(resp.json().keys()) == expected
+
+
+# ── MLflow transition behaviour ────────────────────────────────────────────────
+
+
+class TestMlflowTransition:
+    """
+    Verify _mlflow_transition semantics:
+      - "skipped_no_metadata" when mlflow_run_id is None
+      - "skipped_no_metadata" when MLFLOW_TRACKING_URI is not set
+      - "skipped_unavailable" when MlflowClient raises (server down)
+      - "executed" when client.transition_model_version_stage succeeds
+      - DB promotion succeeds (HTTP 200) even when MLflow is unavailable
+    """
+
+    def test_promote_returns_skipped_no_metadata_when_run_id_none(self, inject_admin) -> None:
+        """No mlflow_run_id → skipped_no_metadata, DB promote still succeeds."""
+        staging = _make_mv(gate_results=_ALL_GATES_PASS, mlflow_run_id=None)
+        session = _session_for_promote(staging=staging, production=None)
+        import os
+        with patch.dict(os.environ, {"MLFLOW_TRACKING_URI": "http://mlflow:5000"}):
+            client = inject_admin(session)
+            resp = client.post("/v1/models/promote", json={"service": "iep1a"})
+        assert resp.status_code == 200
+        assert resp.json()["mlflow_transition_result"] == "skipped_no_metadata"
+
+    def test_promote_returns_skipped_no_metadata_when_uri_not_set(self, inject_admin) -> None:
+        """No MLFLOW_TRACKING_URI → skipped_no_metadata."""
+        import os
+        staging = _make_mv(gate_results=_ALL_GATES_PASS, mlflow_run_id="run-abc")
+        session = _session_for_promote(staging=staging, production=None)
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("MLFLOW_TRACKING_URI", None)
+            client = inject_admin(session)
+            resp = client.post("/v1/models/promote", json={"service": "iep1a"})
+        assert resp.status_code == 200
+        assert resp.json()["mlflow_transition_result"] == "skipped_no_metadata"
+
+    def _mock_mlflow_modules(self, mock_client_cls: Any) -> Any:
+        """
+        Return a patch.dict context manager that injects mock mlflow modules into
+        sys.modules so that `from mlflow.tracking import MlflowClient` inside
+        _mlflow_transition finds the mock regardless of whether mlflow is installed.
+        """
+        import sys
+        mock_tracking = MagicMock()
+        mock_tracking.MlflowClient = mock_client_cls
+        mock_mlflow = MagicMock()
+        mock_mlflow.tracking = mock_tracking
+        return patch.dict(sys.modules, {
+            "mlflow": mock_mlflow,
+            "mlflow.tracking": mock_tracking,
+        })
+
+    def test_promote_returns_skipped_unavailable_when_mlflow_raises(self, inject_admin) -> None:
+        """MLflow server error → skipped_unavailable, DB promote still returns 200."""
+        import os
+        staging = _make_mv(gate_results=_ALL_GATES_PASS, mlflow_run_id="run-xyz")
+        session = _session_for_promote(staging=staging, production=None)
+
+        mock_client = MagicMock()
+        mock_client.search_model_versions.side_effect = Exception("connection refused")
+
+        with patch.dict(os.environ, {"MLFLOW_TRACKING_URI": "http://mlflow:5000"}):
+            with self._mock_mlflow_modules(MagicMock(return_value=mock_client)):
+                client = inject_admin(session)
+                resp = client.post("/v1/models/promote", json={"service": "iep1a"})
+        assert resp.status_code == 200
+        assert resp.json()["mlflow_transition_result"] == "skipped_unavailable"
+
+    def test_promote_returns_executed_when_mlflow_succeeds(self, inject_admin) -> None:
+        """When MlflowClient succeeds → mlflow_transition_result == 'executed'."""
+        import os
+        staging = _make_mv(gate_results=_ALL_GATES_PASS, mlflow_run_id="run-ok")
+        session = _session_for_promote(staging=staging, production=None)
+
+        mock_mv = MagicMock()
+        mock_mv.name = "libraryai-iep1a"
+        mock_mv.version = "3"
+        mock_client = MagicMock()
+        mock_client.search_model_versions.return_value = [mock_mv]
+
+        with patch.dict(os.environ, {"MLFLOW_TRACKING_URI": "http://mlflow:5000"}):
+            with self._mock_mlflow_modules(MagicMock(return_value=mock_client)):
+                client = inject_admin(session)
+                resp = client.post("/v1/models/promote", json={"service": "iep1a"})
+        assert resp.status_code == 200
+        assert resp.json()["mlflow_transition_result"] == "executed"
+        mock_client.transition_model_version_stage.assert_called_once_with(
+            name="libraryai-iep1a",
+            version="3",
+            to_stage="Production",
+            archive_existing_versions=True,
+        )
+
+    def test_db_promotion_succeeds_even_when_mlflow_unavailable(self, inject_admin) -> None:
+        """MLflow being down (ImportError) must never block DB promotion."""
+        import os
+        import sys
+        staging = _make_mv(gate_results=_ALL_GATES_PASS, mlflow_run_id="run-fail")
+        session = _session_for_promote(staging=staging, production=None)
+
+        # Simulate mlflow not installed by removing it from sys.modules
+        with patch.dict(os.environ, {"MLFLOW_TRACKING_URI": "http://mlflow:5000"}):
+            with patch.dict(sys.modules, {"mlflow": None, "mlflow.tracking": None}):
+                client = inject_admin(session)
+                resp = client.post("/v1/models/promote", json={"service": "iep1a"})
+        assert resp.status_code == 200
+        assert staging.stage == "production"

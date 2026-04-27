@@ -1,0 +1,52 @@
+{
+  "family": "libraryai-eep",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/libraryai-task-role",
+  "containerDefinitions": [
+    {
+      "name": "eep",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/libraryai-eep:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "name": "http",
+          "containerPort": 8000,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "PYTHONPATH",                   "value": "/app" },
+        { "name": "S3_BUCKET_NAME",               "value": "libraryai" },
+        { "name": "POLICY_VERSION",               "value": "v1" },
+        { "name": "CORS_ALLOW_ORIGINS",           "value": "*" },
+        { "name": "PROMETHEUS_MULTIPROC_DIR",     "value": "/tmp/prometheus_multiproc" }
+      ],
+      "secrets": [
+        { "name": "DATABASE_URL",         "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/DATABASE_URL" },
+        { "name": "REDIS_URL",            "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/REDIS_URL" },
+        { "name": "JWT_SECRET_KEY",       "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/JWT_SECRET_KEY" },
+        { "name": "S3_ACCESS_KEY_ID",     "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/S3_ACCESS_KEY_ID" },
+        { "name": "S3_SECRET_ACCESS_KEY", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/S3_SECRET_ACCESS_KEY" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/libraryai-eep",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "eep"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -sf http://localhost:8000/health || exit 1"],
+        "interval": 15,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 30
+      }
+    }
+  ]
+}

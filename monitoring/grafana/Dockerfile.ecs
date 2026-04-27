@@ -1,0 +1,22 @@
+# monitoring/grafana/Dockerfile.ecs
+#
+# Custom Grafana image for the ECS demo/batch observability stack.
+#
+# Bakes in:
+#   - provisioning/datasources/  → /etc/grafana/provisioning/datasources/
+#   - provisioning/dashboards/   → /etc/grafana/provisioning/dashboards/
+#
+# The datasource URL is parameterised via the PROMETHEUS_URL environment
+# variable in prometheus.yml (default: http://prometheus:9090).
+# The ECS task definition overrides this to http://prometheus.libraryai.local:9090
+# via the PROMETHEUS_URL environment variable.
+#
+# Build context: repository root.
+# Image pushed to: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/libraryai-grafana-ecs:latest
+
+FROM grafana/grafana:latest
+
+# Copy all provisioning (datasources + dashboards)
+COPY monitoring/grafana/provisioning/ /etc/grafana/provisioning/
+
+EXPOSE 3000

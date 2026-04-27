@@ -1,0 +1,44 @@
+{
+  "family": "libraryai-iep1e",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "1024",
+  "memory": "3072",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/libraryai-task-role",
+  "containerDefinitions": [
+    {
+      "name": "iep1e",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/libraryai-iep1e:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "name": "http",
+          "containerPort": 8007,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "PYTHONPATH",       "value": "/app" },
+        { "name": "IEP1E_PORT",       "value": "8007" },
+        { "name": "IEP1E_MOCK_MODE",  "value": "false" },
+        { "name": "IEP1E_MODEL_DIR",  "value": "/opt/models/iep1e" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/libraryai-iep1e",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "iep1e"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -sf http://localhost:8007/ready || exit 1"],
+        "interval": 15,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 60
+      }
+    }
+  ]
+}

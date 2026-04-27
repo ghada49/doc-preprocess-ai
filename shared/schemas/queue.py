@@ -12,8 +12,11 @@ Redis key constants (spec Section 8.1, 8.4):
     WORKER_SLOTS_KEY              — worker concurrency semaphore (STRING / counter)
 
 Exported models:
-    PageTask — Pydantic model serialized as JSON into QUEUE_PAGE_TASKS.
-               Workers use page_id to load all processing state from the DB.
+    PageTask   — Pydantic model serialized as JSON into QUEUE_PAGE_TASKS.
+                 Workers use page_id to load all processing state from the DB.
+    ShadowTask — Pydantic model serialized as JSON into QUEUE_SHADOW_TASKS.
+                 Shadow worker uses page_id to load lineage and write
+                 shadow_evaluations.
 """
 
 from __future__ import annotations
@@ -68,4 +71,34 @@ class PageTask(BaseModel):
     page_id: str
     page_number: Annotated[int, Field(ge=1)]
     sub_page_index: int | None = None
+    retry_count: Annotated[int, Field(ge=0)] = 0
+
+
+# ── ShadowTask ───────────────────────────────────────────────────────────────
+
+
+class ShadowTask(BaseModel):
+    """
+    Payload pushed to QUEUE_SHADOW_TASKS (serialised as JSON).
+
+    Enqueued by the eep-worker after a page from a shadow_mode=True job
+    reaches a terminal state (accepted, review, failed).  The shadow worker
+    uses page_id to load page_lineage data and write a shadow_evaluations row.
+
+    Fields:
+        task_id     — UUID4 assigned at enqueue time. This also serves as the
+                      shadow_evaluations.eval_id reserved by the live worker.
+        job_id      — parent job identifier (jobs.job_id).
+        page_id     — primary key of the job_pages record.
+        page_number — 1-indexed; denormalised for logging.
+        page_status — terminal status of the page at enqueue time
+                      (accepted | review | failed).
+        retry_count — 0 on first attempt; incremented on re-enqueue.
+    """
+
+    task_id: str
+    job_id: str
+    page_id: str
+    page_number: Annotated[int, Field(ge=1)]
+    page_status: str
     retry_count: Annotated[int, Field(ge=0)] = 0

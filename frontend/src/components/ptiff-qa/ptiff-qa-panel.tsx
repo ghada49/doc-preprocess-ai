@@ -103,6 +103,10 @@ export default function PtiffQaPanel({ jobId }: PtiffQaPanelProps) {
       ? { label: "Needs review", variant: "warning" as const }
       : overview.toReviewCount > 0
         ? { label: "To review", variant: "warning" as const }
+        : overview.approvedCount > 0
+          ? { label: "Approved", variant: "success" as const }
+          : overview.readyCount > 0
+            ? { label: "Ready", variant: "success" as const }
         : { label: "Ready", variant: "success" as const };
 
   return (
@@ -127,7 +131,7 @@ export default function PtiffQaPanel({ jobId }: PtiffQaPanelProps) {
         }
       />
 
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
         {[
           {
             label: "Total",
@@ -142,8 +146,14 @@ export default function PtiffQaPanel({ jobId }: PtiffQaPanelProps) {
             surface: "bg-amber-50 border-amber-200",
           },
           {
-            label: "Reviewed",
-            value: overview.reviewedCount,
+            label: "Approved",
+            value: overview.approvedCount,
+            color: "text-indigo-600",
+            surface: "bg-indigo-50 border-indigo-200",
+          },
+          {
+            label: "Ready",
+            value: overview.readyCount,
             color: "text-emerald-600",
             surface: "bg-emerald-50 border-emerald-200",
           },
@@ -278,7 +288,8 @@ function summarizeOverview(
 ) {
   let toReviewCount = 0;
   let needsReviewCount = 0;
-  let reviewedCount = 0;
+  let approvedCount = 0;
+  let readyCount = 0;
 
   for (const page of pages) {
     const qaState = getQaOverviewState(page);
@@ -286,12 +297,14 @@ function summarizeOverview(
       toReviewCount += 1;
     } else if (qaState.kind === "needs_review") {
       needsReviewCount += 1;
+    } else if (qaState.kind === "approved") {
+      approvedCount += 1;
     } else {
-      reviewedCount += 1;
+      readyCount += 1;
     }
   }
 
-  return { toReviewCount, needsReviewCount, reviewedCount };
+  return { toReviewCount, needsReviewCount, approvedCount, readyCount };
 }
 
 function getQaOverviewState(page: {
@@ -313,7 +326,7 @@ function getQaOverviewState(page: {
   if (page.current_state === "ptiff_qa_pending") {
     if (page.approval_status === "approved") {
       return {
-        kind: "reviewed" as const,
+        kind: "approved" as const,
         reviewLabel: "Approved",
         reviewVariant: "success" as const,
         needsReview: false,
@@ -329,6 +342,17 @@ function getQaOverviewState(page: {
       needsReview: false,
       showActions: true,
       rowClass: "hover:bg-amber-50/60",
+    };
+  }
+
+  if (page.current_state === "accepted") {
+    return {
+      kind: "ready" as const,
+      reviewLabel: "Ready",
+      reviewVariant: "success" as const,
+      needsReview: false,
+      showActions: false,
+      rowClass: "bg-slate-50/60",
     };
   }
 

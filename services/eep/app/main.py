@@ -4,6 +4,7 @@ services/eep/app/main.py
 EEP — Execution Engine Pipeline API service.
 
 Real implementations:
+  GET  /v1/status              → LIVE (CI/CD smoke test + ALB health)
   POST /v1/auth/token          → LIVE (Packet 7.1)
   POST /v1/uploads/jobs/presign → LIVE (Packet 1.7b)
   POST /v1/jobs                → LIVE (Packet 1.8)
@@ -41,6 +42,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from services.eep.app.admin.dashboard import router as admin_dashboard_router
+from services.eep.app.admin.infra import router as admin_infra_router
 from services.eep.app.admin.users import router as admin_users_router
 from services.eep.app.artifacts_api import router as artifacts_router
 from services.eep.app.auth import router as auth_router
@@ -99,6 +101,12 @@ if cors_allow_origins:
 
 configure_observability(app, service_name="eep")
 
+
+@app.get("/v1/status", include_in_schema=True, tags=["meta"])
+def v1_status() -> dict:
+    """Lightweight liveness probe for CI/CD smoke tests and ALB health checks."""
+    return {"status": "ok", "service": "eep"}
+
 # ── Phase 7 routers ────────────────────────────────────────────────────────────
 app.include_router(auth_router)
 
@@ -110,6 +118,7 @@ app.include_router(job_status_router)
 
 # ── Phase 7 admin routers ──────────────────────────────────────────────────────
 app.include_router(admin_dashboard_router)
+app.include_router(admin_infra_router)
 app.include_router(admin_users_router)
 app.include_router(lineage_router)
 

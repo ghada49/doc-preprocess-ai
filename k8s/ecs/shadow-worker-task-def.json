@@ -1,0 +1,49 @@
+{
+  "family": "libraryai-shadow-worker",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/libraryai-task-role",
+  "containerDefinitions": [
+    {
+      "name": "shadow-worker",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/libraryai-shadow-worker:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "name": "health",
+          "containerPort": 9102,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "PYTHONPATH",                   "value": "/app" },
+        { "name": "HEALTH_PORT",                  "value": "9102" },
+        { "name": "SHADOW_EVAL_TIMEOUT_MINUTES",  "value": "30" },
+        { "name": "SHADOW_MAX_RETRIES",           "value": "3" },
+        { "name": "PROMETHEUS_MULTIPROC_DIR",     "value": "/tmp/prometheus_multiproc" }
+      ],
+      "secrets": [
+        { "name": "DATABASE_URL", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/DATABASE_URL" },
+        { "name": "REDIS_URL",    "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/REDIS_URL" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/libraryai-shadow-worker",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "shadow-worker"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -sf http://localhost:9102/health || exit 1"],
+        "interval": 15,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 20
+      }
+    }
+  ]
+}

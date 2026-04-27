@@ -7,10 +7,9 @@ Worker task (execute_retraining_task) tests:
   - preprocessing trigger creates a RetrainingJob with status='running' then 'completed'
   - trigger.retraining_job_id is set to the created job's job_id
   - trigger.status transitions to 'completed'
-  - ModelVersion rows created for iep0, iep1a, and iep1b with stage='staging'
+  - ModelVersion rows created for iep1a and iep1b with stage='staging'
   - gate_results written in the format promotion_api._check_gates expects
-      (each gate has 'pass' key): iep1a/iep1b use the five preprocessing gates;
-      iep0 uses classification_confidence + golden_dataset
+      (each gate has 'pass' key): iep1a/iep1b use the five preprocessing gates
   - all gate_results have pass=True (stub evaluation always passes)
   - job.promotion_decision = 'pending_gate_review'
   - job.mlflow_run_id is a non-empty string
@@ -41,7 +40,7 @@ from unittest.mock import MagicMock, call, patch
 
 import pytest
 
-from services.retraining_recovery.app.reconcile import (
+from services.retraining_worker.app.reconcile import (
     ReconcileConfig,
     ReconcileResult,
     reconcile_once,
@@ -166,7 +165,7 @@ class TestExecuteRetrainingTaskPreprocessing:
         execute_retraining_task(trigger, db)
         assert trigger.resolved_at is not None
 
-    def test_creates_model_version_for_iep0_iep1a_and_iep1b(self) -> None:
+    def test_creates_model_version_for_iep1a_and_iep1b(self) -> None:
         trigger = _make_trigger()
         db = _make_task_session()
         execute_retraining_task(trigger, db)
@@ -177,7 +176,7 @@ class TestExecuteRetrainingTaskPreprocessing:
             if isinstance(c[0][0], ModelVersion)
         ]
         service_names = {mv.service_name for mv in mv_rows}
-        assert service_names == {"iep0", "iep1a", "iep1b"}
+        assert service_names == {"iep1a", "iep1b"}
 
     def test_model_version_stage_is_staging(self) -> None:
         trigger = _make_trigger()
@@ -223,10 +222,6 @@ class TestExecuteRetrainingTaskPreprocessing:
         }
         assert set(by_service["iep1a"].gate_results.keys()) == iep1_required
         assert set(by_service["iep1b"].gate_results.keys()) == iep1_required
-        assert set(by_service["iep0"].gate_results.keys()) == {
-            "classification_confidence",
-            "golden_dataset",
-        }
 
     def test_gate_results_all_pass_true(self) -> None:
         trigger = _make_trigger()
@@ -367,8 +362,8 @@ class TestTriggerPipelineMapping:
         }
         assert set(_TRIGGER_PIPELINE.keys()) == known
 
-    def test_preprocessing_services_are_iep0_iep1a_and_iep1b(self) -> None:
-        assert set(_PREPROCESSING_SERVICES) == {"iep0", "iep1a", "iep1b"}
+    def test_preprocessing_services_are_iep1a_and_iep1b(self) -> None:
+        assert set(_PREPROCESSING_SERVICES) == {"iep1a", "iep1b"}
 
 
 # ── reconcile_once ────────────────────────────────────────────────────────────
@@ -481,7 +476,7 @@ class TestReconcileOnce:
         old_start = _NOW - timedelta(hours=2)  # > 60-min timeout
         job = _make_job(status="running", started_at=old_start)
         db = _mock_db_for_reconcile(running_jobs=[job])
-        with patch("services.retraining_recovery.app.reconcile.datetime") as mock_dt:
+        with patch("services.retraining_worker.app.reconcile.datetime") as mock_dt:
             mock_dt.now.return_value = _NOW
             mock_dt.timedelta = timedelta
             reconcile_once(db, ReconcileConfig(job_timeout_minutes=60))
@@ -494,7 +489,7 @@ class TestReconcileOnce:
         recent_start = _NOW - timedelta(minutes=5)  # well within timeout
         job = _make_job(status="running", started_at=recent_start)
         db = _mock_db_for_reconcile(running_jobs=[])  # filtered out by DB query
-        with patch("services.retraining_recovery.app.reconcile.datetime") as mock_dt:
+        with patch("services.retraining_worker.app.reconcile.datetime") as mock_dt:
             mock_dt.now.return_value = _NOW
             mock_dt.timedelta = timedelta
             result = reconcile_once(db, ReconcileConfig(job_timeout_minutes=60))
@@ -505,7 +500,7 @@ class TestReconcileOnce:
         old_start = _NOW - timedelta(hours=3)
         jobs = [_make_job(job_id=f"j{i}", status="running", started_at=old_start) for i in range(3)]
         db = _mock_db_for_reconcile(running_jobs=jobs)
-        with patch("services.retraining_recovery.app.reconcile.datetime") as mock_dt:
+        with patch("services.retraining_worker.app.reconcile.datetime") as mock_dt:
             mock_dt.now.return_value = _NOW
             mock_dt.timedelta = timedelta
             result = reconcile_once(db, ReconcileConfig(job_timeout_minutes=60))
@@ -514,7 +509,7 @@ class TestReconcileOnce:
     def test_processing_trigger_no_job_id_marked_failed(self) -> None:
         trigger = _make_trigger(status="processing", retraining_job_id=None)
         db = _mock_db_for_reconcile(processing_triggers=[trigger])
-        with patch("services.retraining_recovery.app.reconcile.datetime") as mock_dt:
+        with patch("services.retraining_worker.app.reconcile.datetime") as mock_dt:
             mock_dt.now.return_value = _NOW
             mock_dt.timedelta = timedelta
             reconcile_once(db)
@@ -528,7 +523,7 @@ class TestReconcileOnce:
             processing_triggers=[trigger],
             job_lookup={"j-fail": failed_job},
         )
-        with patch("services.retraining_recovery.app.reconcile.datetime") as mock_dt:
+        with patch("services.retraining_worker.app.reconcile.datetime") as mock_dt:
             mock_dt.now.return_value = _NOW
             mock_dt.timedelta = timedelta
             reconcile_once(db)
@@ -540,7 +535,7 @@ class TestReconcileOnce:
             processing_triggers=[trigger],
             job_lookup={"j-missing": None},
         )
-        with patch("services.retraining_recovery.app.reconcile.datetime") as mock_dt:
+        with patch("services.retraining_worker.app.reconcile.datetime") as mock_dt:
             mock_dt.now.return_value = _NOW
             mock_dt.timedelta = timedelta
             reconcile_once(db)
@@ -553,7 +548,7 @@ class TestReconcileOnce:
             processing_triggers=[trigger],
             job_lookup={"j-run": running_job},
         )
-        with patch("services.retraining_recovery.app.reconcile.datetime") as mock_dt:
+        with patch("services.retraining_worker.app.reconcile.datetime") as mock_dt:
             mock_dt.now.return_value = _NOW
             mock_dt.timedelta = timedelta
             reconcile_once(db)
@@ -566,7 +561,7 @@ class TestReconcileOnce:
             processing_triggers=[trigger],
             job_lookup={"j-done": completed_job},
         )
-        with patch("services.retraining_recovery.app.reconcile.datetime") as mock_dt:
+        with patch("services.retraining_worker.app.reconcile.datetime") as mock_dt:
             mock_dt.now.return_value = _NOW
             mock_dt.timedelta = timedelta
             reconcile_once(db)
@@ -580,7 +575,7 @@ class TestReconcileOnce:
             running_jobs=[stuck_job],
             processing_triggers=[orphan],
         )
-        with patch("services.retraining_recovery.app.reconcile.datetime") as mock_dt:
+        with patch("services.retraining_worker.app.reconcile.datetime") as mock_dt:
             mock_dt.now.return_value = _NOW
             mock_dt.timedelta = timedelta
             result = reconcile_once(db, ReconcileConfig(job_timeout_minutes=60))
@@ -589,7 +584,7 @@ class TestReconcileOnce:
 
     def test_empty_pass_returns_zero_counts(self) -> None:
         db = _mock_db_for_reconcile(running_jobs=[], processing_triggers=[])
-        with patch("services.retraining_recovery.app.reconcile.datetime") as mock_dt:
+        with patch("services.retraining_worker.app.reconcile.datetime") as mock_dt:
             mock_dt.now.return_value = _NOW
             mock_dt.timedelta = timedelta
             result = reconcile_once(db)
@@ -600,7 +595,7 @@ class TestReconcileOnce:
         old_start = _NOW - timedelta(hours=2)
         job = _make_job(status="running", started_at=old_start)
         db = _mock_db_for_reconcile(running_jobs=[job])
-        with patch("services.retraining_recovery.app.reconcile.datetime") as mock_dt:
+        with patch("services.retraining_worker.app.reconcile.datetime") as mock_dt:
             mock_dt.now.return_value = _NOW
             mock_dt.timedelta = timedelta
             reconcile_once(db, ReconcileConfig(job_timeout_minutes=60))
@@ -608,8 +603,75 @@ class TestReconcileOnce:
 
     def test_db_not_committed_when_nothing_recovered(self) -> None:
         db = _mock_db_for_reconcile(running_jobs=[], processing_triggers=[])
-        with patch("services.retraining_recovery.app.reconcile.datetime") as mock_dt:
+        with patch("services.retraining_worker.app.reconcile.datetime") as mock_dt:
             mock_dt.now.return_value = _NOW
             mock_dt.timedelta = timedelta
             reconcile_once(db)
         db.commit.assert_not_called()
+
+
+# ── Stub-mode isolation: production weights never resolved in stub mode ───────
+
+
+class TestStubModeDoesNotCallProductionWeightResolution:
+    """
+    Gate check: LIBRARYAI_RETRAINING_TRAIN=stub (the production default) must
+    never call _resolve_production_weights or run_live_preprocessing_training.
+    These are expensive / DB-dependent operations that must stay behind the
+    live-training gate.
+    """
+
+    @pytest.mark.parametrize(
+        "trigger_type",
+        [
+            "escalation_rate_anomaly",
+            "auto_accept_rate_collapse",
+            "structural_agreement_degradation",
+            "drift_alert_persistence",
+        ],
+    )
+    def test_stub_mode_does_not_call_resolve_production_weights(
+        self, trigger_type: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LIBRARYAI_RETRAINING_TRAIN", "stub")
+        trigger = _make_trigger(trigger_type=trigger_type)
+        db = _make_task_session()
+        with patch(
+            "services.retraining_worker.app.task._resolve_production_weights"
+        ) as mock_rpw:
+            execute_retraining_task(trigger, db)
+        mock_rpw.assert_not_called()
+
+    @pytest.mark.parametrize(
+        "trigger_type",
+        [
+            "escalation_rate_anomaly",
+            "auto_accept_rate_collapse",
+            "structural_agreement_degradation",
+            "drift_alert_persistence",
+        ],
+    )
+    def test_stub_mode_does_not_call_run_live_preprocessing_training(
+        self, trigger_type: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LIBRARYAI_RETRAINING_TRAIN", "stub")
+        trigger = _make_trigger(trigger_type=trigger_type)
+        db = _make_task_session()
+        with patch(
+            "services.retraining_worker.app.task.run_live_preprocessing_training"
+        ) as mock_rlpt:
+            execute_retraining_task(trigger, db)
+        mock_rlpt.assert_not_called()
+
+    def test_env_unset_defaults_to_stub_no_production_weights(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Absence of the env var must behave identically to stub."""
+        monkeypatch.delenv("LIBRARYAI_RETRAINING_TRAIN", raising=False)
+        trigger = _make_trigger(trigger_type="escalation_rate_anomaly")
+        db = _make_task_session()
+        with patch(
+            "services.retraining_worker.app.task._resolve_production_weights"
+        ) as mock_rpw:
+            execute_retraining_task(trigger, db)
+        mock_rpw.assert_not_called()

@@ -1,0 +1,25 @@
+# monitoring/prometheus/Dockerfile.ecs
+#
+# Custom Prometheus image for the ECS demo/batch observability stack.
+#
+# Bakes in:
+#   - prometheus.ecs.yml  → /etc/prometheus/prometheus.yml
+#   - alert_rules/        → /etc/prometheus/rules/
+#
+# The ECS-specific config uses Service Connect DNS (*.libraryai.local) and
+# omits the Alertmanager block (Alertmanager is not deployed in ECS).
+# Alert rules are still included so they are visible in the Prometheus UI.
+#
+# Build context: repository root.
+# Image pushed to: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/libraryai-prometheus-ecs:latest
+
+FROM prom/prometheus:latest
+
+# Override the default prometheus.yml with the ECS-specific config
+COPY monitoring/prometheus/prometheus.ecs.yml /etc/prometheus/prometheus.yml
+
+# Copy alert rules so they appear in the Prometheus UI
+# (no Alertmanager is attached in ECS so no automated actions fire)
+COPY monitoring/alert_rules/ /etc/prometheus/rules/
+
+EXPOSE 9090

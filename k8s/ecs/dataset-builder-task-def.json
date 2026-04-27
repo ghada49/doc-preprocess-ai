@@ -1,0 +1,39 @@
+{
+  "family": "libraryai-dataset-builder",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "512",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/libraryai-task-role",
+  "containerDefinitions": [
+    {
+      "name": "dataset-builder",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/libraryai-dataset-builder:latest",
+      "essential": true,
+      "command": [
+        "python",
+        "services/dataset_builder/app/main.py",
+        "--mode", "corrected-export"
+      ],
+      "environment": [
+        { "name": "PYTHONPATH",               "value": "/app" },
+        { "name": "S3_BUCKET_NAME",           "value": "libraryai" },
+        { "name": "RETRAINING_SOURCE_WINDOW", "value": "manual" }
+      ],
+      "secrets": [
+        { "name": "DATABASE_URL",         "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/DATABASE_URL" },
+        { "name": "S3_ACCESS_KEY_ID",     "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/S3_ACCESS_KEY_ID" },
+        { "name": "S3_SECRET_ACCESS_KEY", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/S3_SECRET_ACCESS_KEY" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/libraryai-dataset-builder",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "dataset-builder"
+        }
+      }
+    }
+  ]
+}

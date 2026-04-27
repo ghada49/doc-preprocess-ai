@@ -77,23 +77,26 @@ export default function PolicyPage() {
 
   const [configYaml, setConfigYaml] = useState("");
   const [justification, setJustification] = useState("");
-  const [newVersion, setNewVersion] = useState("");
   const [isDirty, setIsDirty] = useState(false);
+
+  // policy === null means 404 (no policy applied yet) — handled cleanly by getPolicy
+  const isNoPolicy = !isLoading && !isError && policy === null;
 
   useEffect(() => {
     if (policy) {
       setConfigYaml(policy.config_yaml);
-      setNewVersion(bumpVersion(policy.version));
+      setIsDirty(false);
+    } else if (isNoPolicy) {
+      setConfigYaml("");
       setIsDirty(false);
     }
-  }, [policy]);
+  }, [policy, isNoPolicy]);
 
   const saveMut = useMutation({
     mutationFn: () =>
       updatePolicy({
         config_yaml: configYaml,
         justification: justification.trim(),
-        version: newVersion.trim(),
       }),
     onSuccess: (updated) => {
       toast.success(`Policy updated to ${updated.version}`);
@@ -116,13 +119,13 @@ export default function PolicyPage() {
     );
   }
 
-  if (isError || !policy) {
+  if (isError) {
     return (
       <AdminShell breadcrumbs={[{ label: "Policy" }]}>
         <div className="p-6">
           <ErrorBanner
             variant="fullscreen"
-            title="Failed to Load"
+            title="Failed to Load Policy"
             message={getApiErrorMessage(error, "Could not load policy configuration.")}
           />
         </div>
@@ -139,7 +142,6 @@ export default function PolicyPage() {
     isDirty &&
     configYaml.trim().length > 0 &&
     justification.trim().length > 0 &&
-    newVersion.trim().length > 0 &&
     !saveMut.isPending;
 
   return (
@@ -150,7 +152,7 @@ export default function PolicyPage() {
           description="View and update the active system policy. Changes are versioned and audited."
           icon={Settings}
           iconColor="text-indigo-600"
-          badge={<Badge variant="info">{policy.version}</Badge>}
+          badge={policy ? <Badge variant="info">{policy.version}</Badge> : undefined}
           actions={
             <Button
               variant="ghost"
@@ -164,30 +166,36 @@ export default function PolicyPage() {
         />
 
         {/* Current policy metadata */}
-        <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
-          <div className="grid grid-cols-3 gap-4 text-xs">
-            <div>
-              <p className="text-2xs text-slate-400 mb-0.5">Version</p>
-              <Badge variant="info">{policy.version}</Badge>
-            </div>
-            <div>
-              <p className="text-2xs text-slate-400 mb-0.5">Applied At</p>
-              <p className="text-slate-700">{formatDate(policy.applied_at)}</p>
-            </div>
-            <div>
-              <p className="text-2xs text-slate-400 mb-0.5">Applied By</p>
-              <p className="text-slate-700">{policy.applied_by ?? "—"}</p>
-            </div>
+        {isNoPolicy ? (
+          <div className="rounded-xl border border-amber-200 bg-amber-50 px-5 py-4 text-sm text-amber-700">
+            No policy has been applied yet. Use the editor below to create the first version.
           </div>
-          {policy.justification && (
-            <div className="mt-4 pt-4 border-t border-slate-200">
-              <p className="text-2xs text-slate-400 mb-1">Justification</p>
-              <p className="text-xs text-slate-500 italic">
-                &ldquo;{policy.justification}&rdquo;
-              </p>
+        ) : policy ? (
+          <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
+            <div className="grid grid-cols-3 gap-4 text-xs">
+              <div>
+                <p className="text-2xs text-slate-400 mb-0.5">Version</p>
+                <Badge variant="info">{policy.version}</Badge>
+              </div>
+              <div>
+                <p className="text-2xs text-slate-400 mb-0.5">Applied At</p>
+                <p className="text-slate-700">{formatDate(policy.applied_at)}</p>
+              </div>
+              <div>
+                <p className="text-2xs text-slate-400 mb-0.5">Applied By</p>
+                <p className="text-slate-700">{policy.applied_by ?? "—"}</p>
+              </div>
             </div>
-          )}
-        </div>
+            {policy.justification && (
+              <div className="mt-4 pt-4 border-t border-slate-200">
+                <p className="text-2xs text-slate-400 mb-1">Justification</p>
+                <p className="text-xs text-slate-500 italic">
+                  &ldquo;{policy.justification}&rdquo;
+                </p>
+              </div>
+            )}
+          </div>
+        ) : null}
 
         {/* Editor */}
         <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-4 shadow-sm">
@@ -241,26 +249,15 @@ export default function PolicyPage() {
             />
           </div>
 
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-1.5">
-              <Label>New Version Tag</Label>
-              <Input
-                value={newVersion}
-                onChange={(e) => setNewVersion(e.target.value)}
-                placeholder="e.g. v2"
-                className="font-mono"
-              />
-            </div>
-            <div className="space-y-1.5">
-              <Label>
-                Justification <span className="text-red-500">*</span>
-              </Label>
-              <Input
-                value={justification}
-                onChange={(e) => setJustification(e.target.value)}
-                placeholder="Reason for this policy change…"
-              />
-            </div>
+          <div className="space-y-1.5">
+            <Label>
+              Justification <span className="text-red-500">*</span>
+            </Label>
+            <Input
+              value={justification}
+              onChange={(e) => setJustification(e.target.value)}
+              placeholder="Reason for this policy change…"
+            />
           </div>
 
           <div className="flex items-center justify-end gap-2 pt-2 border-t border-slate-200">
@@ -269,7 +266,7 @@ export default function PolicyPage() {
             )}
             <Button
               onClick={() => {
-                setConfigYaml(policy.config_yaml);
+                setConfigYaml(policy?.config_yaml ?? "");
                 setIsDirty(false);
               }}
               variant="ghost"
@@ -295,8 +292,3 @@ export default function PolicyPage() {
   );
 }
 
-function bumpVersion(version: string): string {
-  const match = version.match(/^v?(\d+)$/);
-  if (match) return `v${parseInt(match[1]) + 1}`;
-  return `${version}-new`;
-}

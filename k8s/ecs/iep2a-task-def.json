@@ -1,0 +1,44 @@
+{
+  "family": "libraryai-iep2a",
+  "networkMode": "awsvpc",
+  "requiresCompatibilities": ["FARGATE"],
+  "cpu": "2048",
+  "memory": "8192",
+  "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
+  "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/libraryai-task-role",
+  "containerDefinitions": [
+    {
+      "name": "iep2a",
+      "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/libraryai-iep2a:latest",
+      "essential": true,
+      "portMappings": [
+        {
+          "name": "http",
+          "containerPort": 8004,
+          "protocol": "tcp"
+        }
+      ],
+      "environment": [
+        { "name": "PYTHONPATH",              "value": "/app" },
+        { "name": "IEP2A_USE_REAL_MODEL",   "value": "true" },
+        { "name": "IEP2A_LAYOUT_BACKEND",   "value": "paddleocr" },
+        { "name": "IEP2A_MODELS_DIR",       "value": "/opt/models/iep2a" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/libraryai-iep2a",
+          "awslogs-region": "REGION",
+          "awslogs-stream-prefix": "iep2a"
+        }
+      },
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -sf http://localhost:8004/ready || exit 1"],
+        "interval": 15,
+        "timeout": 10,
+        "retries": 3,
+        "startPeriod": 120
+      }
+    }
+  ]
+}

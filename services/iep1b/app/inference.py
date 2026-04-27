@@ -30,12 +30,22 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 import cv2
 import numpy as np
 
 from services.iep1b.app.tta import compute_mock_tta_stats, compute_real_tta_stats
+from shared.metrics import (
+    IEP1B_GEOMETRY_CONFIDENCE,
+    IEP1B_GPU_INFERENCE_SECONDS,
+    IEP1B_PAGE_COUNT,
+    IEP1B_SPLIT_DETECTION_RATE,
+    IEP1B_TTA_PREDICTION_VARIANCE,
+    IEP1B_TTA_STRUCTURAL_AGREEMENT_RATE,
+)
 from shared.schemas.geometry import GeometryRequest, GeometryResponse, PageRegion
 from shared.schemas.preprocessing import PreprocessError
 
@@ -50,6 +60,13 @@ _MODEL_FILES: dict[str, str] = {
 }
 
 _loaded_models: dict[str, object] = {}
+
+# ── Reload tracking ─────────────────────────────────────────────────────────
+
+_startup_wall: float = time.time()
+_reload_count: int = 0
+_last_reload_wall: float | None = None
+_last_version_tag: str | None = None
 
 
 def _models_dir() -> Path:
@@ -76,6 +93,55 @@ def _load_model(material_type: str) -> object:
 
 def _is_mock_mode() -> bool:
     return os.environ.get("IEP1B_MOCK_MODE", "false").lower() == "true"
+
+
+def reload_models(version_tag: str | None = None) -> None:
+    """Clear the in-process model cache so the next request reloads from disk."""
+    global _reload_count, _last_reload_wall, _last_version_tag
+    _loaded_models.clear()
+    _reload_count += 1
+    _last_reload_wall = time.time()
+    _last_version_tag = version_tag or None
+    logger.info(
+        "iep1b: model cache cleared for hot-reload (reload_count=%d version_tag=%r)",
+        _reload_count,
+        _last_version_tag,
+    )
+
+
+def get_model_info() -> dict[str, Any]:
+    """
+    Return a snapshot of the current model-loading state for observability.
+
+    version_tag is always None — iep1b loads weights from local .pt files
+    and has no runtime mapping to the ModelVersion record in the EEP database.
+    TODO: persist the version_tag from the Redis reload signal and return it
+    here so operators can correlate with promotion-audit rows.
+    """
+    models_dir = _models_dir()
+    loaded_entries = [
+        {
+            "material": mat,
+            "weight_file": fname,
+            "weight_path": str(models_dir / fname),
+            "cached": fname in _loaded_models,
+        }
+        for mat, fname in _MODEL_FILES.items()
+    ]
+    last_reload_iso: str | None = None
+    if _last_reload_wall is not None:
+        last_reload_iso = datetime.fromtimestamp(_last_reload_wall, tz=timezone.utc).isoformat()
+
+    return {
+        "service": "iep1b",
+        "mock_mode": _is_mock_mode(),
+        "models_dir": str(models_dir),
+        "loaded_models": loaded_entries,
+        "reload_count": _reload_count,
+        "last_reload_at": last_reload_iso,
+        "reloaded_since_startup": _reload_count > 0,
+        "version_tag": _last_version_tag,
+    }
 
 
 class InferenceError(Exception):
@@ -356,7 +422,15 @@ def run_inference(req: GeometryRequest) -> GeometryResponse:
     tta_stats = compute_real_tta_stats(model, image, conf_threshold, tta_passes)
 
     elapsed_ms = (time.monotonic() - t0) * 1000.0
-    return _detections_to_response(detections, tta_stats, elapsed_ms)
+    resp = _detections_to_response(detections, tta_stats, elapsed_ms)
+    IEP1B_GPU_INFERENCE_SECONDS.observe(elapsed_ms / 1000.0)
+    IEP1B_GEOMETRY_CONFIDENCE.observe(resp.geometry_confidence)
+    IEP1B_TTA_STRUCTURAL_AGREEMENT_RATE.observe(resp.tta_structural_agreement_rate)
+    IEP1B_TTA_PREDICTION_VARIANCE.observe(resp.tta_prediction_variance)
+    IEP1B_PAGE_COUNT.observe(resp.page_count)
+    if resp.split_required:
+        IEP1B_SPLIT_DETECTION_RATE.inc()
+    return resp
 
 
 def _load_image(image_uri: str) -> np.ndarray | None:
@@ -427,7 +501,7 @@ def run_mock_inference(req: GeometryRequest) -> GeometryResponse:
     tta = compute_mock_tta_stats(tta_passes)
     elapsed_ms = (time.monotonic() - t0) * 1000.0
 
-    return GeometryResponse(
+    resp = GeometryResponse(
         page_count=page_count,
         pages=pages,
         split_required=split_required,
@@ -440,3 +514,11 @@ def run_mock_inference(req: GeometryRequest) -> GeometryResponse:
         warnings=[],
         processing_time_ms=elapsed_ms,
     )
+    IEP1B_GPU_INFERENCE_SECONDS.observe(elapsed_ms / 1000.0)
+    IEP1B_GEOMETRY_CONFIDENCE.observe(resp.geometry_confidence)
+    IEP1B_TTA_STRUCTURAL_AGREEMENT_RATE.observe(resp.tta_structural_agreement_rate)
+    IEP1B_TTA_PREDICTION_VARIANCE.observe(resp.tta_prediction_variance)
+    IEP1B_PAGE_COUNT.observe(resp.page_count)
+    if resp.split_required:
+        IEP1B_SPLIT_DETECTION_RATE.inc()
+    return resp

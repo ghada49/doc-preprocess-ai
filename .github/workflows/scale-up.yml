@@ -1,0 +1,127 @@
+name: Scale Up — Processing Window
+
+on:
+  # Schedule: 10 PM UTC daily. To change, edit this file and update the cron string.
+  schedule:
+    - cron: '0 22 * * *'
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION:  ${{ vars.AWS_REGION }}
+  ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+  GPU_ASG:     ${{ vars.GPU_ASG_NAME }}
+
+jobs:
+  scale-up:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # ── Step 1: Scale GPU EC2 Auto Scaling Group ─────────────────────────
+      - name: Scale GPU ASG to desired capacity
+        run: |
+          aws autoscaling set-desired-capacity \
+            --auto-scaling-group-name "$GPU_ASG" \
+            --desired-capacity ${{ vars.GPU_ASG_DESIRED || '1' }} \
+            --no-honor-cooldown
+          echo "GPU ASG set to desired=${{ vars.GPU_ASG_DESIRED || '1' }}"
+
+      # ── Step 2: Wait for GPU container instances to register ─────────────
+      - name: Wait for GPU container instances to register in ECS cluster
+        run: |
+          REQUIRED=${{ vars.GPU_ASG_DESIRED || '1' }}
+          echo "Waiting for $REQUIRED GPU container instance(s) to register..."
+          for i in $(seq 1 30); do
+            COUNT=$(aws ecs list-container-instances \
+              --cluster "$ECS_CLUSTER" \
+              --status ACTIVE \
+              --filter "attribute:ecs.instance-type =~ g4dn.*" \
+              --query 'length(containerInstanceArns)' --output text 2>/dev/null || echo "0")
+            echo "  Attempt $i/30 — registered GPU instances: $COUNT"
+            if [ "$COUNT" -ge "$REQUIRED" ]; then
+              echo "GPU instances ready."
+              break
+            fi
+            sleep 20
+          done
+          # Final check — fail if instances never appeared
+          COUNT=$(aws ecs list-container-instances \
+            --cluster "$ECS_CLUSTER" \
+            --status ACTIVE \
+            --filter "attribute:ecs.instance-type =~ g4dn.*" \
+            --query 'length(containerInstanceArns)' --output text)
+          if [ "$COUNT" -lt "$REQUIRED" ]; then
+            echo "ERROR: Only $COUNT GPU instance(s) registered after 10 minutes — aborting scale-up"
+            exit 1
+          fi
+
+      # ── Step 3: Start GPU inference services ─────────────────────────────
+      # NOTE: libraryai-eep is always-on and is NOT managed by this workflow.
+      - name: Start GPU services (iep0, iep1a, iep1b)
+        run: |
+          for SVC in iep0 iep1a iep1b; do
+            aws ecs update-service \
+              --cluster "$ECS_CLUSTER" \
+              --service "libraryai-${SVC}" \
+              --desired-count 1 \
+              --no-cli-pager
+            echo "Started libraryai-${SVC}"
+          done
+
+      # NOTE: libraryai-iep1d is a rescue-path service and is NOT started here.
+      # It remains at desired-count 0 during normal processing.
+      # IEP1D_SCALER_MODE in the eep-worker task controls on-demand startup.
+      # Scale iep1d manually only if IEP1D_SCALER_MODE=disabled and rescue testing is needed.
+      - name: Wait for GPU services to become healthy
+        run: |
+          echo "Waiting for stable: libraryai-iep0 libraryai-iep1a libraryai-iep1b"
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services libraryai-iep0 libraryai-iep1a libraryai-iep1b
+          echo "All GPU services healthy."
+
+      # ── Step 4: Start CPU inference services ─────────────────────────────
+      - name: Start CPU IEP services (iep1e, iep2a, iep2b)
+        run: |
+          for SVC in iep1e iep2a iep2b; do
+            aws ecs update-service \
+              --cluster "$ECS_CLUSTER" \
+              --service "libraryai-${SVC}" \
+              --desired-count 1 \
+              --no-cli-pager
+            echo "Started libraryai-${SVC}"
+          done
+
+      - name: Wait for CPU IEP services to become healthy
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services libraryai-iep1e libraryai-iep2a libraryai-iep2b
+          echo "All CPU IEP services healthy."
+
+      # ── Step 5: Start processing workers ─────────────────────────────────
+      - name: Start workers
+        run: |
+          for SVC in eep-worker eep-recovery shadow-worker; do
+            aws ecs update-service \
+              --cluster "$ECS_CLUSTER" \
+              --service "libraryai-${SVC}" \
+              --desired-count ${{ vars.WORKER_DESIRED_COUNT || '2' }} \
+              --no-cli-pager
+            echo "Started libraryai-${SVC} desired=${{ vars.WORKER_DESIRED_COUNT || '2' }}"
+          done
+
+      - name: Wait for workers to become healthy
+        run: |
+          aws ecs wait services-stable \
+            --cluster "$ECS_CLUSTER" \
+            --services libraryai-eep-worker libraryai-eep-recovery libraryai-shadow-worker
+          echo "All workers healthy — processing window open."

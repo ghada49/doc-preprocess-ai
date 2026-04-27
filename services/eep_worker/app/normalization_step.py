@@ -40,6 +40,7 @@ Exported:
 from __future__ import annotations
 
 import dataclasses
+import logging
 import time
 from collections.abc import Callable
 from typing import Literal
@@ -54,6 +55,7 @@ from services.eep.app.gates.artifact_validation import (
 )
 from services.eep.app.gates.geometry_selection import PreprocessingGateConfig
 from shared.io.storage import StorageBackend
+from shared.metrics import EEP_ARTIFACT_VALIDATION_ROUTE
 from shared.normalization.normalize import (
     NormalizeResult,
     normalize_result_to_branch_response,
@@ -68,6 +70,8 @@ __all__ = [
     "scale_geometry_response",
     "run_normalization_and_first_validation",
 ]
+
+logger = logging.getLogger(__name__)
 
 
 # ── Result type ────────────────────────────────────────────────────────────────
@@ -279,6 +283,25 @@ def run_normalization_and_first_validation(
 
     # Step 4a — scale geometry from proxy space to full-resolution space
     full_h, full_w = full_res_image.shape[:2]
+
+    # ── Instrumentation: log coordinate pipeline ──────────────────────────────
+    raw_page = selected_geometry.pages[page_index]
+    scale_x = full_w / proxy_width
+    scale_y = full_h / proxy_height
+    logger.info(
+        {
+            "event": "normalization_geometry_scaling",
+            "output_uri": output_uri,
+            "full_res_image_wh": [full_w, full_h],
+            "proxy_wh": [proxy_width, proxy_height],
+            "scale_x": round(scale_x, 6),
+            "scale_y": round(scale_y, 6),
+            "proxy_corners": raw_page.corners,
+            "proxy_bbox": list(raw_page.bbox) if raw_page.bbox else None,
+            "geometry_type": raw_page.geometry_type,
+        }
+    )
+
     full_res_geometry = scale_geometry_response(
         selected_geometry,
         proxy_w=proxy_width,
@@ -289,6 +312,29 @@ def run_normalization_and_first_validation(
 
     # Step 4b — normalize the specified page region
     page = full_res_geometry.pages[page_index]
+
+    # Log scaled corners and whether any clamping would change them
+    src_h_f, src_w_f = float(full_h), float(full_w)
+    if page.corners:
+        clamped = [
+            (max(0.0, min(src_w_f, x)), max(0.0, min(src_h_f, y)))
+            for x, y in page.corners
+        ]
+        clamp_changed = clamped != list(page.corners)
+    else:
+        clamped = None
+        clamp_changed = False
+    logger.info(
+        {
+            "event": "normalization_scaled_geometry",
+            "output_uri": output_uri,
+            "scaled_corners": page.corners,
+            "clamped_corners": clamped,
+            "clamp_changed": clamp_changed,
+            "scaled_bbox": list(page.bbox) if page.bbox else None,
+        }
+    )
+
     norm_result: NormalizeResult = normalize_single_page(full_res_image, page, full_res_geometry)
 
     # Step 4c — encode and write the artifact
@@ -308,6 +354,12 @@ def run_normalization_and_first_validation(
 
     # Combined routing decision
     route = _decide_route(geometry_route_decision, validation_result)
+    _av_label = (
+        "valid" if route == "accept_now"
+        else "rectification_triggered" if validation_result.passed
+        else "invalid"
+    )
+    EEP_ARTIFACT_VALIDATION_ROUTE.labels(route=_av_label).inc()
 
     duration_ms = (time.monotonic() - t0) * 1000.0
 

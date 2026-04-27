@@ -49,11 +49,43 @@ def _registry_path(repo_root: Path) -> Path:
     return (repo_root / "training" / "preprocessing" / "dataset_registry.json").resolve()
 
 
-def _latest_approved_dataset(repo_root: Path) -> DatasetSelection | None:
-    path = _registry_path(repo_root)
+def _read_registry_bytes(path: Path) -> bytes | None:
+    """Read registry bytes from a local path or an s3:// URI. Returns None if absent."""
+    path_str = str(path)
+    if path_str.startswith("s3://"):
+        try:
+            import boto3  # type: ignore[import]
+            without_scheme = path_str[5:]
+            bucket, _, key = without_scheme.partition("/")
+            if not bucket or not key:
+                raise DatasetSelectionError(
+                    f"Invalid S3 registry URI (expected s3://bucket/key): {path_str}"
+                )
+            obj = boto3.client("s3").get_object(Bucket=bucket, Key=key)
+            return obj["Body"].read()
+        except ImportError as exc:
+            raise DatasetSelectionError(
+                "boto3 is required to read a registry from S3 "
+                f"(RETRAINING_DATASET_REGISTRY_PATH={path_str})"
+            ) from exc
+        except Exception as exc:
+            # Object not found or access denied → treat as missing registry
+            if "NoSuchKey" in type(exc).__name__ or "404" in str(exc):
+                return None
+            raise DatasetSelectionError(
+                f"Failed to read S3 registry {path_str}: {exc}"
+            ) from exc
     if not path.is_file():
         return None
-    payload = json.loads(path.read_text(encoding="utf-8"))
+    return path.read_bytes()
+
+
+def _latest_approved_dataset(repo_root: Path) -> DatasetSelection | None:
+    path = _registry_path(repo_root)
+    content = _read_registry_bytes(path)
+    if content is None:
+        return None
+    payload = json.loads(content.decode("utf-8"))
     datasets = payload.get("datasets")
     if not isinstance(datasets, list):
         raise DatasetSelectionError(f"Invalid dataset registry format: {path}")

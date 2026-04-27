@@ -3,7 +3,7 @@
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["EC2"],
   "cpu": "2048",
-  "memory": "4096",
+  "memory": "6144",
   "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
   "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/libraryai-task-role",
   "containerDefinitions": [
@@ -42,7 +42,7 @@
         "interval": 15,
         "timeout": 5,
         "retries": 3,
-        "startPeriod": 30
+        "startPeriod": 60
       }
     }
   ]
