@@ -19,35 +19,8 @@ depends_on: str | Sequence[str] | None = None
 
 
 def upgrade() -> None:
-    # Older DBs may have `result_map` while migration 0003 created `result_mAP`.
-    # Normalize to `result_map` while keeping API/ORM attribute name `result_mAP`.
-    op.execute(
-        """
-        DO $$
-        BEGIN
-            IF EXISTS (
-                SELECT 1
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'retraining_jobs'
-                  AND column_name = 'result_mAP'
-            )
-            AND NOT EXISTS (
-                SELECT 1
-                FROM information_schema.columns
-                WHERE table_schema = 'public'
-                  AND table_name = 'retraining_jobs'
-                  AND column_name = 'result_map'
-            )
-            THEN
-                ALTER TABLE retraining_jobs RENAME COLUMN "result_mAP" TO result_map;
-            END IF;
-        END $$;
-        """
-    )
-
-
-def downgrade() -> None:
+    # Normalize to `result_mAP` (camelCase) — the canonical column name.
+    # Older DBs that were previously migrated to `result_map` are renamed back.
     op.execute(
         """
         DO $$
@@ -73,3 +46,29 @@ def downgrade() -> None:
         """
     )
 
+
+def downgrade() -> None:
+    op.execute(
+        """
+        DO $$
+        BEGIN
+            IF EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'retraining_jobs'
+                  AND column_name = 'result_mAP'
+            )
+            AND NOT EXISTS (
+                SELECT 1
+                FROM information_schema.columns
+                WHERE table_schema = 'public'
+                  AND table_name = 'retraining_jobs'
+                  AND column_name = 'result_map'
+            )
+            THEN
+                ALTER TABLE retraining_jobs RENAME COLUMN "result_mAP" TO result_map;
+            END IF;
+        END $$;
+        """
+    )
