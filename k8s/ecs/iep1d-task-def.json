@@ -1,7 +1,7 @@
 {
   "family": "libraryai-iep1d",
   "networkMode": "awsvpc",
-  "requiresCompatibilities": ["EC2"],
+  "requiresCompatibilities": ["FARGATE"],
   "cpu": "2048",
   "memory": "4096",
   "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
@@ -21,13 +21,7 @@
       "environment": [
         { "name": "PYTHONPATH",          "value": "/app" },
         { "name": "IEP1D_WEIGHTS_PATH", "value": "/opt/models/iep1d/best_model.pkl" },
-        { "name": "IEP1D_DEVICE",       "value": "cuda" }
-      ],
-      "resourceRequirements": [
-        {
-          "type": "GPU",
-          "value": "1"
-        }
+        { "name": "IEP1D_DEVICE",       "value": "cpu" }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
