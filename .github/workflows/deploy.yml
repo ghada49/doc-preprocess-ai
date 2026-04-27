@@ -102,11 +102,13 @@ jobs:
       # Weights are NOT committed to Git (see .gitignore).  They must be stored
       # in S3 and referenced via GitHub Actions repository variables:
       #
-      #   IEP1D_WEIGHTS_URI   e.g. s3://libraryai-models/iep1d/best_model.pkl
-      #   IEP2A_WEIGHTS_URI   e.g. s3://libraryai-models/iep2a/model_final.pth
-      #   IEP2B_WEIGHTS_URI   e.g. s3://libraryai-models/iep2b/doclayout_yolo_docstructbench_imgsz1024.pt
+      #   IEP1D_WEIGHTS_URI   s3://…/iep1d/best_model.pkl          (single file)
+      #   IEP2A_WEIGHTS_URI   s3://…/iep2a/pp-doclayoutv2.tar.gz   (tar.gz archive)
+      #     Archive must contain one top-level directory whose contents unpack to:
+      #       models/iep2a/paddle/PP-DocLayoutV2/{config.json,inference.yml,inference.pdiparams,…}
+      #   IEP2B_WEIGHTS_URI   s3://…/iep2b/doclayout_yolo_docstructbench_imgsz1024.pt (single file)
       #
-      # Optional SHA-256 checksums (set to skip verification):
+      # Optional SHA-256 checksums (verified before extraction / use):
       #   IEP1D_WEIGHTS_SHA256 / IEP2A_WEIGHTS_SHA256 / IEP2B_WEIGHTS_SHA256
       #
       # IAM requirement: the github-actions-deploy OIDC role needs
@@ -123,44 +125,76 @@ jobs:
           IEP2B_WEIGHTS_SHA256: ${{ vars.IEP2B_WEIGHTS_SHA256 }}
         run: |
           set -euo pipefail
+          SVC="${{ matrix.service }}"
 
-          case "${{ matrix.service }}" in
-            iep1d)
-              URI="$IEP1D_WEIGHTS_URI"
-              DEST="models/iep1d/best_model.pkl"
-              SHA256="$IEP1D_WEIGHTS_SHA256"
-              ;;
-            iep2a)
-              URI="$IEP2A_WEIGHTS_URI"
-              DEST="models/iep2a/model_final.pth"
-              SHA256="$IEP2A_WEIGHTS_SHA256"
-              ;;
-            iep2b)
-              URI="$IEP2B_WEIGHTS_URI"
-              DEST="models/iep2b/doclayout_yolo_docstructbench_imgsz1024.pt"
-              SHA256="$IEP2B_WEIGHTS_SHA256"
-              ;;
-          esac
+          # ── IEP2A: tar.gz archive → models/iep2a/paddle/PP-DocLayoutV2/ ──
+          if [ "$SVC" = "iep2a" ]; then
+            URI="${IEP2A_WEIGHTS_URI:-}"
+            SHA256="${IEP2A_WEIGHTS_SHA256:-}"
+            DEST_DIR="models/iep2a/paddle/PP-DocLayoutV2"
+            ARCHIVE="/tmp/iep2a-weights.tar.gz"
 
-          if [ -z "${URI:-}" ]; then
-            echo "::error::${{ matrix.service }} weight URI not set. Add the corresponding WEIGHTS_URI variable in GitHub → Settings → Actions → Variables."
-            exit 1
-          fi
+            if [ -z "$URI" ]; then
+              echo "::error::IEP2A_WEIGHTS_URI not set. Add it in GitHub → Settings → Actions → Variables."
+              exit 1
+            fi
 
-          mkdir -p "$(dirname "$DEST")"
-          echo "Downloading ${{ matrix.service }} weights → $DEST"
-          aws s3 cp "$URI" "$DEST"
+            mkdir -p "$DEST_DIR"
+            echo "Downloading iep2a archive → $ARCHIVE"
+            aws s3 cp "$URI" "$ARCHIVE"
+            test -s "$ARCHIVE" || { echo "::error::Downloaded iep2a archive is empty: $ARCHIVE"; exit 1; }
 
-          if ! test -s "$DEST"; then
-            echo "::error::Downloaded weight file is empty or missing: $DEST"
-            exit 1
-          fi
+            if [ -n "$SHA256" ]; then
+              echo "$SHA256  $ARCHIVE" | sha256sum --check --strict
+              echo "iep2a checksum OK."
+            else
+              echo "No checksum configured for iep2a — skipping verification."
+            fi
 
-          if [ -n "${SHA256:-}" ]; then
-            echo "$SHA256  $DEST" | sha256sum --check --strict
-            echo "${{ matrix.service }} checksum OK."
+            # Archive is expected to have one top-level directory; --strip-components=1
+            # drops it so contents land directly in $DEST_DIR.
+            tar -xzf "$ARCHIVE" -C "$DEST_DIR" --strip-components=1
+            rm -f "$ARCHIVE"
+
+            for required in config.json inference.yml inference.pdiparams; do
+              if ! test -f "$DEST_DIR/$required"; then
+                echo "::error::Required iep2a model file missing after extraction: $DEST_DIR/$required"
+                exit 1
+              fi
+            done
+            echo "iep2a model files verified."
+
+          # ── IEP1D / IEP2B: single-file download ─────────────────────────
           else
-            echo "No checksum configured for ${{ matrix.service }} — skipping verification."
+            case "$SVC" in
+              iep1d)
+                URI="${IEP1D_WEIGHTS_URI:-}"
+                DEST="models/iep1d/best_model.pkl"
+                SHA256="${IEP1D_WEIGHTS_SHA256:-}"
+                ;;
+              iep2b)
+                URI="${IEP2B_WEIGHTS_URI:-}"
+                DEST="models/iep2b/doclayout_yolo_docstructbench_imgsz1024.pt"
+                SHA256="${IEP2B_WEIGHTS_SHA256:-}"
+                ;;
+            esac
+
+            if [ -z "${URI:-}" ]; then
+              echo "::error::${SVC} weight URI not set. Add the corresponding WEIGHTS_URI variable in GitHub → Settings → Actions → Variables."
+              exit 1
+            fi
+
+            mkdir -p "$(dirname "$DEST")"
+            echo "Downloading $SVC weights → $DEST"
+            aws s3 cp "$URI" "$DEST"
+            test -s "$DEST" || { echo "::error::Downloaded weight file is empty or missing: $DEST"; exit 1; }
+
+            if [ -n "${SHA256:-}" ]; then
+              echo "$SHA256  $DEST" | sha256sum --check --strict
+              echo "$SVC checksum OK."
+            else
+              echo "No checksum configured for $SVC — skipping verification."
+            fi
           fi
 
       - name: Build and push libraryai-${{ matrix.service }}
