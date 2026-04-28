@@ -366,13 +366,53 @@ jobs:
             echo "No staging services currently running — skipping stability wait"
           fi
 
-  # ── 5. end-to-end tests against staging ───────────────────────────────────
+  # ── 5. Admin bootstrap ────────────────────────────────────────────────────
+  bootstrap-admin-staging:
+    needs: deploy-staging
+    runs-on: ubuntu-latest
+    env:
+      CLUSTER: ${{ vars.ECS_CLUSTER_STAGING }}
+    steps:
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Run admin bootstrap task (idempotent)
+        run: |
+          TASK_DEF_ARN=$(aws ecs list-task-definitions \
+            --family-prefix libraryai-migration \
+            --sort DESC \
+            --query 'taskDefinitionArns[0]' \
+            --output text)
+
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$CLUSTER" \
+            --task-definition "$TASK_DEF_ARN" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[${{ vars.ECS_SUBNETS }}],securityGroups=[${{ vars.ECS_SECURITY_GROUPS }}],assignPublicIp=DISABLED}" \
+            --overrides "{\"containerOverrides\":[{\"name\":\"migration\",\"command\":[\"python\",\"-m\",\"scripts.create_admin\",\"--skip-if-exists\"],\"environment\":[{\"name\":\"BOOTSTRAP_ADMIN_USERNAME\",\"value\":\"admin\"},{\"name\":\"BOOTSTRAP_ADMIN_PASSWORD\",\"value\":\"${{ secrets.BOOTSTRAP_ADMIN_PASSWORD }}\"}]}]}" \
+            --query 'tasks[0].taskArn' --output text)
+
+          echo "Bootstrap task: $TASK_ARN"
+          aws ecs wait tasks-stopped --cluster "$CLUSTER" --tasks "$TASK_ARN"
+
+          EXIT=$(aws ecs describe-tasks \
+            --cluster "$CLUSTER" \
+            --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' \
+            --output text)
+          [ "$EXIT" = "0" ] || { echo "Admin bootstrap failed (exit $EXIT)"; exit 1; }
+          echo "Admin bootstrap OK"
+
+  # ── 6. end-to-end tests against staging ───────────────────────────────────
   # TODO: expand E2E coverage to full upload→process→download cycle:
   #   - Upload a real TIFF via POST /v1/jobs, wait for state=completed
   #   - Assert page_lineage records written and output artifact downloadable from S3
   #   - Requires E2E_FIXTURE_URI set to an s3:// URI of a known test image
   e2e-tests:
-    needs: deploy-staging
+    needs: bootstrap-admin-staging
     runs-on: ubuntu-latest
     env:
       BASE_URL: http://${{ vars.ALB_DNS_STAGING }}
