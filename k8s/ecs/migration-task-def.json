@@ -11,7 +11,7 @@
       "name": "migration",
       "image": "ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/libraryai-eep:latest",
       "essential": true,
-      "command": ["alembic", "-c", "services/eep/alembic.ini", "upgrade", "head"],
+      "command": ["sh", "-c", "cd /app/services/eep && alembic upgrade head"],
       "environment": [
         { "name": "PYTHONPATH", "value": "/app" }
       ],
