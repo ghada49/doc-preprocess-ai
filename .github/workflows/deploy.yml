@@ -359,9 +359,14 @@ jobs:
           done
           if [ ${#ACTIVE[@]} -gt 0 ]; then
             echo "Waiting for stable: ${ACTIVE[*]}"
-            aws ecs wait services-stable \
-              --cluster "$CLUSTER" \
-              --services "${ACTIVE[@]}"
+            # aws ecs wait services-stable accepts at most 10 names per call
+            for (( i=0; i<${#ACTIVE[@]}; i+=10 )); do
+              BATCH=("${ACTIVE[@]:i:10}")
+              echo "Waiting batch: ${BATCH[*]}"
+              aws ecs wait services-stable \
+                --cluster "$CLUSTER" \
+                --services "${BATCH[@]}"
+            done
           else
             echo "No staging services currently running — skipping stability wait"
           fi
@@ -440,7 +445,7 @@ jobs:
         id: auth
         run: |
           RESP=$(curl -sf -X POST "$BASE_URL/v1/auth/token" \
-            --data "username=admin&password=${{ secrets.E2E_ADMIN_PASSWORD }}")
+            --data "username=admin&password=${{ secrets.BOOTSTRAP_ADMIN_PASSWORD }}")
           TOKEN=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['access_token'])")
           echo "token=$TOKEN" >> "$GITHUB_OUTPUT"
           echo "Admin login OK"
