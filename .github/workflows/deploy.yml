@@ -457,11 +457,15 @@ jobs:
         id: submit
         run: |
           [ -n "$E2E_FIXTURE_URI" ] || { echo "::error::E2E_FIXTURE_URI is not set — add it as a GitHub Actions variable"; exit 1; }
-          RESP=$(curl -sf -X POST "$BASE_URL/v1/jobs" \
+          RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "$BASE_URL/v1/jobs" \
             -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
             -H "Content-Type: application/json" \
-            -d "{\"collection_id\":\"e2e-smoke-test\",\"material_type\":\"book\",\"pages\":[{\"page_number\":1,\"input_uri\":\"$E2E_FIXTURE_URI\"}]}")
-          JOB_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
+            -d "{\"collection_id\":\"e2e-smoke-test\",\"material_type\":\"book\",\"policy_version\":\"e2e-v1\",\"pages\":[{\"page_number\":1,\"input_uri\":\"$E2E_FIXTURE_URI\"}]}")
+          HTTP_STATUS=$(echo "$RESP" | grep "HTTP_STATUS:" | cut -d: -f2)
+          BODY=$(echo "$RESP" | sed '/HTTP_STATUS:/d')
+          echo "HTTP $HTTP_STATUS — $BODY"
+          [ "$HTTP_STATUS" = "201" ] || { echo "Job submit failed: HTTP $HTTP_STATUS"; exit 1; }
+          JOB_ID=$(echo "$BODY" | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
           echo "job_id=$JOB_ID" >> "$GITHUB_OUTPUT"
           echo "Job submitted: $JOB_ID"
 
