@@ -39,5 +39,7 @@ COPY shared/ ./shared/
 COPY services/eep/ ./services/eep/
 COPY scripts/ ./scripts/
 
+RUN mkdir -p /tmp/prometheus_multiproc
+
 EXPOSE 8000
 CMD ["uvicorn", "services.eep.app.main:app", "--host", "0.0.0.0", "--port", "8000", "--workers", "2"]
