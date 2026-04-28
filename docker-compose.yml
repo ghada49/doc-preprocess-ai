@@ -68,7 +68,7 @@ services:
         until mc ready local; do
           sleep 2;
         done;
-        mc mb --ignore-existing local/${S3_BUCKET_NAME:-libraryai};
+        mc mb --ignore-existing local/${S3_BUCKET_NAME:-libraryai2};
         exit 0;
       "
     networks:

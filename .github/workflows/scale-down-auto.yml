@@ -1,0 +1,151 @@
+name: Auto Scale-Down — Drain and Stop When Idle
+
+# ──────────────────────────────────────────────────────────────────────────────
+# Runs every 15 minutes and automatically stops processing infrastructure when
+# no processable work remains — regardless of human-review states.
+#
+# Mechanism:
+#   Step 1 — Check if processing infrastructure is running (eep-worker proxy).
+#             If desiredCount == 0, nothing to stop — exit early.
+#   Step 2 — Run drain_monitor --assert-drained as a Fargate task.
+#             Exit 0 = IS drained (safe to stop).
+#             Exit 1 = NOT drained (active work remains, wait for next cycle).
+#   Step 3 — If drained, trigger scale-down.yml via workflow_dispatch.
+#
+# Idempotency:
+#   - Step 1 exits early if services are already at 0.
+#   - drain_monitor --assert-drained is a single-shot read-only check.
+#   - scale-down.yml is idempotent (set desired=0 is safe to repeat).
+#   - Running this while scale-down is already in progress is harmless.
+#
+# Human-review states (ptiff_qa_pending, pending_human_correction):
+#   These are excluded from drain_monitor's PAGE_ACTIVE_STATES. They do NOT
+#   block scale-down. If only human-review pages remain, the drain succeeds
+#   and infrastructure shuts down automatically.
+#
+# Services NOT touched by this workflow:
+#   libraryai-eep  — always-on API (receives new jobs even when idle)
+#   libraryai-iep1d — reset to 0 only inside scale-down.yml (on-demand rescue)
+#   Prometheus, Grafana, RDS, ElastiCache, S3 — unaffected
+#
+# To disable automatic scale-down:
+#   Set the PROCESSING_START_MODE GitHub variable to any value other than
+#   "immediate", or disable this workflow entirely via the GitHub UI.
+# ──────────────────────────────────────────────────────────────────────────────
+
+on:
+  schedule:
+    # Every 15 minutes. Adjust frequency here if needed.
+    # Must be more frequent than the longest expected job completion latency.
+    - cron: '*/15 * * * *'
+  workflow_dispatch:  # allows manual trigger for testing
+
+permissions:
+  id-token: write
+  contents: read
+  actions: write  # needed to trigger scale-down.yml via workflow_dispatch
+
+env:
+  AWS_REGION:   ${{ vars.AWS_REGION }}
+  ECS_CLUSTER:  ${{ vars.ECS_CLUSTER }}
+  DRAIN_SUBNET: ${{ vars.DRAIN_SUBNET_ID }}
+  DRAIN_SG:     ${{ vars.DRAIN_SECURITY_GROUP_ID }}
+
+jobs:
+  auto-scale-down:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
+          aws-region: ${{ vars.AWS_REGION }}
+
+      # ── Step 1: Check if processing infrastructure is running ────────────
+      # eep-worker is the proxy: if desiredCount == 0, all normal processing
+      # services are assumed to be stopped (they're always scaled together).
+      - name: Check if processing infrastructure is running
+        id: check_infra
+        run: |
+          DESIRED=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services libraryai-eep-worker \
+            --query 'services[0].desiredCount' --output text 2>/dev/null || echo "0")
+          echo "eep-worker desiredCount=$DESIRED"
+          if [ "$DESIRED" = "0" ] || [ "$DESIRED" = "None" ] || [ -z "$DESIRED" ]; then
+            echo "infra_running=false" >> "$GITHUB_OUTPUT"
+            echo "Processing infrastructure already stopped — nothing to do."
+          else
+            echo "infra_running=true" >> "$GITHUB_OUTPUT"
+            echo "Processing infrastructure is running (eep-worker desired=$DESIRED)."
+          fi
+
+      # ── Step 2: Register drain-monitor task definition ───────────────────
+      - name: Register drain-monitor task definition
+        id: register_drain
+        if: steps.check_infra.outputs.infra_running == 'true'
+        run: |
+          TASK_DEF=$(cat k8s/ecs/drain-monitor-task-def.json \
+            | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
+            | sed "s/REGION/${{ vars.AWS_REGION }}/g")
+          TASK_DEF_ARN=$(echo "$TASK_DEF" | aws ecs register-task-definition \
+            --cli-input-json file:///dev/stdin \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "task_def_arn=$TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
+
+      # ── Step 3: Run drain_monitor --assert-drained as Fargate task ───────
+      # Exit 0 = IS drained (safe to stop) → proceed to scale-down
+      # Exit 1 = NOT drained (work in progress) → stop, retry next cycle
+      - name: Check drain state (drain_monitor --assert-drained)
+        id: drain_check
+        if: steps.check_infra.outputs.infra_running == 'true'
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --task-definition "${{ steps.register_drain.outputs.task_def_arn }}" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$DRAIN_SUBNET],securityGroups=[$DRAIN_SG],assignPublicIp=DISABLED}" \
+            --overrides '{"containerOverrides":[{"name":"drain-monitor","command":["python","/app/scripts/ecs_scaler/drain_monitor.py","--assert-drained"]}]}' \
+            --query 'tasks[0].taskArn' --output text)
+          echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
+          echo "Drain check task started: $TASK_ARN"
+
+          # Wait for task to reach STOPPED (up to 5 min)
+          for i in $(seq 1 30); do
+            STATUS=$(aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --tasks "$TASK_ARN" \
+              --query 'tasks[0].lastStatus' --output text)
+            echo "  attempt $i/30 — status=$STATUS"
+            if [ "$STATUS" = "STOPPED" ]; then break; fi
+            sleep 10
+          done
+
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster "$ECS_CLUSTER" \
+            --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          echo "drain_monitor exit_code=$EXIT_CODE"
+
+          if [ "$EXIT_CODE" = "0" ]; then
+            echo "is_drained=true" >> "$GITHUB_OUTPUT"
+            echo "Drain confirmed — will trigger scale-down."
+          else
+            echo "is_drained=false" >> "$GITHUB_OUTPUT"
+            echo "Active work remains — skipping scale-down this cycle."
+          fi
+
+      # ── Step 4: Trigger scale-down workflow ───────────────────────────────
+      - name: Trigger scale-down.yml (processing complete)
+        if: |
+          steps.check_infra.outputs.infra_running == 'true' &&
+          steps.drain_check.outputs.is_drained == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh workflow run scale-down.yml \
+            --ref "${{ github.ref_name }}" \
+            --field force=false
+          echo "Scale-down triggered — processing window closed."

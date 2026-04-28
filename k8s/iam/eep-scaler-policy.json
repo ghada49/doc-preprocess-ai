@@ -1,0 +1,33 @@
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "ScaleGPUASG",
+      "Effect": "Allow",
+      "Action": [
+        "autoscaling:SetDesiredCapacity",
+        "autoscaling:DescribeAutoScalingGroups"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ScaleProcessingServices",
+      "Effect": "Allow",
+      "Action": [
+        "ecs:UpdateService",
+        "ecs:DescribeServices"
+      ],
+      "Resource": [
+        "arn:aws:ecs:eu-central-1:181137999093:service/libraryai-staging/libraryai-iep0",
+        "arn:aws:ecs:eu-central-1:181137999093:service/libraryai-staging/libraryai-iep1a",
+        "arn:aws:ecs:eu-central-1:181137999093:service/libraryai-staging/libraryai-iep1b",
+        "arn:aws:ecs:eu-central-1:181137999093:service/libraryai-staging/libraryai-iep1e",
+        "arn:aws:ecs:eu-central-1:181137999093:service/libraryai-staging/libraryai-iep2a",
+        "arn:aws:ecs:eu-central-1:181137999093:service/libraryai-staging/libraryai-iep2b",
+        "arn:aws:ecs:eu-central-1:181137999093:service/libraryai-staging/libraryai-eep-worker",
+        "arn:aws:ecs:eu-central-1:181137999093:service/libraryai-staging/libraryai-eep-recovery",
+        "arn:aws:ecs:eu-central-1:181137999093:service/libraryai-staging/libraryai-shadow-worker"
+      ]
+    }
+  ]
+}

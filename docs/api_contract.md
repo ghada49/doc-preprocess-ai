@@ -101,7 +101,7 @@ Generate a presigned S3 PUT URL for direct OTIFF upload.
 ```json
 {
   "upload_url": "https://...",
-  "object_uri": "s3://libraryai/uploads/<uuid>.tiff",
+  "object_uri": "s3://libraryai2/uploads/<uuid>.tiff",
   "expires_in": 3600
 }
 ```
@@ -126,7 +126,7 @@ Create a new processing job.
   "collection_id": "col-001",
   "material_type": "book",
   "pages": [
-    { "page_number": 1, "input_uri": "s3://libraryai/uploads/..." }
+    { "page_number": 1, "input_uri": "s3://libraryai2/uploads/..." }
   ],
   "pipeline_mode": "layout",
   "ptiff_qa_mode": "manual",
@@ -689,7 +689,7 @@ Generate a short-lived presigned GET URL for browser display or download.
 
 ```json
 {
-  "uri": "s3://libraryai/jobs/<job_id>/input/otiff/1.tiff",
+  "uri": "s3://libraryai2/jobs/<job_id>/input/otiff/1.tiff",
   "expires_in": 300
 }
 ```
@@ -703,7 +703,7 @@ Generate a short-lived presigned GET URL for browser display or download.
 
 ```json
 {
-  "uri": "s3://libraryai/jobs/.../1.tiff",
+  "uri": "s3://libraryai2/jobs/.../1.tiff",
   "read_url": "https://minio:9000/libraryai/jobs/.../1.tiff?X-Amz-...",
   "expires_in": 300,
   "content_type_hint": "image/tiff"
@@ -787,11 +787,11 @@ The correction workspace and job detail UI receive raw `s3://` URIs in API respo
 
 ```
 1. Frontend receives artifact URI from API response
-   (e.g., page.output_image_uri = "s3://libraryai/jobs/…/1.tiff")
+   (e.g., page.output_image_uri = "s3://libraryai2/jobs/…/1.tiff")
 
 2. Frontend calls:
    POST /v1/artifacts/presign-read
-   { "uri": "s3://libraryai/jobs/…/1.tiff", "expires_in": 300 }
+   { "uri": "s3://libraryai2/jobs/…/1.tiff", "expires_in": 300 }
 
 3. Backend:
    a. Verifies the URI exists in page_lineage or job_pages (404 if not)

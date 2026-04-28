@@ -153,9 +153,11 @@ jobs:
           echo "shadow-worker stopped."
 
       # ── Step 6: Stop CPU IEP services ────────────────────────────────────
-      - name: Stop CPU IEP services (iep1e, iep2a, iep2b)
+      # NOTE: libraryai-iep1d is a CPU/Fargate service (on-demand rescue path).
+      # It is always reset to 0 here as a safety cleanup even if desired-count is already 0.
+      - name: Stop CPU IEP services (iep1d, iep1e, iep2a, iep2b)
         run: |
-          for SVC in iep1e iep2a iep2b; do
+          for SVC in iep1d iep1e iep2a iep2b; do
             aws ecs update-service \
               --cluster "$ECS_CLUSTER" \
               --service "libraryai-${SVC}" \
@@ -165,13 +167,13 @@ jobs:
           done
           aws ecs wait services-stable \
             --cluster "$ECS_CLUSTER" \
-            --services libraryai-iep1e libraryai-iep2a libraryai-iep2b
+            --services libraryai-iep1d libraryai-iep1e libraryai-iep2a libraryai-iep2b
           echo "CPU IEP services stopped."
 
       # ── Step 7: Stop GPU IEP services ────────────────────────────────────
-      - name: Stop GPU IEP services (iep0, iep1a, iep1b, iep1d)
+      - name: Stop GPU IEP services (iep0, iep1a, iep1b)
         run: |
-          for SVC in iep0 iep1a iep1b iep1d; do
+          for SVC in iep0 iep1a iep1b; do
             DESIRED=$(aws ecs describe-services \
               --cluster "$ECS_CLUSTER" \
               --services "libraryai-${SVC}" \
@@ -188,7 +190,7 @@ jobs:
             fi
           done
           RUNNING=()
-          for SVC in iep0 iep1a iep1b iep1d; do
+          for SVC in iep0 iep1a iep1b; do
             COUNT=$(aws ecs describe-services \
               --cluster "$ECS_CLUSTER" \
               --services "libraryai-${SVC}" \

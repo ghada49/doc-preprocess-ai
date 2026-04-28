@@ -58,7 +58,7 @@ import uuid
 from datetime import datetime, timezone
 
 import redis
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -71,6 +71,7 @@ from services.eep.app.db.session import get_session
 from services.eep.app.jobs.summary import derive_job_status, leaf_pages_from_pages
 from services.eep.app.queue import enqueue_page_task
 from services.eep.app.redis_client import get_redis
+from services.eep.app.scaling.normal_scaler import maybe_trigger_scale_up
 from shared.schemas.eep import TERMINAL_PAGE_STATES
 from shared.schemas.queue import PageTask
 from shared.state_machine import validate_transition
@@ -389,6 +390,7 @@ def get_ptiff_qa_status(
 def approve_page(
     job_id: str,
     page_number: int,
+    background_tasks: BackgroundTasks,
     sub_page_index: int | None = Query(default=None),
     db: Session = Depends(get_session),
     r: redis.Redis = Depends(get_redis),
@@ -471,15 +473,20 @@ def approve_page(
         _sync_job_summary(db, job)
 
     db.commit()
+    enqueued_ok = False
     for task in tasks_to_enqueue:
         try:
             enqueue_page_task(r, task)
+            enqueued_ok = True
         except redis.RedisError:
             logger.exception(
                 "PTIFF QA approve: DB committed but enqueue failed job=%s page_id=%s",
                 job_id,
                 task.page_id,
             )
+
+    if enqueued_ok:
+        background_tasks.add_task(maybe_trigger_scale_up, r)
 
     logger.info(
         "PTIFF QA approve: job=%s page=%d gate_released=%s",
@@ -503,6 +510,7 @@ def approve_page(
 )
 def approve_all(
     job_id: str,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_session),
     r: redis.Redis = Depends(get_redis),
     user: CurrentUser = Depends(require_user),
@@ -573,15 +581,20 @@ def approve_all(
         _sync_job_summary(db, job)
 
     db.commit()
+    enqueued_ok = False
     for task in tasks_to_enqueue:
         try:
             enqueue_page_task(r, task)
+            enqueued_ok = True
         except redis.RedisError:
             logger.exception(
                 "PTIFF QA approve-all: DB committed but enqueue failed job=%s page_id=%s",
                 job_id,
                 task.page_id,
             )
+
+    if enqueued_ok:
+        background_tasks.add_task(maybe_trigger_scale_up, r)
 
     logger.info(
         "PTIFF QA approve-all: job=%s approved_count=%d gate_released=%s",

@@ -24,7 +24,7 @@
       ],
       "environment": [
         { "name": "PYTHONPATH",            "value": "/app" },
-        { "name": "MLFLOW_ARTIFACT_ROOT",  "value": "s3://libraryai/mlflow-artifacts" }
+        { "name": "MLFLOW_ARTIFACT_ROOT",  "value": "s3://libraryai2/mlflow-artifacts" }
       ],
       "secrets": [
         {

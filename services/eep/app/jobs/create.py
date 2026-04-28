@@ -42,7 +42,7 @@ import logging
 import uuid
 
 import redis
-from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, status
 from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session
 
@@ -51,6 +51,7 @@ from services.eep.app.db.models import Job, JobPage
 from services.eep.app.db.session import get_session
 from services.eep.app.queue import enqueue_page_task
 from services.eep.app.redis_client import get_redis
+from services.eep.app.scaling.normal_scaler import maybe_trigger_scale_up
 from shared.schemas.eep import JobCreateRequest, JobCreateResponse
 from shared.schemas.queue import PageTask
 
@@ -67,6 +68,7 @@ router = APIRouter()
 )
 def create_job(
     body: JobCreateRequest,
+    background_tasks: BackgroundTasks,
     db: Session = Depends(get_session),
     r: redis.Redis = Depends(get_redis),
     user: CurrentUser = Depends(require_user),
@@ -161,6 +163,14 @@ def create_job(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Queue unavailable; page tasks could not be enqueued.",
         ) from exc
+
+    # ── 5. Trigger scale-up (immediate mode only) ──────────────────────────────
+    # Fire-and-forget: runs after the 201 response is sent, in a thread pool.
+    # Protected by Redis SET NX lock — concurrent job arrivals do not produce
+    # duplicate ECS/ASG calls.  No-op in scheduled_window mode.
+    # If Redis is unavailable the background task logs and returns silently;
+    # the job is already persisted and will be picked up when workers start.
+    background_tasks.add_task(maybe_trigger_scale_up, r)
 
     return JobCreateResponse(
         job_id=job_id,

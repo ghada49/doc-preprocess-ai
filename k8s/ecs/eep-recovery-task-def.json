@@ -22,7 +22,7 @@
         { "name": "PYTHONPATH",               "value": "/app" },
         { "name": "HEALTH_PORT",              "value": "9101" },
         { "name": "GOOGLE_ENABLED",           "value": "false" },
-        { "name": "S3_BUCKET_NAME",           "value": "libraryai" },
+        { "name": "S3_BUCKET_NAME",           "value": "libraryai2" },
         { "name": "WORKER_TASK_TIMEOUT_SECONDS", "value": "900" },
         { "name": "MAX_CONCURRENT_PAGES",     "value": "2" },
         { "name": "GPU_BACKEND",              "value": "local" },
