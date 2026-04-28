@@ -345,10 +345,14 @@ jobs:
 
       - name: Wait for staging services to stabilise
         run: |
+          # Only wait for Fargate services that deploy.yml is responsible for.
+          # GPU/EC2 IEPs (iep0, iep1a, iep1b) and batch-only services are
+          # managed by scale-up/scale-down and may have desired>0 from a prior
+          # scale-up without GPU capacity available — excluding them avoids a
+          # guaranteed timeout.
+          CORE_SVCS=(eep frontend retraining-worker eep-worker eep-recovery shadow-worker)
           ACTIVE=()
-          for SVC in eep eep-worker eep-recovery shadow-worker \
-                     retraining-worker dataset-builder frontend \
-                     iep0 iep1a iep1b iep1d iep1e iep2a iep2b mlflow; do
+          for SVC in "${CORE_SVCS[@]}"; do
             DESIRED=$(aws ecs describe-services \
               --cluster "$CLUSTER" \
               --services "libraryai-${SVC}" \
@@ -359,16 +363,11 @@ jobs:
           done
           if [ ${#ACTIVE[@]} -gt 0 ]; then
             echo "Waiting for stable: ${ACTIVE[*]}"
-            # aws ecs wait services-stable accepts at most 10 names per call
-            for (( i=0; i<${#ACTIVE[@]}; i+=10 )); do
-              BATCH=("${ACTIVE[@]:i:10}")
-              echo "Waiting batch: ${BATCH[*]}"
-              aws ecs wait services-stable \
-                --cluster "$CLUSTER" \
-                --services "${BATCH[@]}"
-            done
+            aws ecs wait services-stable \
+              --cluster "$CLUSTER" \
+              --services "${ACTIVE[@]}"
           else
-            echo "No staging services currently running — skipping stability wait"
+            echo "No core staging services currently running — skipping stability wait"
           fi
 
   # ── 5. Admin bootstrap ────────────────────────────────────────────────────
