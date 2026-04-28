@@ -83,6 +83,11 @@ jobs:
             dockerfile: services/iep2b/Dockerfile
             build-args: |
               ENABLE_REAL_MODEL=true
+          - service: frontend
+            context: frontend
+            dockerfile: frontend/Dockerfile
+            build-args: |
+              NEXT_PUBLIC_API_BASE_URL=${{ vars.NEXT_PUBLIC_API_BASE_URL }}
           - service: mlflow
             context: .
             dockerfile: services/mlflow/Dockerfile
@@ -296,6 +301,7 @@ jobs:
               iep1e)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1e","clientAliases":[{"port":8007,"dnsName":"iep1e"}]}]}' ;;
               iep2a)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2a","clientAliases":[{"port":8004,"dnsName":"iep2a"}]}]}' ;;
               iep2b)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2b","clientAliases":[{"port":8005,"dnsName":"iep2b"}]}]}' ;;
+              frontend) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"frontend","clientAliases":[{"port":3000,"dnsName":"frontend"}]}]}' ;;
               mlflow)   echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"mlflow","clientAliases":[{"port":5000,"dnsName":"mlflow.libraryai.local"}]}]}' ;;
               *)        echo '{"enabled":true,"namespace":"libraryai.local"}' ;;
             esac
@@ -303,7 +309,7 @@ jobs:
 
           SERVICES=(
             eep eep-worker eep-recovery shadow-worker retraining-worker
-            dataset-builder iep0 iep1a iep1b iep1d iep1e iep2a iep2b mlflow
+            dataset-builder frontend iep0 iep1a iep1b iep1d iep1e iep2a iep2b mlflow
           )
           for SVC in "${SERVICES[@]}"; do
             FILE="k8s/ecs/${SVC}-task-def.json"
@@ -340,7 +346,7 @@ jobs:
         run: |
           ACTIVE=()
           for SVC in eep eep-worker eep-recovery shadow-worker \
-                     retraining-worker dataset-builder \
+                     retraining-worker dataset-builder frontend \
                      iep0 iep1a iep1b iep1d iep1e iep2a iep2b mlflow; do
             DESIRED=$(aws ecs describe-services \
               --cluster "$CLUSTER" \
@@ -363,12 +369,13 @@ jobs:
   # TODO: expand E2E coverage to full upload→process→download cycle:
   #   - Upload a real TIFF via POST /v1/jobs, wait for state=completed
   #   - Assert page_lineage records written and output artifact downloadable from S3
-  #   - Requires s3://libraryai-e2e-fixtures/ populated with a known test image
+  #   - Requires E2E_FIXTURE_URI set to an s3:// URI of a known test image
   e2e-tests:
     needs: deploy-staging
     runs-on: ubuntu-latest
     env:
       BASE_URL: https://${{ vars.ALB_DNS_STAGING }}
+      E2E_FIXTURE_URI: ${{ vars.E2E_FIXTURE_URI }}
     steps:
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -408,10 +415,11 @@ jobs:
       - name: Submit E2E test job
         id: submit
         run: |
+          [ -n "$E2E_FIXTURE_URI" ] || { echo "::error::E2E_FIXTURE_URI is not set — add it as a GitHub Actions variable"; exit 1; }
           RESP=$(curl -sf -X POST "$BASE_URL/v1/jobs" \
             -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
             -H "Content-Type: application/json" \
-            -d '{"source_url":"s3://libraryai-e2e-fixtures/smoke-test-page.tiff","material_type":"book"}')
+            -d "{\"source_url\":\"$E2E_FIXTURE_URI\",\"material_type\":\"book\"}")
           JOB_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
           echo "job_id=$JOB_ID" >> "$GITHUB_OUTPUT"
           echo "Job submitted: $JOB_ID"
@@ -556,6 +564,7 @@ jobs:
               iep1e)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1e","clientAliases":[{"port":8007,"dnsName":"iep1e"}]}]}' ;;
               iep2a)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2a","clientAliases":[{"port":8004,"dnsName":"iep2a"}]}]}' ;;
               iep2b)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2b","clientAliases":[{"port":8005,"dnsName":"iep2b"}]}]}' ;;
+              frontend) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"frontend","clientAliases":[{"port":3000,"dnsName":"frontend"}]}]}' ;;
               mlflow)   echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"mlflow","clientAliases":[{"port":5000,"dnsName":"mlflow.libraryai.local"}]}]}' ;;
               *)        echo '{"enabled":true,"namespace":"libraryai.local"}' ;;
             esac
@@ -563,7 +572,7 @@ jobs:
 
           SERVICES=(
             eep eep-worker eep-recovery shadow-worker retraining-worker
-            dataset-builder iep0 iep1a iep1b iep1d iep1e iep2a iep2b mlflow
+            dataset-builder frontend iep0 iep1a iep1b iep1d iep1e iep2a iep2b mlflow
           )
           for SVC in "${SERVICES[@]}"; do
             FILE="k8s/ecs/${SVC}-task-def.json"
@@ -600,7 +609,7 @@ jobs:
         run: |
           ACTIVE=()
           for SVC in eep eep-worker eep-recovery shadow-worker \
-                     retraining-worker dataset-builder \
+                     retraining-worker dataset-builder frontend \
                      iep0 iep1a iep1b iep1d iep1e iep2a iep2b mlflow; do
             DESIRED=$(aws ecs describe-services \
               --cluster "$CLUSTER" \

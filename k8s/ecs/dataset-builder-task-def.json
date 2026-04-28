@@ -18,7 +18,7 @@
       ],
       "environment": [
         { "name": "PYTHONPATH",               "value": "/app" },
-        { "name": "S3_BUCKET_NAME",           "value": "libraryai" },
+        { "name": "S3_BUCKET_NAME",           "value": "libraryai2" },
         { "name": "RETRAINING_SOURCE_WINDOW", "value": "manual" }
       ],
       "secrets": [

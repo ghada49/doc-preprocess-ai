@@ -20,10 +20,16 @@
       ],
       "environment": [
         { "name": "PYTHONPATH",                   "value": "/app" },
-        { "name": "S3_BUCKET_NAME",               "value": "libraryai" },
+        { "name": "S3_BUCKET_NAME",               "value": "libraryai2" },
         { "name": "POLICY_VERSION",               "value": "v1" },
         { "name": "CORS_ALLOW_ORIGINS",           "value": "*" },
-        { "name": "PROMETHEUS_MULTIPROC_DIR",     "value": "/tmp/prometheus_multiproc" }
+        { "name": "PROMETHEUS_MULTIPROC_DIR",     "value": "/tmp/prometheus_multiproc" },
+        { "name": "PROCESSING_START_MODE",        "value": "immediate" },
+        { "name": "ECS_CLUSTER",                  "value": "CLUSTER_NAME" },
+        { "name": "GPU_ASG_NAME",                 "value": "GPU_ASG_NAME" },
+        { "name": "GPU_ASG_DESIRED",              "value": "1" },
+        { "name": "WORKER_DESIRED_COUNT",         "value": "2" },
+        { "name": "AWS_REGION",                   "value": "REGION" }
       ],
       "secrets": [
         { "name": "DATABASE_URL",         "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/DATABASE_URL" },

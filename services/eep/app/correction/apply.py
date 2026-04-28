@@ -74,7 +74,7 @@ from urllib.parse import urlparse
 import cv2
 import numpy as np
 import redis
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, status
 from pydantic import BaseModel, field_validator, model_validator
 from sqlalchemy import desc
 from sqlalchemy.orm import Session
@@ -87,6 +87,7 @@ from services.eep.app.db.page_state import advance_page_state
 from services.eep.app.db.session import get_session
 from services.eep.app.queue import enqueue_page_task
 from services.eep.app.redis_client import get_redis
+from services.eep.app.scaling.normal_scaler import maybe_trigger_scale_up
 from shared.io.storage import get_backend
 from shared.normalization.deskew import apply_affine_deskew
 from shared.normalization.perspective import four_point_transform
@@ -973,6 +974,7 @@ def apply_correction(
     job_id: str,
     page_number: int,
     body: CorrectionApplyRequest,
+    background_tasks: BackgroundTasks,
     sub_page_index: int | None = Query(default=None),
     db: Session = Depends(get_session),
     r: redis.Redis = Depends(get_redis),
@@ -1075,9 +1077,11 @@ def apply_correction(
             task_to_enqueue = _apply_single_page_correction(db, job, page, body)
 
     db.commit()
+    enqueued_ok = False
     if task_to_enqueue is not None:
         try:
             enqueue_page_task(r, task_to_enqueue)
+            enqueued_ok = True
         except redis.RedisError:
             logger.exception(
                 "Correction apply: DB committed but enqueue failed job=%s page=%d sub=%s",
@@ -1085,4 +1089,11 @@ def apply_correction(
                 page_number,
                 sub_page_index,
             )
+
+    # Trigger scale-up if a processable task was durably committed and enqueued.
+    # Split corrections create children in pending_human_correction (not enqueued),
+    # so enqueued_ok is False for split paths and scale-up is correctly skipped.
+    if enqueued_ok:
+        background_tasks.add_task(maybe_trigger_scale_up, r)
+
     return CorrectionApplyResponse()

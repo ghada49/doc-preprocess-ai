@@ -24,6 +24,23 @@ Scale-down is safe when ALL of:
   - shadow processing depth == 0
   - DB active job count == 0
   - DB active page count == 0
+
+Page state classification (shared/state_machine.py):
+  Processable / active — scale-down must wait:
+    queued, preprocessing, rectification, layout_detection, semantic_norm
+
+  Human-review waiting — scale-down is ALLOWED (these states are intentionally
+  excluded from PAGE_ACTIVE_STATES so infrastructure is not kept running for
+  pages waiting for human input):
+    ptiff_qa_pending, pending_human_correction
+
+  Terminal — no further processing:
+    accepted, review, failed, split
+
+--check-only mode (for scheduled_window workflow):
+  Performs a single check (no polling). Exits 0 if processable work exists
+  (NOT yet drained), exits 1 if already drained (nothing to do). Useful for
+  the scheduled-window.yml workflow to decide whether to trigger scale-up.
 """
 
 from __future__ import annotations
@@ -129,6 +146,39 @@ def main() -> int:
         default=os.getenv("DRAIN_FORCE", "false").lower() == "true",
         help="If true, exit 0 even if drain timed out (unsafe — jobs may be stuck)",
     )
+    # Single-shot modes (no polling):
+    #
+    # --assert-drained
+    #   Exit 0  → IS drained (queues empty, no processable DB work).
+    #             Safe to stop processing infrastructure.
+    #   Exit 1  → NOT drained (active work remains, do NOT stop).
+    #   Used by: scale-down-auto.yml to decide whether to trigger scale-down.
+    #
+    # --assert-has-work
+    #   Exit 0  → HAS processable work (queues or DB active pages non-zero).
+    #             Scale-up is warranted.
+    #   Exit 1  → NO work (already drained, do not start infrastructure).
+    #   Used by: scheduled-window.yml to decide whether to trigger scale-up.
+    #
+    # Exactly one of these flags may be provided. Both are mutually exclusive
+    # with each other and with --force/--timeout-minutes/--poll-interval-seconds.
+    single_shot_group = parser.add_mutually_exclusive_group()
+    single_shot_group.add_argument(
+        "--assert-drained", action="store_true", default=False,
+        help=(
+            "Single-shot: exit 0 if drained (safe to stop), "
+            "exit 1 if active work remains. "
+            "Used by scale-down-auto.yml."
+        ),
+    )
+    single_shot_group.add_argument(
+        "--assert-has-work", action="store_true", default=False,
+        help=(
+            "Single-shot: exit 0 if processable work exists (scale-up warranted), "
+            "exit 1 if already drained (nothing to start). "
+            "Used by scheduled-window.yml."
+        ),
+    )
     args = parser.parse_args()
 
     redis_url = os.environ.get("REDIS_URL", "").strip()
@@ -141,6 +191,38 @@ def main() -> int:
         print("ERROR: DATABASE_URL is not set", flush=True)
         return 1
 
+    r = _redis_client(redis_url)
+    conn = _db_engine(database_url)
+
+    # ── single-shot modes (no polling) ────────────────────────────────────────
+    if args.assert_drained or args.assert_has_work:
+        try:
+            queues = _check_queues(r)
+            active_jobs, active_pages = _check_db(conn)
+            drained = _is_drained(queues, active_jobs, active_pages)
+            now = datetime.now(timezone.utc).isoformat(timespec="seconds")
+            status_line = _status_line(queues, active_jobs, active_pages)
+
+            if args.assert_drained:
+                if drained:
+                    print(f"[{now}] ASSERT-DRAINED: YES — safe to stop. {status_line}", flush=True)
+                    return 0  # exit 0 = IS drained, safe to stop
+                else:
+                    print(f"[{now}] ASSERT-DRAINED: NO — active work remains. {status_line}", flush=True)
+                    return 1  # exit 1 = NOT drained, do not stop
+            else:  # assert_has_work
+                if not drained:
+                    print(f"[{now}] ASSERT-HAS-WORK: YES — processable work exists. {status_line}", flush=True)
+                    return 0  # exit 0 = HAS work, scale-up warranted
+                else:
+                    print(f"[{now}] ASSERT-HAS-WORK: NO — already drained. {status_line}", flush=True)
+                    return 1  # exit 1 = NO work, do not start
+        finally:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
     deadline = time.monotonic() + args.timeout_minutes * 60
     attempt = 0
 
@@ -149,9 +231,6 @@ def main() -> int:
         f"poll={args.poll_interval_seconds}s force={args.force}",
         flush=True,
     )
-
-    r = _redis_client(redis_url)
-    conn = _db_engine(database_url)
 
     try:
         while True:

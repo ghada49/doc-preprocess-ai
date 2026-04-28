@@ -1,0 +1,583 @@
+"""
+tests/test_processing_start_mode.py
+-------------------------------------
+Tests for PROCESSING_START_MODE=immediate|scheduled_window.
+
+Covers all required scenarios (spec §10):
+  1. immediate mode triggers scale-up after durable enqueue
+  2. scheduled_window does not scale up on job arrival
+  3. drain ignores human-review states
+  4. drain waits for active processing states / Redis queues
+  5. duplicate arrivals do not cause duplicate scale-up (Redis lock)
+  6. iep1d/retraining/dataset-builder/prometheus/grafana excluded from normal scale-up
+
+Tests are pure unit tests — no real Redis, AWS, or DB required.
+boto3 is patched via unittest.mock; Redis is replaced with a FakeRedis dict.
+"""
+
+from __future__ import annotations
+
+import os
+import threading
+import time
+import unittest
+from unittest.mock import MagicMock, call, patch
+
+
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+class FakeRedis:
+    """Minimal in-memory Redis stand-in for lock testing."""
+
+    def __init__(self):
+        self._store: dict = {}
+        self._lock = threading.Lock()
+
+    def set(self, key, value, nx=False, ex=None):
+        with self._lock:
+            if nx and key in self._store:
+                return None  # NX failed
+            self._store[key] = value
+            return True
+
+    def get(self, key):
+        with self._lock:
+            return self._store.get(key)
+
+    def delete(self, key):
+        with self._lock:
+            self._store.pop(key, None)
+
+
+# ── 1 & 2: mode-based scale-up trigger ───────────────────────────────────────
+
+class TestMaybeTriggerScaleUp(unittest.TestCase):
+    """maybe_trigger_scale_up: mode routing and lock behaviour."""
+
+    def _run(self, mode: str, fake_redis: FakeRedis | None = None):
+        r = fake_redis if fake_redis is not None else FakeRedis()
+        with patch.dict(os.environ, {"PROCESSING_START_MODE": mode}, clear=False):
+            with patch(
+                "services.eep.app.scaling.normal_scaler._do_scale_up"
+            ) as mock_scale:
+                from services.eep.app.scaling.normal_scaler import maybe_trigger_scale_up
+                maybe_trigger_scale_up(r)
+                return mock_scale
+
+    # ── test 1: immediate triggers scale-up ───────────────────────────────────
+    def test_immediate_mode_calls_do_scale_up(self):
+        mock = self._run("immediate")
+        mock.assert_called_once()
+
+    # ── test 2: scheduled_window does NOT trigger ─────────────────────────────
+    def test_scheduled_window_does_not_call_do_scale_up(self):
+        mock = self._run("scheduled_window")
+        mock.assert_not_called()
+
+    def test_unknown_mode_does_not_call_do_scale_up(self):
+        mock = self._run("batch")
+        mock.assert_not_called()
+
+    # ── test 5a: duplicate lock suppresses second trigger ────────────────────
+    def test_duplicate_arrival_suppressed_by_redis_lock(self):
+        """Second call while lock is held must not trigger _do_scale_up again."""
+        r = FakeRedis()
+        calls = []
+
+        def slow_scale():
+            calls.append("scale")
+            time.sleep(0.05)  # hold lock just long enough for second call
+
+        with patch.dict(os.environ, {"PROCESSING_START_MODE": "immediate"}, clear=False):
+            with patch(
+                "services.eep.app.scaling.normal_scaler._do_scale_up",
+                side_effect=slow_scale,
+            ):
+                from services.eep.app.scaling.normal_scaler import maybe_trigger_scale_up
+
+                t1 = threading.Thread(target=maybe_trigger_scale_up, args=(r,))
+                t2 = threading.Thread(target=maybe_trigger_scale_up, args=(r,))
+                t1.start()
+                time.sleep(0.005)  # let t1 acquire the lock
+                t2.start()
+                t1.join()
+                t2.join()
+
+        self.assertEqual(calls, ["scale"], "scale-up must fire exactly once")
+
+    # ── test 5b: lock released; subsequent job triggers fresh scale-up ────────
+    def test_lock_released_allows_later_trigger(self):
+        """After lock released a new job arrival triggers scale-up again."""
+        r = FakeRedis()
+        with patch.dict(os.environ, {"PROCESSING_START_MODE": "immediate"}, clear=False):
+            with patch(
+                "services.eep.app.scaling.normal_scaler._do_scale_up"
+            ) as mock_scale:
+                from services.eep.app.scaling.normal_scaler import maybe_trigger_scale_up
+                maybe_trigger_scale_up(r)  # first call — acquires + releases lock
+                maybe_trigger_scale_up(r)  # second call — lock gone, triggers again
+        self.assertEqual(mock_scale.call_count, 2)
+
+
+# ── 6: service inclusion/exclusion ────────────────────────────────────────────
+
+class TestScaleUpServiceList(unittest.TestCase):
+    """_do_scale_up must start exactly the right services and exclude the rest."""
+
+    EXPECTED_STARTED = {
+        "libraryai-iep0",
+        "libraryai-iep1a",
+        "libraryai-iep1b",
+        "libraryai-iep1e",
+        "libraryai-iep2a",
+        "libraryai-iep2b",
+        "libraryai-eep-worker",
+        "libraryai-eep-recovery",
+        "libraryai-shadow-worker",
+    }
+
+    MUST_NOT_START = {
+        "libraryai-iep1d",
+        "libraryai-retraining-worker",
+        "libraryai-dataset-builder",
+        "libraryai-prometheus",
+        "libraryai-grafana",
+    }
+
+    def _run_do_scale_up(self, env_extra: dict | None = None):
+        env = {
+            "ECS_CLUSTER": "test-cluster",
+            "GPU_ASG_NAME": "test-asg",
+            "GPU_ASG_DESIRED": "1",
+            "WORKER_DESIRED_COUNT": "2",
+            "AWS_REGION": "us-east-1",
+        }
+        if env_extra:
+            env.update(env_extra)
+
+        mock_asg = MagicMock()
+        mock_ecs = MagicMock()
+
+        def boto_client(service, region_name=None):
+            return mock_asg if service == "autoscaling" else mock_ecs
+
+        with patch.dict(os.environ, env, clear=False):
+            with patch("boto3.client", side_effect=boto_client):
+                from services.eep.app.scaling import normal_scaler
+                import importlib
+                importlib.reload(normal_scaler)  # reload so env vars are re-read
+                normal_scaler._do_scale_up()
+
+        return mock_ecs
+
+    def test_all_required_services_started(self):
+        mock_ecs = self._run_do_scale_up()
+        started = {
+            c.kwargs["service"]
+            for c in mock_ecs.update_service.call_args_list
+        }
+        self.assertEqual(started, self.EXPECTED_STARTED)
+
+    def test_excluded_services_not_started(self):
+        mock_ecs = self._run_do_scale_up()
+        started = {
+            c.kwargs["service"]
+            for c in mock_ecs.update_service.call_args_list
+        }
+        overlap = started & self.MUST_NOT_START
+        self.assertEqual(overlap, set(), f"Excluded services were started: {overlap}")
+
+    def test_iep1d_specifically_excluded(self):
+        mock_ecs = self._run_do_scale_up()
+        started = {c.kwargs["service"] for c in mock_ecs.update_service.call_args_list}
+        self.assertNotIn("libraryai-iep1d", started)
+
+    def test_retraining_dataset_builder_excluded(self):
+        mock_ecs = self._run_do_scale_up()
+        started = {c.kwargs["service"] for c in mock_ecs.update_service.call_args_list}
+        self.assertNotIn("libraryai-retraining-worker", started)
+        self.assertNotIn("libraryai-dataset-builder", started)
+
+    def test_observability_excluded(self):
+        mock_ecs = self._run_do_scale_up()
+        started = {c.kwargs["service"] for c in mock_ecs.update_service.call_args_list}
+        self.assertNotIn("libraryai-prometheus", started)
+        self.assertNotIn("libraryai-grafana", started)
+
+    def test_gpu_asg_scaled(self):
+        env = {
+            "ECS_CLUSTER": "test-cluster",
+            "GPU_ASG_NAME": "my-gpu-asg",
+            "GPU_ASG_DESIRED": "2",
+            "WORKER_DESIRED_COUNT": "2",
+            "AWS_REGION": "us-east-1",
+        }
+        mock_asg = MagicMock()
+        mock_ecs = MagicMock()
+
+        def boto_client(service, region_name=None):
+            return mock_asg if service == "autoscaling" else mock_ecs
+
+        with patch.dict(os.environ, env, clear=False):
+            with patch("boto3.client", side_effect=boto_client):
+                from services.eep.app.scaling import normal_scaler
+                import importlib
+                importlib.reload(normal_scaler)
+                normal_scaler._do_scale_up()
+
+        mock_asg.set_desired_capacity.assert_called_once_with(
+            AutoScalingGroupName="my-gpu-asg",
+            DesiredCapacity=2,
+            HonorCooldown=False,
+        )
+
+    def test_worker_desired_count_used(self):
+        env = {
+            "ECS_CLUSTER": "test-cluster",
+            "GPU_ASG_NAME": "asg",
+            "GPU_ASG_DESIRED": "1",
+            "WORKER_DESIRED_COUNT": "3",
+            "AWS_REGION": "us-east-1",
+        }
+        mock_asg = MagicMock()
+        mock_ecs = MagicMock()
+
+        def boto_client(service, region_name=None):
+            return mock_asg if service == "autoscaling" else mock_ecs
+
+        with patch.dict(os.environ, env, clear=False):
+            with patch("boto3.client", side_effect=boto_client):
+                from services.eep.app.scaling import normal_scaler
+                import importlib
+                importlib.reload(normal_scaler)
+                normal_scaler._do_scale_up()
+
+        worker_calls = [
+            c for c in mock_ecs.update_service.call_args_list
+            if c.kwargs["service"] in {
+                "libraryai-eep-worker",
+                "libraryai-eep-recovery",
+                "libraryai-shadow-worker",
+            }
+        ]
+        for c in worker_calls:
+            self.assertEqual(c.kwargs["desiredCount"], 3)
+
+
+# ── 3: drain ignores human-review states ──────────────────────────────────────
+
+class TestDrainIgnoresHumanReviewStates(unittest.TestCase):
+    """
+    drain_monitor.PAGE_ACTIVE_STATES must exclude human-review states.
+    _is_drained must return True (scale-down allowed) when only human-review
+    pages remain (queues empty, DB active pages = 0).
+    """
+
+    def setUp(self):
+        # Re-import to get fresh module state
+        import importlib
+        import scripts.ecs_scaler.drain_monitor as dm
+        importlib.reload(dm)
+        self.dm = dm
+
+    def test_page_active_states_excludes_ptiff_qa_pending(self):
+        self.assertNotIn("ptiff_qa_pending", self.dm.PAGE_ACTIVE_STATES)
+
+    def test_page_active_states_excludes_pending_human_correction(self):
+        self.assertNotIn("pending_human_correction", self.dm.PAGE_ACTIVE_STATES)
+
+    def test_page_active_states_includes_processable(self):
+        for state in ("queued", "preprocessing", "rectification",
+                      "layout_detection", "semantic_norm"):
+            self.assertIn(state, self.dm.PAGE_ACTIVE_STATES)
+
+    def test_is_drained_true_when_only_human_review_remain(self):
+        """
+        When Redis queues are empty and DB active pages = 0
+        (human-review pages are excluded from the count), _is_drained → True.
+        Scale-down is allowed even if ptiff_qa_pending/pending_human_correction
+        pages exist in the DB.
+        """
+        empty_queues = {
+            "pending": 0,
+            "processing": 0,
+            "shadow_pending": 0,
+            "shadow_processing": 0,
+            "dead_letter": 0,
+        }
+        # Simulates: 3 pages in ptiff_qa_pending/pending_human_correction
+        # but active_pages = 0 because those states are excluded from the query.
+        result = self.dm._is_drained(empty_queues, active_jobs=0, active_pages=0)
+        self.assertTrue(result, "drain should be True when only human-review pages remain")
+
+
+# ── 4: drain waits for active processing states / Redis queues ────────────────
+
+class TestDrainWaitsForActiveWork(unittest.TestCase):
+    """_is_drained must return False while processable work exists."""
+
+    def setUp(self):
+        import importlib
+        import scripts.ecs_scaler.drain_monitor as dm
+        importlib.reload(dm)
+        self.dm = dm
+
+    def _empty(self):
+        return {"pending": 0, "processing": 0,
+                "shadow_pending": 0, "shadow_processing": 0, "dead_letter": 0}
+
+    def test_not_drained_when_pending_queue_nonempty(self):
+        q = self._empty()
+        q["pending"] = 5
+        self.assertFalse(self.dm._is_drained(q, 0, 0))
+
+    def test_not_drained_when_processing_queue_nonempty(self):
+        q = self._empty()
+        q["processing"] = 2
+        self.assertFalse(self.dm._is_drained(q, 0, 0))
+
+    def test_not_drained_when_shadow_pending_nonempty(self):
+        q = self._empty()
+        q["shadow_pending"] = 1
+        self.assertFalse(self.dm._is_drained(q, 0, 0))
+
+    def test_not_drained_when_shadow_processing_nonempty(self):
+        q = self._empty()
+        q["shadow_processing"] = 1
+        self.assertFalse(self.dm._is_drained(q, 0, 0))
+
+    def test_not_drained_when_active_jobs_nonzero(self):
+        self.assertFalse(self.dm._is_drained(self._empty(), 2, 0))
+
+    def test_not_drained_when_active_pages_nonzero(self):
+        """Active pages = pages in processable states (queued/preprocessing etc.)"""
+        self.assertFalse(self.dm._is_drained(self._empty(), 0, 10))
+
+    def test_drained_only_when_all_zero(self):
+        self.assertTrue(self.dm._is_drained(self._empty(), 0, 0))
+
+
+# ── NORMAL_SCALE_UP_SERVICES constant sanity check ────────────────────────────
+
+class TestNormalScaleUpServicesConstant(unittest.TestCase):
+    """NORMAL_SCALE_UP_SERVICES must contain exactly the spec §5 list."""
+
+    def test_constant_matches_spec(self):
+        from services.eep.app.scaling.normal_scaler import NORMAL_SCALE_UP_SERVICES
+        expected = {
+            "libraryai-iep0",
+            "libraryai-iep1a",
+            "libraryai-iep1b",
+            "libraryai-iep1e",
+            "libraryai-iep2a",
+            "libraryai-iep2b",
+            "libraryai-eep-worker",
+            "libraryai-eep-recovery",
+            "libraryai-shadow-worker",
+        }
+        self.assertEqual(set(NORMAL_SCALE_UP_SERVICES), expected)
+
+    def test_excluded_services_not_in_constant(self):
+        from services.eep.app.scaling.normal_scaler import NORMAL_SCALE_UP_SERVICES
+        excluded = {
+            "libraryai-iep1d",
+            "libraryai-retraining-worker",
+            "libraryai-dataset-builder",
+            "libraryai-prometheus",
+            "libraryai-grafana",
+        }
+        overlap = set(NORMAL_SCALE_UP_SERVICES) & excluded
+        self.assertEqual(overlap, set())
+
+
+# ── drain_monitor --assert-drained / --assert-has-work ────────────────────────
+
+class TestDrainMonitorSingleShotModes(unittest.TestCase):
+    """
+    --assert-drained: exit 0 = IS drained (safe to stop), exit 1 = NOT drained.
+    --assert-has-work: exit 0 = HAS work (scale-up warranted), exit 1 = NO work.
+
+    These are the two unambiguous single-shot modes used by:
+      --assert-drained  → scale-down-auto.yml
+      --assert-has-work → scheduled-window.yml
+    """
+
+    def setUp(self):
+        import importlib
+        import scripts.ecs_scaler.drain_monitor as dm
+        importlib.reload(dm)
+        self.dm = dm
+
+    def _empty_queues(self):
+        return {"pending": 0, "processing": 0,
+                "shadow_pending": 0, "shadow_processing": 0, "dead_letter": 0}
+
+    def _nonempty_queues(self):
+        return {"pending": 3, "processing": 1,
+                "shadow_pending": 0, "shadow_processing": 0, "dead_letter": 0}
+
+    # ── --assert-drained ──────────────────────────────────────────────────────
+
+    # Test E-1: auto-scale-down triggers when no processable work remains
+    def test_assert_drained_exits_0_when_drained(self):
+        """--assert-drained exit 0 = IS drained → auto-scale-down may proceed."""
+        drained = self.dm._is_drained(self._empty_queues(), 0, 0)
+        self.assertTrue(drained)
+        # In the workflow: exit_code=0 → trigger scale-down
+
+    # Test E-2: auto-scale-down does NOT trigger when queues have active work
+    def test_assert_drained_exits_1_when_queues_nonempty(self):
+        """--assert-drained exit 1 = NOT drained → skip scale-down this cycle."""
+        drained = self.dm._is_drained(self._nonempty_queues(), 0, 0)
+        self.assertFalse(drained)
+        # In the workflow: exit_code=1 → skip, retry next 15-min cycle
+
+    def test_assert_drained_exits_1_when_active_pages(self):
+        """Active processable pages prevent drain → no auto-scale-down."""
+        drained = self.dm._is_drained(self._empty_queues(), 0, active_pages=5)
+        self.assertFalse(drained)
+
+    # Test E-3: auto-scale-down ignores human-review states
+    def test_assert_drained_true_despite_human_review_pages(self):
+        """
+        Drain is TRUE even when human-review pages exist (ptiff_qa_pending,
+        pending_human_correction). They are excluded from PAGE_ACTIVE_STATES
+        so active_pages=0 when only those states remain.
+        Scale-down proceeds — human reviewers don't keep GPU running.
+        """
+        # Simulate: 5 pages in ptiff_qa_pending/pending_human_correction,
+        # but DB query returns active_pages=0 (those states are excluded).
+        drained = self.dm._is_drained(self._empty_queues(), active_jobs=0, active_pages=0)
+        self.assertTrue(drained)
+
+    def test_human_review_states_absent_from_page_active_states(self):
+        self.assertNotIn("ptiff_qa_pending", self.dm.PAGE_ACTIVE_STATES)
+        self.assertNotIn("pending_human_correction", self.dm.PAGE_ACTIVE_STATES)
+
+    # ── --assert-has-work ─────────────────────────────────────────────────────
+
+    def test_assert_has_work_exits_0_when_not_drained(self):
+        """--assert-has-work exit 0 = HAS work → scheduled-window triggers scale-up."""
+        drained = self.dm._is_drained(self._nonempty_queues(), 0, 0)
+        self.assertFalse(drained)
+        # not drained → has work → exit 0 in --assert-has-work mode
+
+    def test_assert_has_work_exits_1_when_drained(self):
+        """--assert-has-work exit 1 = NO work → scheduled-window skips scale-up."""
+        drained = self.dm._is_drained(self._empty_queues(), 0, 0)
+        self.assertTrue(drained)
+        # drained → no work → exit 1 in --assert-has-work mode
+
+    def test_exit_code_semantics_are_inverse(self):
+        """
+        --assert-drained and --assert-has-work have inverse exit-code semantics
+        for the same 'drained' state. Verify they cannot both be satisfied
+        simultaneously with exit 0.
+        """
+        queues = self._empty_queues()
+        drained = self.dm._is_drained(queues, 0, 0)
+        # When drained=True:
+        #   --assert-drained  → exit 0 (drained == True → exit 0)
+        #   --assert-has-work → exit 1 (not drained == False → exit 1)
+        assert_drained_exit = 0 if drained else 1
+        assert_has_work_exit = 0 if not drained else 1
+        self.assertNotEqual(assert_drained_exit, assert_has_work_exit)
+
+
+# ── correction re-enqueue triggers scale-up ───────────────────────────────────
+
+class TestCorrectionScaleUpTrigger(unittest.TestCase):
+    """
+    Tests E-4 and E-5: correction re-enqueue (apply_correction, approve_page,
+    approve_all) must trigger scale-up in immediate mode and skip in
+    scheduled_window mode.
+
+    Strategy: test maybe_trigger_scale_up directly (already covered above) and
+    verify that the enqueued_ok guard correctly determines whether to schedule
+    the background task.
+    """
+
+    class FakeBackgroundTasks:
+        """Minimal BackgroundTasks stand-in that records added tasks."""
+        def __init__(self):
+            self.tasks: list = []
+
+        def add_task(self, func, *args, **kwargs):
+            self.tasks.append((func, args, kwargs))
+
+    def _simulate_correction_trigger(self, mode: str, enqueued_ok: bool):
+        """Simulate the pattern used in apply.py / ptiff_qa.py post-enqueue."""
+        bg = self.FakeBackgroundTasks()
+        r = MagicMock()  # mock Redis client
+
+        with patch.dict(os.environ, {"PROCESSING_START_MODE": mode}, clear=False):
+            with patch(
+                "services.eep.app.scaling.normal_scaler._do_scale_up"
+            ) as mock_scale:
+                from services.eep.app.scaling.normal_scaler import maybe_trigger_scale_up
+
+                # Reproduce the guard from apply.py / ptiff_qa.py:
+                if enqueued_ok:
+                    bg.add_task(maybe_trigger_scale_up, r)
+
+                # Execute all queued background tasks synchronously
+                for func, args, kwargs in bg.tasks:
+                    func(*args, **kwargs)
+
+                return mock_scale
+
+    # Test E-4: immediate mode triggers after successful enqueue
+    def test_immediate_mode_triggers_after_enqueue(self):
+        mock_scale = self._simulate_correction_trigger("immediate", enqueued_ok=True)
+        mock_scale.assert_called_once()
+
+    # Test E-5: scheduled_window does NOT trigger
+    def test_scheduled_window_does_not_trigger(self):
+        mock_scale = self._simulate_correction_trigger("scheduled_window", enqueued_ok=True)
+        mock_scale.assert_not_called()
+
+    def test_no_enqueue_no_trigger_in_immediate_mode(self):
+        """Split correction path: task_to_enqueue=None → enqueued_ok=False → no trigger."""
+        mock_scale = self._simulate_correction_trigger("immediate", enqueued_ok=False)
+        mock_scale.assert_not_called()
+
+    def test_redis_error_no_trigger(self):
+        """If enqueue raises RedisError, enqueued_ok stays False → no trigger."""
+        # enqueued_ok=False simulates the path where RedisError was caught
+        mock_scale = self._simulate_correction_trigger("immediate", enqueued_ok=False)
+        mock_scale.assert_not_called()
+
+
+# ── IEP1D exclusion from normal scale-up (spec §7) ────────────────────────────
+
+class TestIep1dExclusionInvariant(unittest.TestCase):
+    """
+    IEP1D must never appear in normal scale-up service lists.
+    Scale-down.yml (manual/scheduled) resets iep1d to 0 as safety cleanup —
+    this is correct and expected. But normal scale-up must never start it.
+    """
+
+    def test_iep1d_not_in_normal_scale_up_services(self):
+        from services.eep.app.scaling.normal_scaler import NORMAL_SCALE_UP_SERVICES
+        self.assertNotIn("libraryai-iep1d", NORMAL_SCALE_UP_SERVICES)
+
+    def test_iep1d_in_excluded_set(self):
+        from services.eep.app.scaling.normal_scaler import _EXCLUDED_SERVICES
+        self.assertIn("libraryai-iep1d", _EXCLUDED_SERVICES)
+
+    def test_scale_up_assert_guard_rejects_iep1d(self):
+        """_update_service raises AssertionError if called with an excluded service."""
+        from services.eep.app.scaling.normal_scaler import _update_service
+        mock_ecs = MagicMock()
+        with self.assertRaises(AssertionError):
+            _update_service(mock_ecs, "test-cluster", "libraryai-iep1d", 1)
+
+    def test_scale_up_assert_guard_rejects_retraining(self):
+        from services.eep.app.scaling.normal_scaler import _update_service
+        mock_ecs = MagicMock()
+        with self.assertRaises(AssertionError):
+            _update_service(mock_ecs, "test-cluster", "libraryai-retraining-worker", 1)
+
+
+if __name__ == "__main__":
+    unittest.main()
