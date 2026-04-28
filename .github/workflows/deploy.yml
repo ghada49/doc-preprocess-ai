@@ -460,7 +460,7 @@ jobs:
           RESP=$(curl -sf -X POST "$BASE_URL/v1/jobs" \
             -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
             -H "Content-Type: application/json" \
-            -d "{\"source_url\":\"$E2E_FIXTURE_URI\",\"material_type\":\"book\"}")
+            -d "{\"collection_id\":\"e2e-smoke-test\",\"material_type\":\"book\",\"pages\":[{\"page_number\":1,\"input_uri\":\"$E2E_FIXTURE_URI\"}]}")
           JOB_ID=$(echo "$RESP" | python3 -c "import sys,json; print(json.load(sys.stdin)['job_id'])")
           echo "job_id=$JOB_ID" >> "$GITHUB_OUTPUT"
           echo "Job submitted: $JOB_ID"
