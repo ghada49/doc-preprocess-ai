@@ -350,7 +350,7 @@ jobs:
           # managed by scale-up/scale-down and may have desired>0 from a prior
           # scale-up without GPU capacity available — excluding them avoids a
           # guaranteed timeout.
-          CORE_SVCS=(eep frontend retraining-worker eep-worker eep-recovery shadow-worker)
+          CORE_SVCS=(eep frontend retraining-worker)
           ACTIVE=()
           for SVC in "${CORE_SVCS[@]}"; do
             DESIRED=$(aws ecs describe-services \
