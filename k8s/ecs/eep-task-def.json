@@ -34,9 +34,7 @@
       "secrets": [
         { "name": "DATABASE_URL",         "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/DATABASE_URL" },
         { "name": "REDIS_URL",            "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/REDIS_URL" },
-        { "name": "JWT_SECRET_KEY",       "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/JWT_SECRET_KEY" },
-        { "name": "S3_ACCESS_KEY_ID",     "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/S3_ACCESS_KEY_ID" },
-        { "name": "S3_SECRET_ACCESS_KEY", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/S3_SECRET_ACCESS_KEY" }
+        { "name": "JWT_SECRET_KEY",       "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/JWT_SECRET_KEY" }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",

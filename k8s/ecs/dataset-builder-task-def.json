@@ -22,9 +22,7 @@
         { "name": "RETRAINING_SOURCE_WINDOW", "value": "manual" }
       ],
       "secrets": [
-        { "name": "DATABASE_URL",         "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/DATABASE_URL" },
-        { "name": "S3_ACCESS_KEY_ID",     "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/S3_ACCESS_KEY_ID" },
-        { "name": "S3_SECRET_ACCESS_KEY", "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/S3_SECRET_ACCESS_KEY" }
+        { "name": "DATABASE_URL",         "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/DATABASE_URL" }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
