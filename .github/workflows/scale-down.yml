@@ -173,12 +173,31 @@ jobs:
       - name: Terminate RunPod GPU pods
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          RUNPOD_POD_MODE: ${{ vars.RUNPOD_POD_MODE || 'create' }}
+          RUNPOD_IEP0_POD_ID: ${{ vars.RUNPOD_IEP0_POD_ID || '' }}
+          RUNPOD_IEP1A_POD_ID: ${{ vars.RUNPOD_IEP1A_POD_ID || '' }}
+          RUNPOD_IEP1B_POD_ID: ${{ vars.RUNPOD_IEP1B_POD_ID || '' }}
         run: |
+          set -euo pipefail
+
+          if [ "$RUNPOD_POD_MODE" = "existing" ]; then
+            IEP0_POD="$RUNPOD_IEP0_POD_ID"
+            IEP1A_POD="$RUNPOD_IEP1A_POD_ID"
+            IEP1B_POD="$RUNPOD_IEP1B_POD_ID"
+            ACTION="stop"
+            ACTION_PAST="Stopped"
+          else
+            ACTION="terminate"
+            ACTION_PAST="Terminated"
+          fi
+
           # Read pod IDs saved by scale-up
-          POD_JSON=$(aws s3 cp s3://libraryai2/ops/runpod-pods.json - 2>/dev/null || echo "{}")
-          IEP0_POD=$(echo  "$POD_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('iep0',''))"  2>/dev/null || true)
-          IEP1A_POD=$(echo "$POD_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('iep1a',''))" 2>/dev/null || true)
-          IEP1B_POD=$(echo "$POD_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('iep1b',''))" 2>/dev/null || true)
+          if [ "$ACTION" = "terminate" ]; then
+            POD_JSON=$(aws s3 cp s3://libraryai2/ops/runpod-pods.json - 2>/dev/null || echo "{}")
+            IEP0_POD=$(echo  "$POD_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('iep0',''))"  2>/dev/null || true)
+            IEP1A_POD=$(echo "$POD_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('iep1a',''))" 2>/dev/null || true)
+            IEP1B_POD=$(echo "$POD_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('iep1b',''))" 2>/dev/null || true)
+          fi
 
           terminate_pod() {
             local POD_ID="$1" NAME="$2"
@@ -186,23 +205,32 @@ jobs:
               echo "$NAME: no pod ID found — skipping"
               return
             fi
-            curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
-              -H "Content-Type: application/json" \
-              -d "{\"query\":\"mutation { podTerminate(input: {podId: \\\"${POD_ID}\\\"}) }\"}" \
-              > /dev/null
-            echo "Terminated $NAME pod: $POD_ID"
+            if [ "$ACTION" = "stop" ]; then
+              curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "{\"query\":\"mutation { podStop(input: {podId: \\\"${POD_ID}\\\"}) { id desiredStatus } }\"}" \
+                > /dev/null
+            else
+              curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "{\"query\":\"mutation { podTerminate(input: {podId: \\\"${POD_ID}\\\"}) }\"}" \
+                > /dev/null
+            fi
+            echo "$ACTION_PAST $NAME pod: $POD_ID"
           }
 
           terminate_pod "$IEP0_POD"  "iep0"
           terminate_pod "$IEP1A_POD" "iep1a"
           terminate_pod "$IEP1B_POD" "iep1b"
 
-          # Clean up the pod IDs file
-          aws s3 rm s3://libraryai2/ops/runpod-pods.json 2>/dev/null || true
-          echo "RunPod pods terminated."
+          if [ "$ACTION" = "terminate" ]; then
+            # Clean up the pod IDs file
+            aws s3 rm s3://libraryai2/ops/runpod-pods.json 2>/dev/null || true
+          fi
+          echo "RunPod pods handled with action=$ACTION."
 
       - name: Scale-down complete
         run: |
           echo "All processing services stopped."
           echo "Persistent services left running: EEP API, RDS, ElastiCache, S3."
-          echo "RunPod GPU pods terminated."
+          echo "RunPod GPU pods stopped or terminated."

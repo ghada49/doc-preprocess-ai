@@ -6,8 +6,8 @@ name: Observability Up - Start Prometheus & Grafana
 # stop them with observability-down.yml when done to avoid idle Fargate costs.
 #
 # These services are NOT started by deploy.yml, scale-up.yml, or scale-down.yml.
-# Grafana remains private. This workflow does not create ALB target groups or
-# listener rules for Grafana.
+# Grafana is exposed only by this optional observability workflow under the
+# existing ALB /grafana path.
 
 on:
   workflow_dispatch:
@@ -122,6 +122,67 @@ jobs:
             sleep 10
           done
 
+      - name: Create Grafana ALB target group and listener rule
+        run: |
+          ALB_ARN=$(aws elbv2 describe-load-balancers \
+            --query "LoadBalancers[?DNSName=='${{ vars.ALB_DNS }}'].LoadBalancerArn" \
+            --output text)
+
+          LISTENER_ARN=$(aws elbv2 describe-listeners \
+            --load-balancer-arn "$ALB_ARN" \
+            --query 'Listeners[?Port==`80`].ListenerArn | [0]' \
+            --output text)
+          if [ -z "$LISTENER_ARN" ] || [ "$LISTENER_ARN" = "None" ]; then
+            LISTENER_ARN=$(aws elbv2 describe-listeners \
+              --load-balancer-arn "$ALB_ARN" \
+              --query 'Listeners[?Port==`443`].ListenerArn | [0]' \
+              --output text)
+          fi
+
+          FIRST_SUBNET=$(echo "${{ vars.ECS_SUBNETS }}" | tr ',' '\n' | head -1)
+          VPC_ID=$(aws ec2 describe-subnets \
+            --subnet-ids "$FIRST_SUBNET" \
+            --query 'Subnets[0].VpcId' --output text)
+
+          TG_ARN=$(aws elbv2 describe-target-groups \
+            --names libraryai-grafana-tg \
+            --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || true)
+          if [ -z "$TG_ARN" ] || [ "$TG_ARN" = "None" ]; then
+            TG_ARN=$(aws elbv2 create-target-group \
+              --name libraryai-grafana-tg \
+              --protocol HTTP \
+              --port 3000 \
+              --target-type ip \
+              --vpc-id "$VPC_ID" \
+              --health-check-path /grafana/api/health \
+              --query 'TargetGroups[0].TargetGroupArn' --output text)
+            echo "Created Grafana target group: $TG_ARN"
+          else
+            echo "Grafana target group already exists: $TG_ARN"
+          fi
+
+          EXISTING_RULE=$(aws elbv2 describe-rules \
+            --listener-arn "$LISTENER_ARN" \
+            --query "Rules[?Actions[0].TargetGroupArn=='$TG_ARN'].RuleArn" \
+            --output text 2>/dev/null || true)
+          if [ -z "$EXISTING_RULE" ] || [ "$EXISTING_RULE" = "None" ]; then
+            NEXT_PRIORITY=$(aws elbv2 describe-rules \
+              --listener-arn "$LISTENER_ARN" \
+              --query 'Rules[?Priority!=`default`].Priority' \
+              --output json \
+              | python3 -c "import sys,json; p=[int(x) for x in json.load(sys.stdin)]; print(max(p)+1 if p else 10)")
+            aws elbv2 create-rule \
+              --listener-arn "$LISTENER_ARN" \
+              --priority "$NEXT_PRIORITY" \
+              --conditions '[{"Field":"path-pattern","PathPatternConfig":{"Values":["/grafana","/grafana/*"]}}]' \
+              --actions '[{"Type":"forward","TargetGroupArn":"'"$TG_ARN"'"}]'
+            echo "Created Grafana ALB listener rule for /grafana with priority $NEXT_PRIORITY."
+          else
+            echo "Grafana ALB listener rule already exists: $EXISTING_RULE"
+          fi
+
+          echo "GRAFANA_TG_ARN=$TG_ARN" >> "$GITHUB_ENV"
+
       - name: Start libraryai-grafana (desired=1)
         run: |
           SC_CONFIG='{"enabled":true,"namespace":"libraryai.local"}'
@@ -134,7 +195,8 @@ jobs:
             --task-definition "$TASK_DEF" \
             --desired-count 1 \
             --service-connect-configuration "$SC_CONFIG" \
-            --load-balancers '[]' \
+            --load-balancers "[{\"targetGroupArn\":\"$GRAFANA_TG_ARN\",\"containerName\":\"grafana\",\"containerPort\":3000}]" \
+            --health-check-grace-period-seconds 60 \
             --force-new-deployment
           echo "libraryai-grafana scaled to 1."
 
@@ -190,12 +252,11 @@ jobs:
           echo "  Prometheus & Grafana are running"
           echo "============================================================"
           echo ""
-          echo "  Grafana private URL:"
-          echo "  http://$GRAFANA_PRIVATE_IP:3000"
+          echo "  Grafana ALB URL:"
+          echo "  http://${{ vars.ALB_DNS }}/grafana"
           echo ""
-          echo "  SSM port-forward example:"
-          echo "  aws ssm start-session --target <bastion-instance-id> --document-name AWS-StartPortForwardingSessionToRemoteHost --parameters '{\"host\":[\"$GRAFANA_PRIVATE_IP\"],\"portNumber\":[\"3000\"],\"localPortNumber\":[\"3000\"]}'"
-          echo "  Then open http://localhost:3000"
+          echo "  Grafana private URL:"
+          echo "  http://$GRAFANA_PRIVATE_IP:3000/grafana"
           echo ""
           echo "  Login:    admin"
           echo "  Password: (from Secrets Manager: libraryai/GRAFANA_ADMIN_PASSWORD)"

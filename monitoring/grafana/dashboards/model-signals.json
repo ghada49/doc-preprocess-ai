@@ -107,13 +107,13 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "histogram_quantile(0.50, rate(iep1a_tta_structural_agreement_bucket[5m]))",
+          "expr": "histogram_quantile(0.50, rate(iep1a_tta_structural_agreement_rate_bucket[5m]))",
           "legendFormat": "IEP1A TTA agreement p50",
           "refId": "A"
         },
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "histogram_quantile(0.50, rate(iep1b_tta_structural_agreement_bucket[5m]))",
+          "expr": "histogram_quantile(0.50, rate(iep1b_tta_structural_agreement_rate_bucket[5m]))",
           "legendFormat": "IEP1B TTA agreement p50",
           "refId": "B"
         }
@@ -261,13 +261,13 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "histogram_quantile(0.50, rate(iep2a_region_count_bucket[5m]))",
+          "expr": "histogram_quantile(0.50, rate(iep2a_regions_per_page_bucket[5m]))",
           "legendFormat": "IEP2A region count p50",
           "refId": "A"
         },
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "histogram_quantile(0.50, rate(iep2b_region_count_bucket[5m]))",
+          "expr": "histogram_quantile(0.50, rate(iep2b_regions_per_page_bucket[5m]))",
           "legendFormat": "IEP2B region count p50",
           "refId": "B"
         }
@@ -326,13 +326,13 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "histogram_quantile(0.50, rate(iep1d_rectification_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.50, rate(iep1d_gpu_inference_seconds_bucket[5m]))",
           "legendFormat": "IEP1D p50",
           "refId": "A"
         },
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "histogram_quantile(0.95, rate(iep1d_rectification_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.95, rate(iep1d_gpu_inference_seconds_bucket[5m]))",
           "legendFormat": "IEP1D p95",
           "refId": "B"
         }

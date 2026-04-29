@@ -180,6 +180,7 @@ def _do_scale_up() -> None:
     worker_desired = int(os.environ.get("WORKER_DESIRED_COUNT", "2"))
     region = os.environ.get("AWS_REGION", "us-east-1")
     runpod_api_key = os.environ.get("RUNPOD_API_KEY", "")
+    runpod_pod_mode = os.environ.get("RUNPOD_POD_MODE", "create").strip().lower()
 
     ecs_client = boto3.client("ecs", region_name=region)
 
@@ -191,9 +192,15 @@ def _do_scale_up() -> None:
     iep0_url = iep1a_url = iep1b_url = ""
     if runpod_api_key:
         try:
-            iep0_url, iep1a_url, iep1b_url = _create_runpod_pods(runpod_api_key, region)
+            if runpod_pod_mode == "existing":
+                iep0_url, iep1a_url, iep1b_url = _resume_existing_runpod_pods(
+                    runpod_api_key,
+                    region,
+                )
+            else:
+                iep0_url, iep1a_url, iep1b_url = _create_runpod_pods(runpod_api_key, region)
         except Exception as exc:  # noqa: BLE001
-            logger.error("normal_scaler: RunPod pod creation failed: %s", exc)
+            logger.error("normal_scaler: RunPod pod startup failed: %s", exc)
     else:
         logger.warning("normal_scaler: RUNPOD_API_KEY not set — GPU pods not created")
 
@@ -289,6 +296,65 @@ def _create_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
         logger.warning("normal_scaler: could not save pod IDs to S3: %s", exc)
 
     return iep0_url, iep1a_url, iep1b_url
+
+
+def _resume_existing_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
+    """Resume known RunPod pods and return their stable proxy URLs."""
+    import boto3  # noqa: PLC0415
+    import httpx  # noqa: PLC0415
+
+    pods = {
+        "iep0": (os.environ.get("RUNPOD_IEP0_POD_ID", "").strip(), 8006),
+        "iep1a": (os.environ.get("RUNPOD_IEP1A_POD_ID", "").strip(), 8001),
+        "iep1b": (os.environ.get("RUNPOD_IEP1B_POD_ID", "").strip(), 8002),
+    }
+    missing = [name for name, (pod_id, _) in pods.items() if not pod_id]
+    if missing:
+        raise RuntimeError(f"RUNPOD_POD_MODE=existing but pod IDs are missing: {missing}")
+
+    logger.info(
+        "normal_scaler: resuming existing RunPod pods iep0=%s iep1a=%s iep1b=%s",
+        pods["iep0"][0],
+        pods["iep1a"][0],
+        pods["iep1b"][0],
+    )
+
+    for name, (pod_id, _) in pods.items():
+        mutation = (
+            'mutation { podResume(input: {'
+            f' podId: "{pod_id}", gpuCount: 1'
+            '}) { id desiredStatus imageName } }'
+        )
+        resp = httpx.post(
+            f"https://api.runpod.io/graphql?api_key={api_key}",
+            json={"query": mutation},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if "errors" in data:
+            raise RuntimeError(f"RunPod error resuming {name}: {data['errors']}")
+        status = data["data"]["podResume"].get("desiredStatus")
+        logger.info("normal_scaler: RunPod pod resumed for %s id=%s status=%s", name, pod_id, status)
+
+    try:
+        import json  # noqa: PLC0415
+        bucket = os.environ.get("S3_BUCKET_NAME", "libraryai2")
+        s3 = boto3.client("s3", region_name=region)
+        s3.put_object(
+            Bucket=bucket,
+            Key="ops/runpod-pods.json",
+            Body=json.dumps({name: pod_id for name, (pod_id, _) in pods.items()}).encode(),
+        )
+        logger.info("normal_scaler: existing RunPod pod IDs saved to s3://%s/ops/runpod-pods.json", bucket)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("normal_scaler: could not save existing pod IDs to S3: %s", exc)
+
+    return (
+        f"https://{pods['iep0'][0]}-8006.proxy.runpod.net",
+        f"https://{pods['iep1a'][0]}-8001.proxy.runpod.net",
+        f"https://{pods['iep1b'][0]}-8002.proxy.runpod.net",
+    )
 
 
 # Fields returned by describe_task_definition that must be stripped before re-registering.

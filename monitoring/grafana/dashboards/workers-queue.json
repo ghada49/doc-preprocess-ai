@@ -209,25 +209,25 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "histogram_quantile(0.50, rate(iep1c_gpu_inference_seconds_bucket[5m]))",
-          "legendFormat": "IEP1C p50",
+          "expr": "histogram_quantile(0.50, rate(iep1c_blur_score_bucket[5m]))",
+          "legendFormat": "IEP1C blur p50",
           "refId": "A"
         },
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "histogram_quantile(0.95, rate(iep1c_gpu_inference_seconds_bucket[5m]))",
-          "legendFormat": "IEP1C p95",
+          "expr": "histogram_quantile(0.95, rate(iep1c_skew_residual_bucket[5m]))",
+          "legendFormat": "IEP1C skew p95",
           "refId": "B"
         },
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "histogram_quantile(0.50, rate(iep1d_rectification_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.50, rate(iep1d_gpu_inference_seconds_bucket[5m]))",
           "legendFormat": "IEP1D p50",
           "refId": "C"
         },
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "histogram_quantile(0.95, rate(iep1d_rectification_seconds_bucket[5m]))",
+          "expr": "histogram_quantile(0.95, rate(iep1d_gpu_inference_seconds_bucket[5m]))",
           "legendFormat": "IEP1D p95",
           "refId": "D"
         }

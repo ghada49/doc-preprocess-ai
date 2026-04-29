@@ -240,7 +240,7 @@
       "targets": [
         {
           "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "sum by (route) (rate(eep_artifact_route_total[5m])) / sum(rate(eep_artifact_route_total[5m]))",
+          "expr": "sum by (route) (rate(eep_artifact_validation_route_total[5m])) / sum(rate(eep_artifact_validation_route_total[5m]))",
           "legendFormat": "{{route}}",
           "refId": "A"
         }

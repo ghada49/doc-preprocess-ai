@@ -447,6 +447,10 @@ jobs:
               | sed "s|IEP1E_URL_VALUE|${{ vars.IEP1E_URL || 'http://iep1e:8007' }}|g" \
               | sed "s|IEP2A_URL_VALUE|${{ vars.IEP2A_URL || 'http://iep2a:8004' }}|g" \
               | sed "s|IEP2B_URL_VALUE|${{ vars.IEP2B_URL || 'http://iep2b:8005' }}|g" \
+              | sed "s|RUNPOD_POD_MODE_VALUE|${{ vars.RUNPOD_POD_MODE || 'create' }}|g" \
+              | sed "s|RUNPOD_IEP0_POD_ID_VALUE|${{ vars.RUNPOD_IEP0_POD_ID || '' }}|g" \
+              | sed "s|RUNPOD_IEP1A_POD_ID_VALUE|${{ vars.RUNPOD_IEP1A_POD_ID || '' }}|g" \
+              | sed "s|RUNPOD_IEP1B_POD_ID_VALUE|${{ vars.RUNPOD_IEP1B_POD_ID || '' }}|g" \
               | sed "s|RUNPOD_GPU_TYPE_ID_VALUE|${{ vars.RUNPOD_GPU_TYPE_ID || 'NVIDIA GeForce RTX 3080' }}|g" \
               | sed "s|RUNPOD_CLOUD_TYPE_VALUE|${{ vars.RUNPOD_CLOUD_TYPE || 'COMMUNITY' }}|g")
             REVISION=$(aws ecs register-task-definition \
@@ -767,6 +771,10 @@ jobs:
               | sed "s|IEP1E_URL_VALUE|${{ vars.IEP1E_URL || 'http://iep1e:8007' }}|g" \
               | sed "s|IEP2A_URL_VALUE|${{ vars.IEP2A_URL || 'http://iep2a:8004' }}|g" \
               | sed "s|IEP2B_URL_VALUE|${{ vars.IEP2B_URL || 'http://iep2b:8005' }}|g" \
+              | sed "s|RUNPOD_POD_MODE_VALUE|${{ vars.RUNPOD_POD_MODE || 'create' }}|g" \
+              | sed "s|RUNPOD_IEP0_POD_ID_VALUE|${{ vars.RUNPOD_IEP0_POD_ID || '' }}|g" \
+              | sed "s|RUNPOD_IEP1A_POD_ID_VALUE|${{ vars.RUNPOD_IEP1A_POD_ID || '' }}|g" \
+              | sed "s|RUNPOD_IEP1B_POD_ID_VALUE|${{ vars.RUNPOD_IEP1B_POD_ID || '' }}|g" \
               | sed "s|RUNPOD_GPU_TYPE_ID_VALUE|${{ vars.RUNPOD_GPU_TYPE_ID || 'NVIDIA GeForce RTX 3080' }}|g" \
               | sed "s|RUNPOD_CLOUD_TYPE_VALUE|${{ vars.RUNPOD_CLOUD_TYPE || 'COMMUNITY' }}|g")
             REVISION=$(aws ecs register-task-definition \

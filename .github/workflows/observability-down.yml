@@ -30,8 +30,7 @@ jobs:
           aws ecs update-service \
             --cluster "$ECS_CLUSTER" \
             --service libraryai-grafana \
-            --desired-count 0 \
-            --load-balancers '[]'
+            --desired-count 0
           echo "libraryai-grafana scaled to 0."
 
       - name: Stop libraryai-prometheus (desired=0)
@@ -67,65 +66,12 @@ jobs:
             sleep 10
           done
 
-      - name: Remove legacy Grafana ALB listener rule and target group
-        run: |
-          TG_ARN=$(aws elbv2 describe-target-groups \
-            --names libraryai-grafana-tg \
-            --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || true)
-
-          if [ -z "$TG_ARN" ] || [ "$TG_ARN" = "None" ]; then
-            echo "No legacy Grafana target group found."
-            exit 0
-          fi
-
-          ALB_DNS="${{ vars.ALB_DNS }}"
-          if [ -z "$ALB_DNS" ]; then
-            echo "Legacy Grafana target group exists, but ALB_DNS is unset; skipping listener cleanup."
-            exit 0
-          fi
-
-          ALB_ARN=$(aws elbv2 describe-load-balancers \
-            --query "LoadBalancers[?DNSName=='$ALB_DNS'].LoadBalancerArn" \
-            --output text)
-          if [ -z "$ALB_ARN" ] || [ "$ALB_ARN" = "None" ]; then
-            echo "Could not find ALB for ALB_DNS=$ALB_DNS; skipping listener cleanup."
-            exit 0
-          fi
-
-          LISTENER_ARN=$(aws elbv2 describe-listeners \
-            --load-balancer-arn "$ALB_ARN" \
-            --query 'Listeners[?Port==`443`].ListenerArn | [0]' \
-            --output text)
-          if [ -z "$LISTENER_ARN" ] || [ "$LISTENER_ARN" = "None" ]; then
-            LISTENER_ARN=$(aws elbv2 describe-listeners \
-              --load-balancer-arn "$ALB_ARN" \
-              --query 'Listeners[?Port==`80`].ListenerArn | [0]' \
-              --output text)
-          fi
-          if [ -z "$LISTENER_ARN" ] || [ "$LISTENER_ARN" = "None" ]; then
-            echo "Could not find HTTP/HTTPS listener; skipping listener cleanup."
-            exit 0
-          fi
-
-          RULE_ARN=$(aws elbv2 describe-rules \
-            --listener-arn "$LISTENER_ARN" \
-            --query "Rules[?Actions[0].TargetGroupArn=='$TG_ARN'].RuleArn" \
-            --output text 2>/dev/null || true)
-          if [ -n "$RULE_ARN" ] && [ "$RULE_ARN" != "None" ]; then
-            aws elbv2 delete-rule --rule-arn "$RULE_ARN"
-            echo "Deleted legacy ALB listener rule: $RULE_ARN"
-          fi
-
-          sleep 5
-          aws elbv2 delete-target-group --target-group-arn "$TG_ARN"
-          echo "Deleted legacy Grafana target group: $TG_ARN"
-
       - name: Summary
         run: |
           echo ""
           echo "============================================================"
           echo "  Prometheus and Grafana are stopped."
-          echo "  Grafana remains private and detached from ALB."
+          echo "  Grafana ALB rule/target group are retained for the next observability-up run."
           echo "  Admin dashboard and CloudWatch remain fully available."
           echo "  Run observability-up.yml to restart for the next demo."
           echo "============================================================"

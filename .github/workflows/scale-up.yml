@@ -30,10 +30,47 @@ jobs:
       - name: Create RunPod GPU pods
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          RUNPOD_POD_MODE: ${{ vars.RUNPOD_POD_MODE || 'create' }}
+          RUNPOD_IEP0_POD_ID: ${{ vars.RUNPOD_IEP0_POD_ID || '' }}
+          RUNPOD_IEP1A_POD_ID: ${{ vars.RUNPOD_IEP1A_POD_ID || '' }}
+          RUNPOD_IEP1B_POD_ID: ${{ vars.RUNPOD_IEP1B_POD_ID || '' }}
           RUNPOD_GPU_TYPE_ID: ${{ vars.RUNPOD_GPU_TYPE_ID || 'NVIDIA GeForce RTX 3080' }}
           RUNPOD_CLOUD_TYPE: ${{ vars.RUNPOD_CLOUD_TYPE || 'COMMUNITY' }}
         run: |
           set -euo pipefail
+
+          if [ "$RUNPOD_POD_MODE" = "existing" ]; then
+            IEP0_POD="$RUNPOD_IEP0_POD_ID"
+            IEP1A_POD="$RUNPOD_IEP1A_POD_ID"
+            IEP1B_POD="$RUNPOD_IEP1B_POD_ID"
+            if [ -z "$IEP0_POD" ] || [ -z "$IEP1A_POD" ] || [ -z "$IEP1B_POD" ]; then
+              echo "ERROR: RUNPOD_POD_MODE=existing requires RUNPOD_IEP0_POD_ID, RUNPOD_IEP1A_POD_ID, RUNPOD_IEP1B_POD_ID"
+              exit 1
+            fi
+
+            resume_pod() {
+              local POD_ID="$1" NAME="$2"
+              curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "{\"query\":\"mutation { podResume(input: { podId: \\\"${POD_ID}\\\", gpuCount: 1 }) { id desiredStatus imageName } }\"}" \
+                > /dev/null
+              echo "Resumed $NAME pod: $POD_ID"
+            }
+
+            resume_pod "$IEP0_POD"  "iep0"
+            resume_pod "$IEP1A_POD" "iep1a"
+            resume_pod "$IEP1B_POD" "iep1b"
+
+            echo "IEP0_POD_ID=$IEP0_POD"   >> "$GITHUB_ENV"
+            echo "IEP1A_POD_ID=$IEP1A_POD" >> "$GITHUB_ENV"
+            echo "IEP1B_POD_ID=$IEP1B_POD" >> "$GITHUB_ENV"
+            echo "IEP0_URL=https://${IEP0_POD}-8006.proxy.runpod.net"   >> "$GITHUB_ENV"
+            echo "IEP1A_URL=https://${IEP1A_POD}-8001.proxy.runpod.net" >> "$GITHUB_ENV"
+            echo "IEP1B_URL=https://${IEP1B_POD}-8002.proxy.runpod.net" >> "$GITHUB_ENV"
+            echo "{\"iep0\":\"$IEP0_POD\",\"iep1a\":\"$IEP1A_POD\",\"iep1b\":\"$IEP1B_POD\"}" \
+              | aws s3 cp - s3://libraryai2/ops/runpod-pods.json
+            exit 0
+          fi
 
           create_pod() {
             local NAME="$1" IMAGE="$2" PORT="$3"
