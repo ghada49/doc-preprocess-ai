@@ -37,5 +37,7 @@ COPY shared/ ./shared/
 COPY services/eep/ ./services/eep/
 COPY services/eep_recovery/ ./services/eep_recovery/
 
+RUN mkdir -p /tmp/prometheus_multiproc
+
 EXPOSE 9101
 CMD ["uvicorn", "services.eep_recovery.app.main:app", "--host", "0.0.0.0", "--port", "9101"]

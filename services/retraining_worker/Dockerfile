@@ -52,5 +52,7 @@ COPY shared/ ./shared/
 COPY services/eep/ ./services/eep/
 COPY services/retraining_worker/ ./services/retraining_worker/
 
+RUN mkdir -p /tmp/prometheus_multiproc
+
 EXPOSE 9104
 CMD ["uvicorn", "services.retraining_worker.app.main:app", "--host", "0.0.0.0", "--port", "9104"]

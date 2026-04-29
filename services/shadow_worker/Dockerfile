@@ -37,5 +37,7 @@ COPY shared/ ./shared/
 COPY services/eep/ ./services/eep/
 COPY services/shadow_worker/ ./services/shadow_worker/
 
+RUN mkdir -p /tmp/prometheus_multiproc
+
 EXPOSE 9102
 CMD ["uvicorn", "services.shadow_worker.app.main:app", "--host", "0.0.0.0", "--port", "9102"]
