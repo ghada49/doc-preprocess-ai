@@ -13,80 +13,124 @@ permissions:
 env:
   AWS_REGION:  ${{ vars.AWS_REGION }}
   ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
-  GPU_ASG:     ${{ vars.GPU_ASG_NAME }}
 
 jobs:
   scale-up:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
           aws-region: ${{ vars.AWS_REGION }}
 
-      # ── Step 1: Scale GPU EC2 Auto Scaling Group ─────────────────────────
-      - name: Scale GPU ASG to desired capacity
+      # ── Step 1: Create RunPod GPU pods (iep0, iep1a, iep1b) ─────────────
+      - name: Create RunPod GPU pods
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
         run: |
-          aws autoscaling set-desired-capacity \
-            --auto-scaling-group-name "$GPU_ASG" \
-            --desired-capacity ${{ vars.GPU_ASG_DESIRED || '1' }} \
-            --no-honor-cooldown
-          echo "GPU ASG set to desired=${{ vars.GPU_ASG_DESIRED || '1' }}"
+          set -euo pipefail
 
-      # ── Step 2: Wait for GPU container instances to register ─────────────
-      - name: Wait for GPU container instances to register in ECS cluster
+          create_pod() {
+            local NAME="$1" IMAGE="$2" PORT="$3"
+            RESPONSE=$(curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+              -H "Content-Type: application/json" \
+              -d "{\"query\":\"mutation { podFindAndDeployOnDemand(input: { name: \\\"${NAME}\\\", imageName: \\\"${IMAGE}\\\", gpuTypeId: \\\"NVIDIA GeForce RTX 3080\\\", cloudType: COMMUNITY, containerDiskInGb: 20, minMemoryInGb: 8, minVcpuCount: 2, ports: \\\"${PORT}/http\\\", startJupyter: false, startSsh: false }) { id } }\"}")
+            echo "$RESPONSE" | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+if 'errors' in d:
+    print('RunPod error:', d['errors'], file=sys.stderr)
+    sys.exit(1)
+print(d['data']['podFindAndDeployOnDemand']['id'])
+"
+          }
+
+          IEP0_POD=$(create_pod  "libraryai-iep0"  "gma51/libraryai-iep0:latest"  "8006")
+          IEP1A_POD=$(create_pod "libraryai-iep1a" "gma51/libraryai-iep1a:latest" "8001")
+          IEP1B_POD=$(create_pod "libraryai-iep1b" "gma51/libraryai-iep1b:latest" "8002")
+
+          echo "IEP0_POD_ID=$IEP0_POD"   >> "$GITHUB_ENV"
+          echo "IEP1A_POD_ID=$IEP1A_POD" >> "$GITHUB_ENV"
+          echo "IEP1B_POD_ID=$IEP1B_POD" >> "$GITHUB_ENV"
+
+          echo "IEP0_URL=https://${IEP0_POD}-8006.proxy.runpod.net"   >> "$GITHUB_ENV"
+          echo "IEP1A_URL=https://${IEP1A_POD}-8001.proxy.runpod.net" >> "$GITHUB_ENV"
+          echo "IEP1B_URL=https://${IEP1B_POD}-8002.proxy.runpod.net" >> "$GITHUB_ENV"
+
+          echo "Created RunPod pods:"
+          echo "  iep0:  $IEP0_POD  → https://${IEP0_POD}-8006.proxy.runpod.net"
+          echo "  iep1a: $IEP1A_POD → https://${IEP1A_POD}-8001.proxy.runpod.net"
+          echo "  iep1b: $IEP1B_POD → https://${IEP1B_POD}-8002.proxy.runpod.net"
+
+          # Persist pod IDs so scale-down can terminate them
+          echo "{\"iep0\":\"$IEP0_POD\",\"iep1a\":\"$IEP1A_POD\",\"iep1b\":\"$IEP1B_POD\"}" \
+            | aws s3 cp - s3://libraryai2/ops/runpod-pods.json
+          echo "Pod IDs saved to s3://libraryai2/ops/runpod-pods.json"
+
+      # ── Step 2: Wait for RunPod pods to respond to health checks ─────────
+      - name: Wait for RunPod pods to be ready
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
         run: |
-          REQUIRED=${{ vars.GPU_ASG_DESIRED || '1' }}
-          echo "Waiting for $REQUIRED GPU container instance(s) to register..."
-          for i in $(seq 1 30); do
-            COUNT=$(aws ecs list-container-instances \
-              --cluster "$ECS_CLUSTER" \
-              --status ACTIVE \
-              --filter "attribute:ecs.instance-type =~ g4dn.*" \
-              --query 'length(containerInstanceArns)' --output text 2>/dev/null || echo "0")
-            echo "  Attempt $i/30 — registered GPU instances: $COUNT"
-            if [ "$COUNT" -ge "$REQUIRED" ]; then
-              echo "GPU instances ready."
-              break
-            fi
-            sleep 20
-          done
-          # Final check — fail if instances never appeared
-          COUNT=$(aws ecs list-container-instances \
-            --cluster "$ECS_CLUSTER" \
-            --status ACTIVE \
-            --filter "attribute:ecs.instance-type =~ g4dn.*" \
-            --query 'length(containerInstanceArns)' --output text)
-          if [ "$COUNT" -lt "$REQUIRED" ]; then
-            echo "ERROR: Only $COUNT GPU instance(s) registered after 10 minutes — aborting scale-up"
+          set -euo pipefail
+
+          wait_for_pod() {
+            local POD_ID="$1" PORT="$2" NAME="$3"
+            local URL="https://${POD_ID}-${PORT}.proxy.runpod.net/health"
+            echo "Waiting for $NAME to become ready at $URL ..."
+            for i in $(seq 1 40); do
+              # Check RunPod pod status via API
+              STATUS=$(curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "{\"query\":\"query { pod(input: {podId: \\\"${POD_ID}\\\"}) { desiredStatus runtime { uptimeInSeconds } } }\"}" \
+                | python3 -c "
+import sys, json
+d = json.load(sys.stdin)
+p = d['data']['pod']
+running = p.get('runtime') is not None
+print('RUNNING' if running else p.get('desiredStatus','UNKNOWN'))
+" 2>/dev/null || echo "UNKNOWN")
+              echo "  attempt $i/40 — $NAME pod status=$STATUS"
+              if [ "$STATUS" = "RUNNING" ]; then
+                # Pod is up — check service health endpoint
+                if curl -sf --max-time 10 "$URL" > /dev/null 2>&1; then
+                  echo "$NAME is healthy."
+                  return 0
+                fi
+              fi
+              sleep 15
+            done
+            echo "ERROR: $NAME pod did not become healthy within 10 minutes"
             exit 1
-          fi
+          }
 
-      # ── Step 3: Start GPU inference services ─────────────────────────────
-      # NOTE: libraryai-eep is always-on and is NOT managed by this workflow.
-      - name: Start GPU services (iep0, iep1a, iep1b)
-        run: |
-          for SVC in iep0 iep1a iep1b; do
-            aws ecs update-service \
-              --cluster "$ECS_CLUSTER" \
-              --service "libraryai-${SVC}" \
-              --desired-count 1 \
-              --no-cli-pager
-            echo "Started libraryai-${SVC}"
-          done
+          wait_for_pod "$IEP0_POD_ID"  "8006" "iep0"
+          wait_for_pod "$IEP1A_POD_ID" "8001" "iep1a"
+          wait_for_pod "$IEP1B_POD_ID" "8002" "iep1b"
+          echo "All RunPod GPU pods are healthy."
 
-      # NOTE: libraryai-iep1d is a rescue-path service and is NOT started here.
-      # It remains at desired-count 0 during normal processing.
-      # IEP1D_SCALER_MODE in the eep-worker task controls on-demand startup.
-      # Scale iep1d manually only if IEP1D_SCALER_MODE=disabled and rescue testing is needed.
-      - name: Wait for GPU services to become healthy
+      # ── Step 3: Register eep-worker task def with RunPod IEP URLs ────────
+      - name: Update eep-worker task definition with RunPod IEP URLs
         run: |
-          echo "Waiting for stable: libraryai-iep0 libraryai-iep1a libraryai-iep1b"
-          aws ecs wait services-stable \
-            --cluster "$ECS_CLUSTER" \
-            --services libraryai-iep0 libraryai-iep1a libraryai-iep1b
-          echo "All GPU services healthy."
+          CLUSTER="$ECS_CLUSTER"
+          TASK_DEF=$(cat k8s/ecs/eep-worker-task-def.json \
+            | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
+            | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
+            | sed "s/CLUSTER_NAME/${CLUSTER}/g" \
+            | sed "s|IEP0_URL_VALUE|${IEP0_URL}|g" \
+            | sed "s|IEP1A_URL_VALUE|${IEP1A_URL}|g" \
+            | sed "s|IEP1B_URL_VALUE|${IEP1B_URL}|g" \
+            | sed "s|IEP1E_URL_VALUE|http://iep1e:8007|g" \
+            | sed "s|IEP2A_URL_VALUE|http://iep2a:8004|g" \
+            | sed "s|IEP2B_URL_VALUE|http://iep2b:8005|g")
+          REVISION=$(aws ecs register-task-definition \
+            --cli-input-json "$TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "EEP_WORKER_TASK_DEF=$REVISION" >> "$GITHUB_ENV"
+          echo "Registered eep-worker task def: $REVISION"
 
       # ── Step 4: Start CPU inference services ─────────────────────────────
       - name: Start CPU IEP services (iep1e, iep2a, iep2b)
@@ -108,20 +152,38 @@ jobs:
           echo "All CPU IEP services healthy."
 
       # ── Step 5: Start processing workers ─────────────────────────────────
+      # NOTE: libraryai-eep is always-on and is NOT managed by this workflow.
       - name: Start workers
         run: |
-          for SVC in eep-worker eep-recovery shadow-worker; do
+          DESIRED=${{ vars.WORKER_DESIRED_COUNT || '2' }}
+          # eep-worker gets the new task def with RunPod IEP URLs
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service libraryai-eep-worker \
+            --task-definition "$EEP_WORKER_TASK_DEF" \
+            --desired-count "$DESIRED" \
+            --force-new-deployment \
+            --no-cli-pager
+          echo "Started libraryai-eep-worker desired=$DESIRED (RunPod URLs injected)"
+
+          for SVC in eep-recovery shadow-worker; do
             aws ecs update-service \
               --cluster "$ECS_CLUSTER" \
               --service "libraryai-${SVC}" \
-              --desired-count ${{ vars.WORKER_DESIRED_COUNT || '2' }} \
+              --desired-count "$DESIRED" \
               --no-cli-pager
-            echo "Started libraryai-${SVC} desired=${{ vars.WORKER_DESIRED_COUNT || '2' }}"
+            echo "Started libraryai-${SVC} desired=$DESIRED"
           done
 
+      # NOTE: libraryai-iep1d is a rescue-path service — NOT started here.
       - name: Wait for workers to become healthy
         run: |
           aws ecs wait services-stable \
             --cluster "$ECS_CLUSTER" \
             --services libraryai-eep-worker libraryai-eep-recovery libraryai-shadow-worker
           echo "All workers healthy — processing window open."
+          echo ""
+          echo "RunPod GPU pods:"
+          echo "  iep0:  ${IEP0_URL}"
+          echo "  iep1a: ${IEP1A_URL}"
+          echo "  iep1b: ${IEP1B_URL}"

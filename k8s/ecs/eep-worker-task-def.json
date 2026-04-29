@@ -29,6 +29,7 @@
         { "name": "PROMETHEUS_MULTIPROC_DIR", "value": "/tmp/prometheus_multiproc" },
         { "name": "IEP2A_LAYOUT_BACKEND", "value": "paddleocr" },
         { "name": "MLFLOW_TRACKING_URI", "value": "http://mlflow.libraryai.local:5000" },
+        { "name": "COLD_START_TIMEOUT_SECONDS", "value": "600" },
         { "name": "IEP0_URL",  "value": "IEP0_URL_VALUE" },
         { "name": "IEP1A_URL", "value": "IEP1A_URL_VALUE" },
         { "name": "IEP1B_URL", "value": "IEP1B_URL_VALUE" },

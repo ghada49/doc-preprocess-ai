@@ -162,79 +162,181 @@ def maybe_trigger_scale_up(r: redis_lib.Redis) -> None:
 
 def _do_scale_up() -> None:
     """
-    Call AWS ASG + ECS APIs to start normal-processing infrastructure.
+    Start normal-processing infrastructure.
 
     Starts (in order):
-      1. GPU ASG → GPU_ASG_DESIRED instances
-      2. GPU IEP services (iep0, iep1a, iep1b) → 1
+      1. RunPod GPU pods (iep0, iep1a, iep1b) — if RUNPOD_API_KEY is set
+      2. eep-worker — with RunPod IEP URLs injected into a new task def revision
       3. CPU IEP services (iep1e, iep2a, iep2b) → 1
-      4. Worker services (eep-worker, eep-recovery, shadow-worker) → WORKER_DESIRED_COUNT
+      4. Remaining worker services (eep-recovery, shadow-worker) → WORKER_DESIRED_COUNT
 
     Does NOT start iep1d, retraining-worker, dataset-builder, prometheus, grafana.
 
     Individual failures are logged but do not abort remaining calls.
-    ECS update_service with the same desiredCount is idempotent.
     """
     import boto3  # noqa: PLC0415 — lazy import so tests can patch easily
 
     cluster = os.environ.get("ECS_CLUSTER", "")
-    asg_name = os.environ.get("GPU_ASG_NAME", "")
-    gpu_desired = int(os.environ.get("GPU_ASG_DESIRED", "1"))
     worker_desired = int(os.environ.get("WORKER_DESIRED_COUNT", "2"))
     region = os.environ.get("AWS_REGION", "us-east-1")
+    runpod_api_key = os.environ.get("RUNPOD_API_KEY", "")
 
-    asg_client = boto3.client("autoscaling", region_name=region)
     ecs_client = boto3.client("ecs", region_name=region)
 
-    # 1. Scale GPU ASG ─────────────────────────────────────────────────────────
-    if asg_name:
-        try:
-            asg_client.set_desired_capacity(
-                AutoScalingGroupName=asg_name,
-                DesiredCapacity=gpu_desired,
-                HonorCooldown=False,
-            )
-            logger.info(
-                "normal_scaler: GPU ASG %r desired → %d", asg_name, gpu_desired
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("normal_scaler: GPU ASG scale failed: %s", exc)
-    else:
-        logger.warning(
-            "normal_scaler: GPU_ASG_NAME not set — GPU ASG scale skipped"
-        )
-
     if not cluster:
-        logger.warning(
-            "normal_scaler: ECS_CLUSTER not set — ECS service updates skipped"
-        )
+        logger.warning("normal_scaler: ECS_CLUSTER not set — ECS service updates skipped")
         return
 
-    # 2. GPU IEP services ──────────────────────────────────────────────────────
-    for svc in _GPU_SERVICES:
-        _update_service(ecs_client, cluster, svc, 1)
+    # 1. Create RunPod GPU pods and get their URLs ─────────────────────────────
+    iep0_url = iep1a_url = iep1b_url = ""
+    if runpod_api_key:
+        try:
+            iep0_url, iep1a_url, iep1b_url = _create_runpod_pods(runpod_api_key, region)
+        except Exception as exc:  # noqa: BLE001
+            logger.error("normal_scaler: RunPod pod creation failed: %s", exc)
+    else:
+        logger.warning("normal_scaler: RUNPOD_API_KEY not set — GPU pods not created")
+
+    # 2. Start eep-worker with RunPod IEP URLs baked into task def ────────────
+    eep_worker_task_def_arn: str | None = None
+    if iep0_url:
+        try:
+            eep_worker_task_def_arn = _register_eep_worker_with_runpod_urls(
+                ecs_client, iep0_url, iep1a_url, iep1b_url
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.error("normal_scaler: eep-worker task def update failed: %s", exc)
+
+    _update_service(
+        ecs_client,
+        cluster,
+        "libraryai-eep-worker",
+        worker_desired,
+        task_def_arn=eep_worker_task_def_arn,
+        force_new=eep_worker_task_def_arn is not None,
+    )
 
     # 3. CPU IEP services ──────────────────────────────────────────────────────
     for svc in _CPU_IEP_SERVICES:
         _update_service(ecs_client, cluster, svc, 1)
 
-    # 4. Worker services ───────────────────────────────────────────────────────
-    for svc in _WORKER_SERVICES:
+    # 4. Remaining worker services ─────────────────────────────────────────────
+    for svc in ("libraryai-eep-recovery", "libraryai-shadow-worker"):
         _update_service(ecs_client, cluster, svc, worker_desired)
 
 
-def _update_service(ecs_client, cluster: str, service: str, desired: int) -> None:
+def _create_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
+    """Create RunPod pods for iep0, iep1a, iep1b. Returns (iep0_url, iep1a_url, iep1b_url)."""
+    import boto3  # noqa: PLC0415
+    import httpx  # noqa: PLC0415
+
+    _IEP_PODS = [
+        ("libraryai-iep0",  "gma51/libraryai-iep0:latest",  8006),
+        ("libraryai-iep1a", "gma51/libraryai-iep1a:latest", 8001),
+        ("libraryai-iep1b", "gma51/libraryai-iep1b:latest", 8002),
+    ]
+    pod_ids: dict[str, str] = {}
+
+    for name, image, port in _IEP_PODS:
+        mutation = (
+            'mutation { podFindAndDeployOnDemand(input: {'
+            f' name: "{name}", imageName: "{image}",'
+            ' gpuTypeId: "NVIDIA GeForce RTX 3080", cloudType: COMMUNITY,'
+            f' containerDiskInGb: 20, minMemoryInGb: 8, minVcpuCount: 2,'
+            f' ports: "{port}/http", startJupyter: false, startSsh: false'
+            '}) { id } }'
+        )
+        resp = httpx.post(
+            f"https://api.runpod.io/graphql?api_key={api_key}",
+            json={"query": mutation},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if "errors" in data:
+            raise RuntimeError(f"RunPod error creating {name}: {data['errors']}")
+        pod_ids[name] = data["data"]["podFindAndDeployOnDemand"]["id"]
+        logger.info("normal_scaler: RunPod pod created for %s → id=%s", name, pod_ids[name])
+
+    iep0_url  = f"https://{pod_ids['libraryai-iep0']}-8006.proxy.runpod.net"
+    iep1a_url = f"https://{pod_ids['libraryai-iep1a']}-8001.proxy.runpod.net"
+    iep1b_url = f"https://{pod_ids['libraryai-iep1b']}-8002.proxy.runpod.net"
+
+    # Persist pod IDs so scale-down workflow can terminate them
+    try:
+        import json  # noqa: PLC0415
+        bucket = os.environ.get("S3_BUCKET_NAME", "libraryai2")
+        s3 = boto3.client("s3", region_name=region)
+        s3.put_object(
+            Bucket=bucket,
+            Key="ops/runpod-pods.json",
+            Body=json.dumps({
+                "iep0":  pod_ids["libraryai-iep0"],
+                "iep1a": pod_ids["libraryai-iep1a"],
+                "iep1b": pod_ids["libraryai-iep1b"],
+            }).encode(),
+        )
+        logger.info("normal_scaler: RunPod pod IDs saved to s3://%s/ops/runpod-pods.json", bucket)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("normal_scaler: could not save pod IDs to S3: %s", exc)
+
+    return iep0_url, iep1a_url, iep1b_url
+
+
+# Fields returned by describe_task_definition that must be stripped before re-registering.
+_TASK_DEF_READONLY_FIELDS = frozenset({
+    "taskDefinitionArn", "revision", "status", "requiresAttributes",
+    "compatibilities", "registeredAt", "registeredBy", "deregisteredAt",
+})
+
+
+def _register_eep_worker_with_runpod_urls(
+    ecs_client,
+    iep0_url: str,
+    iep1a_url: str,
+    iep1b_url: str,
+) -> str:
+    """
+    Read the current eep-worker task definition, patch IEP URL env vars with
+    RunPod URLs, register a new revision, and return its ARN.
+    """
+    resp = ecs_client.describe_task_definition(taskDefinition="libraryai-eep-worker")
+    task_def: dict = {k: v for k, v in resp["taskDefinition"].items()
+                      if k not in _TASK_DEF_READONLY_FIELDS}
+
+    url_overrides = {"IEP0_URL": iep0_url, "IEP1A_URL": iep1a_url, "IEP1B_URL": iep1b_url}
+    for container in task_def.get("containerDefinitions", []):
+        container["environment"] = [
+            {"name": e["name"], "value": url_overrides.get(e["name"], e["value"])}
+            for e in container.get("environment", [])
+        ]
+
+    new_rev = ecs_client.register_task_definition(**task_def)
+    arn: str = new_rev["taskDefinition"]["taskDefinitionArn"]
+    logger.info("normal_scaler: registered eep-worker task def %s with RunPod URLs", arn)
+    return arn
+
+
+def _update_service(
+    ecs_client,
+    cluster: str,
+    service: str,
+    desired: int,
+    *,
+    task_def_arn: str | None = None,
+    force_new: bool = False,
+) -> None:
     """Call ecs:UpdateService, logging success or failure. Never raises."""
-    # Safety guard — should never be reached given the constants above.
     assert service not in _EXCLUDED_SERVICES, (
         f"BUG: _update_service called for excluded service {service!r}"
     )
+    kwargs: dict = {"cluster": cluster, "service": service, "desiredCount": desired}
+    if task_def_arn:
+        kwargs["taskDefinition"] = task_def_arn
+    if force_new:
+        kwargs["forceNewDeployment"] = True
     try:
-        ecs_client.update_service(
-            cluster=cluster,
-            service=service,
-            desiredCount=desired,
-        )
+        ecs_client.update_service(**kwargs)
         logger.info("normal_scaler: %s desired → %d", service, desired)
     except Exception as exc:  # noqa: BLE001
         logger.error("normal_scaler: failed to update %s: %s", service, exc)
