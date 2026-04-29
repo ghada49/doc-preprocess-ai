@@ -69,11 +69,44 @@ jobs:
             sleep 10
           done
 
+      # ── Remove Grafana ALB rule and target group ──────────────────────────
+      - name: Remove Grafana ALB listener rule and target group
+        run: |
+          TG_ARN=$(aws elbv2 describe-target-groups \
+            --names libraryai-grafana-tg \
+            --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || true)
+
+          if [ -n "$TG_ARN" ] && [ "$TG_ARN" != "None" ]; then
+            # Find and delete the listener rule that forwards to this TG
+            ALB_ARN=$(aws elbv2 describe-load-balancers \
+              --query "LoadBalancers[?DNSName=='${{ vars.ALB_DNS }}'].LoadBalancerArn" \
+              --output text)
+            LISTENER_ARN=$(aws elbv2 describe-listeners \
+              --load-balancer-arn "$ALB_ARN" \
+              --query 'Listeners[?Port==`80`].ListenerArn' \
+              --output text)
+            RULE_ARN=$(aws elbv2 describe-rules \
+              --listener-arn "$LISTENER_ARN" \
+              --query "Rules[?Actions[0].TargetGroupArn=='$TG_ARN'].RuleArn" \
+              --output text 2>/dev/null || true)
+            if [ -n "$RULE_ARN" ] && [ "$RULE_ARN" != "None" ]; then
+              aws elbv2 delete-rule --rule-arn "$RULE_ARN"
+              echo "Deleted ALB listener rule: $RULE_ARN"
+            fi
+            # Wait briefly for rule deletion before removing TG
+            sleep 5
+            aws elbv2 delete-target-group --target-group-arn "$TG_ARN"
+            echo "Deleted target group: $TG_ARN"
+          else
+            echo "No Grafana target group found — nothing to clean up."
+          fi
+
       - name: Summary
         run: |
           echo ""
           echo "============================================================"
           echo "  Prometheus and Grafana are stopped."
+          echo "  ALB listener rule and Grafana target group removed."
           echo "  Admin dashboard and CloudWatch remain fully available."
           echo "  Run observability-up.yml to restart for the next demo."
           echo "============================================================"
