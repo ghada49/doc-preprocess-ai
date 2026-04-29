@@ -56,18 +56,22 @@ jobs:
           - service: iep0
             context: .
             dockerfile: services/iep0/Dockerfile
+            push_dockerhub: true
           - service: iep1a
             context: .
             dockerfile: services/iep1a/Dockerfile
+            push_dockerhub: true
           - service: iep1b
             context: .
             dockerfile: services/iep1b/Dockerfile
+            push_dockerhub: true
           - service: iep1d
             context: .
             dockerfile: services/iep1d/Dockerfile
           - service: iep1e
             context: .
             dockerfile: services/iep1e/Dockerfile
+            push_dockerhub: true
             build-args: |
               ENABLE_REAL_MODEL=true
           - service: dataset-builder
@@ -76,12 +80,14 @@ jobs:
           - service: iep2a
             context: .
             dockerfile: services/iep2a/Dockerfile
+            push_dockerhub: true
             build-args: |
               ENABLE_REAL_MODEL=true
               ENABLE_PADDLE_BACKEND=true
           - service: iep2b
             context: .
             dockerfile: services/iep2b/Dockerfile
+            push_dockerhub: true
             build-args: |
               ENABLE_REAL_MODEL=true
           - service: frontend
@@ -103,6 +109,13 @@ jobs:
 
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Log in to Docker Hub
+        if: matrix.push_dockerhub == true && secrets.DOCKERHUB_TOKEN != ''
+        uses: docker/login-action@v3
+        with:
+          username: gma51
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
 
       # ── Model-weight download (iep0 / iep1a / iep1b / iep1e / iep1d / iep2a / iep2b) ──
       # Weights are NOT committed to Git (see .gitignore).  They must be stored
@@ -318,6 +331,13 @@ jobs:
           cache-from: type=registry,ref=${{ env.ECR_REGISTRY }}/libraryai-${{ matrix.service }}:latest
           cache-to: type=inline
 
+      - name: Push to Docker Hub (gma51)
+        if: matrix.push_dockerhub == true && secrets.DOCKERHUB_TOKEN != ''
+        run: |
+          docker pull ${{ env.ECR_REGISTRY }}/libraryai-${{ matrix.service }}:latest
+          docker tag ${{ env.ECR_REGISTRY }}/libraryai-${{ matrix.service }}:latest gma51/libraryai-${{ matrix.service }}:latest
+          docker push gma51/libraryai-${{ matrix.service }}:latest
+
   # ── 3. migrate staging database ───────────────────────────────────────────
   migrate-staging:
     needs: build-push
@@ -420,7 +440,13 @@ jobs:
               | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
               | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
               | sed "s/CLUSTER_NAME/${CLUSTER}/g" \
-              | sed 's|:latest|:${{ github.sha }}|g')
+              | sed 's|:latest|:${{ github.sha }}|g' \
+              | sed "s|IEP0_URL_VALUE|${{ vars.IEP0_URL || 'http://iep0:8006' }}|g" \
+              | sed "s|IEP1A_URL_VALUE|${{ vars.IEP1A_URL || 'http://iep1a:8001' }}|g" \
+              | sed "s|IEP1B_URL_VALUE|${{ vars.IEP1B_URL || 'http://iep1b:8002' }}|g" \
+              | sed "s|IEP1E_URL_VALUE|${{ vars.IEP1E_URL || 'http://iep1e:8007' }}|g" \
+              | sed "s|IEP2A_URL_VALUE|${{ vars.IEP2A_URL || 'http://iep2a:8004' }}|g" \
+              | sed "s|IEP2B_URL_VALUE|${{ vars.IEP2B_URL || 'http://iep2b:8005' }}|g")
             REVISION=$(aws ecs register-task-definition \
               --cli-input-json "$TASK_DEF" \
               --query 'taskDefinition.taskDefinitionArn' --output text)
@@ -732,7 +758,13 @@ jobs:
               | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
               | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
               | sed "s/CLUSTER_NAME/${CLUSTER}/g" \
-              | sed 's|:latest|:${{ github.sha }}|g')
+              | sed 's|:latest|:${{ github.sha }}|g' \
+              | sed "s|IEP0_URL_VALUE|${{ vars.IEP0_URL || 'http://iep0:8006' }}|g" \
+              | sed "s|IEP1A_URL_VALUE|${{ vars.IEP1A_URL || 'http://iep1a:8001' }}|g" \
+              | sed "s|IEP1B_URL_VALUE|${{ vars.IEP1B_URL || 'http://iep1b:8002' }}|g" \
+              | sed "s|IEP1E_URL_VALUE|${{ vars.IEP1E_URL || 'http://iep1e:8007' }}|g" \
+              | sed "s|IEP2A_URL_VALUE|${{ vars.IEP2A_URL || 'http://iep2a:8004' }}|g" \
+              | sed "s|IEP2B_URL_VALUE|${{ vars.IEP2B_URL || 'http://iep2b:8005' }}|g")
             REVISION=$(aws ecs register-task-definition \
               --cli-input-json "$TASK_DEF" \
               --query 'taskDefinition.taskDefinitionArn' --output text)
