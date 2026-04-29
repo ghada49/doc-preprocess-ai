@@ -38,6 +38,7 @@ RUN uv pip install --system \
 COPY shared/ ./shared/
 COPY services/eep/ ./services/eep/
 COPY services/eep_worker/ ./services/eep_worker/
+COPY monitoring/__init__.py monitoring/drift_detector.py monitoring/drift_observer.py monitoring/baselines.json ./monitoring/
 
 RUN mkdir -p /tmp/prometheus_multiproc
 

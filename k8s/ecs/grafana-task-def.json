@@ -24,6 +24,10 @@
           "value": "http://prometheus.libraryai.local:9090"
         },
         {
+          "name": "GF_PATHS_PROVISIONING",
+          "value": "/etc/grafana/provisioning"
+        },
+        {
           "name": "GF_SERVER_HTTP_PORT",
           "value": "3000"
         },
@@ -33,11 +37,7 @@
         },
         {
           "name": "GF_SERVER_ROOT_URL",
-          "value": "%(protocol)s://%(domain)s/grafana/"
-        },
-        {
-          "name": "GF_SERVER_SERVE_FROM_SUB_PATH",
-          "value": "true"
+          "value": "%(protocol)s://%(domain)s/"
         }
       ],
       "secrets": [

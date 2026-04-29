@@ -350,7 +350,7 @@ export default function ObservabilityPage() {
               <code className="font-mono">/metrics</code> endpoint on all active services (configured
               via <code className="font-mono">shared/middleware.py</code>). Four pre-built Grafana
               dashboards are provisioned from{" "}
-              <code className="font-mono">monitoring/grafana/provisioning/dashboards/</code>:
+              <code className="font-mono">monitoring/grafana/dashboards/</code>:
               api-service, gate-decisions, model-signals, workers-queue.
             </p>
           </div>

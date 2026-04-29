@@ -28,6 +28,8 @@
         { "name": "ECS_CLUSTER",                  "value": "CLUSTER_NAME" },
         { "name": "GPU_ASG_NAME",                 "value": "GPU_ASG_NAME" },
         { "name": "GPU_ASG_DESIRED",              "value": "1" },
+        { "name": "RUNPOD_GPU_TYPE_ID",           "value": "RUNPOD_GPU_TYPE_ID_VALUE" },
+        { "name": "RUNPOD_CLOUD_TYPE",            "value": "RUNPOD_CLOUD_TYPE_VALUE" },
         { "name": "WORKER_DESIRED_COUNT",         "value": "2" },
         { "name": "AWS_REGION",                   "value": "REGION" }
       ],

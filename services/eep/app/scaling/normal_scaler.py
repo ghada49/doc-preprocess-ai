@@ -230,18 +230,26 @@ def _create_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
     import boto3  # noqa: PLC0415
     import httpx  # noqa: PLC0415
 
+    gpu_type_id = os.environ.get("RUNPOD_GPU_TYPE_ID", "NVIDIA GeForce RTX 3080").strip()
+    cloud_type = os.environ.get("RUNPOD_CLOUD_TYPE", "COMMUNITY").strip().upper()
+
     _IEP_PODS = [
         ("libraryai-iep0",  "gma51/libraryai-iep0:latest",  8006),
         ("libraryai-iep1a", "gma51/libraryai-iep1a:latest", 8001),
         ("libraryai-iep1b", "gma51/libraryai-iep1b:latest", 8002),
     ]
     pod_ids: dict[str, str] = {}
+    logger.info(
+        "normal_scaler: requesting RunPod pods gpu_type=%s cloud_type=%s",
+        gpu_type_id,
+        cloud_type,
+    )
 
     for name, image, port in _IEP_PODS:
         mutation = (
             'mutation { podFindAndDeployOnDemand(input: {'
             f' name: "{name}", imageName: "{image}",'
-            ' gpuTypeId: "NVIDIA GeForce RTX 3080", cloudType: COMMUNITY,'
+            f' gpuTypeId: "{gpu_type_id}", cloudType: {cloud_type},'
             f' containerDiskInGb: 20, minMemoryInGb: 8, minVcpuCount: 2,'
             f' ports: "{port}/http", startJupyter: false, startSsh: false'
             '}) { id } }'
