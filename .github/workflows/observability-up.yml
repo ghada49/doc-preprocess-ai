@@ -161,18 +161,24 @@ jobs:
             echo "Target group already exists: $TG_ARN"
           fi
 
-          # Add listener rule if not already present (use priority 20)
+          # Add listener rule if not already present
           EXISTING_RULE=$(aws elbv2 describe-rules \
             --listener-arn "$LISTENER_ARN" \
             --query "Rules[?Actions[0].TargetGroupArn=='$TG_ARN'].RuleArn" \
             --output text 2>/dev/null || true)
           if [ -z "$EXISTING_RULE" ] || [ "$EXISTING_RULE" = "None" ]; then
+            # Find the highest priority in use, then use max+1 (skip default rule priority 99999)
+            NEXT_PRIORITY=$(aws elbv2 describe-rules \
+              --listener-arn "$LISTENER_ARN" \
+              --query 'Rules[?Priority!=`default`].Priority' \
+              --output json \
+              | python3 -c "import sys,json; p=[int(x) for x in json.load(sys.stdin)]; print(max(p)+1 if p else 10)")
             aws elbv2 create-rule \
               --listener-arn "$LISTENER_ARN" \
-              --priority 20 \
+              --priority "$NEXT_PRIORITY" \
               --conditions '[{"Field":"path-pattern","PathPatternConfig":{"Values":["/grafana","/grafana/*"]}}]' \
               --actions '[{"Type":"forward","TargetGroupArn":"'"$TG_ARN"'"}]'
-            echo "Created ALB listener rule for /grafana"
+            echo "Created ALB listener rule for /grafana (priority=$NEXT_PRIORITY)"
           else
             echo "ALB listener rule already exists: $EXISTING_RULE"
           fi
