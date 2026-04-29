@@ -211,6 +211,10 @@ class TestScaleUpServiceList(unittest.TestCase):
 
     def test_runpod_pods_created_when_api_key_set(self):
         """When RUNPOD_API_KEY is set, _create_runpod_pods is called for iep0/iep1a/iep1b."""
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)  # reload before patching so reload doesn't undo the patch
+
         env = {
             "ECS_CLUSTER": "test-cluster",
             "WORKER_DESIRED_COUNT": "2",
@@ -232,26 +236,26 @@ class TestScaleUpServiceList(unittest.TestCase):
 
         with patch.dict(os.environ, env, clear=False):
             with patch("boto3.client", return_value=mock_ecs):
-                with patch(
-                    "services.eep.app.scaling.normal_scaler._create_runpod_pods",
+                with patch.object(
+                    normal_scaler,
+                    "_create_runpod_pods",
                     return_value=(
                         "https://pod1-8006.proxy.runpod.net",
                         "https://pod2-8001.proxy.runpod.net",
                         "https://pod3-8002.proxy.runpod.net",
                     ),
                 ) as mock_create_pods:
-                    from services.eep.app.scaling import normal_scaler
-                    import importlib
-                    importlib.reload(normal_scaler)
                     normal_scaler._do_scale_up()
 
         mock_create_pods.assert_called_once_with("test-key", "us-east-1")
 
     def test_runpod_pods_skipped_when_no_api_key(self):
         """When RUNPOD_API_KEY is absent, _create_runpod_pods is not called."""
-        with patch(
-            "services.eep.app.scaling.normal_scaler._create_runpod_pods"
-        ) as mock_create_pods:
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        with patch.object(normal_scaler, "_create_runpod_pods") as mock_create_pods:
             self._run_do_scale_up()  # no RUNPOD_API_KEY in env
         mock_create_pods.assert_not_called()
 
