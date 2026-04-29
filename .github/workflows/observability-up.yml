@@ -125,10 +125,70 @@ jobs:
             sleep 10
           done
 
+      # ── Expose Grafana via ALB (/grafana path) ───────────────────────────
+      - name: Create Grafana ALB target group and listener rule
+        run: |
+          # Look up ALB and HTTP listener ARNs from the DNS name
+          ALB_ARN=$(aws elbv2 describe-load-balancers \
+            --query "LoadBalancers[?DNSName=='${{ vars.ALB_DNS }}'].LoadBalancerArn" \
+            --output text)
+          LISTENER_ARN=$(aws elbv2 describe-listeners \
+            --load-balancer-arn "$ALB_ARN" \
+            --query 'Listeners[?Port==`80`].ListenerArn' \
+            --output text)
+
+          # Get VPC ID from the first ECS subnet
+          FIRST_SUBNET=$(echo "${{ vars.ECS_SUBNETS }}" | tr ',' '\n' | head -1)
+          VPC_ID=$(aws ec2 describe-subnets \
+            --subnet-ids "$FIRST_SUBNET" \
+            --query 'Subnets[0].VpcId' --output text)
+
+          # Create target group if it doesn't already exist
+          TG_ARN=$(aws elbv2 describe-target-groups \
+            --names libraryai-grafana-tg \
+            --query 'TargetGroups[0].TargetGroupArn' --output text 2>/dev/null || true)
+          if [ -z "$TG_ARN" ] || [ "$TG_ARN" = "None" ]; then
+            TG_ARN=$(aws elbv2 create-target-group \
+              --name libraryai-grafana-tg \
+              --protocol HTTP \
+              --port 3000 \
+              --target-type ip \
+              --vpc-id "$VPC_ID" \
+              --health-check-path /grafana/api/health \
+              --query 'TargetGroups[0].TargetGroupArn' --output text)
+            echo "Created target group: $TG_ARN"
+          else
+            echo "Target group already exists: $TG_ARN"
+          fi
+
+          # Add listener rule if not already present
+          EXISTING_RULE=$(aws elbv2 describe-rules \
+            --listener-arn "$LISTENER_ARN" \
+            --query "Rules[?Actions[0].TargetGroupArn=='$TG_ARN'].RuleArn" \
+            --output text 2>/dev/null || true)
+          if [ -z "$EXISTING_RULE" ] || [ "$EXISTING_RULE" = "None" ]; then
+            # Find the highest priority in use, then use max+1 (skip default rule priority 99999)
+            NEXT_PRIORITY=$(aws elbv2 describe-rules \
+              --listener-arn "$LISTENER_ARN" \
+              --query 'Rules[?Priority!=`default`].Priority' \
+              --output json \
+              | python3 -c "import sys,json; p=[int(x) for x in json.load(sys.stdin)]; print(max(p)+1 if p else 10)")
+            aws elbv2 create-rule \
+              --listener-arn "$LISTENER_ARN" \
+              --priority "$NEXT_PRIORITY" \
+              --conditions '[{"Field":"path-pattern","PathPatternConfig":{"Values":["/grafana","/grafana/*"]}}]' \
+              --actions '[{"Type":"forward","TargetGroupArn":"'"$TG_ARN"'"}]'
+            echo "Created ALB listener rule for /grafana (priority=$NEXT_PRIORITY)"
+          else
+            echo "ALB listener rule already exists: $EXISTING_RULE"
+          fi
+
+          echo "GRAFANA_TG_ARN=$TG_ARN" >> "$GITHUB_ENV"
+          echo "GRAFANA_LISTENER_ARN=$LISTENER_ARN" >> "$GITHUB_ENV"
+
       # ── Start Grafana ─────────────────────────────────────────────────────
       - name: Start libraryai-grafana (desired=1)
         run: |
-          # Enable Service Connect so Grafana is reachable within the cluster
           SC_CONFIG='{"enabled":true,"namespace":"libraryai.local"}'
           TASK_DEF=$(aws ecs describe-task-definition \
             --task-definition libraryai-grafana \
@@ -139,6 +199,8 @@ jobs:
             --task-definition "$TASK_DEF" \
             --desired-count 1 \
             --service-connect-configuration "$SC_CONFIG" \
+            --load-balancers "[{\"targetGroupArn\":\"$GRAFANA_TG_ARN\",\"containerName\":\"grafana\",\"containerPort\":3000}]" \
+            --health-check-grace-period-seconds 60 \
             --force-new-deployment
           echo "libraryai-grafana scaled to 1."
 
@@ -171,49 +233,17 @@ jobs:
       # ── Print access instructions ─────────────────────────────────────────
       - name: Print Grafana access instructions
         run: |
-          # Resolve Grafana task private IP for access instructions
-          TASK_ARN=$(aws ecs list-tasks \
-            --cluster "$ECS_CLUSTER" \
-            --service-name libraryai-grafana \
-            --desired-status RUNNING \
-            --query 'taskArns[0]' --output text 2>/dev/null || echo "NONE")
-          GRAFANA_IP="<not resolved>"
-          if [ "$TASK_ARN" != "NONE" ] && [ -n "$TASK_ARN" ]; then
-            ENI_ID=$(aws ecs describe-tasks \
-              --cluster "$ECS_CLUSTER" \
-              --tasks "$TASK_ARN" \
-              --query "tasks[0].attachments[0].details[?name=='networkInterfaceId'].value | [0]" \
-              --output text 2>/dev/null || echo "")
-            if [ -n "$ENI_ID" ] && [ "$ENI_ID" != "None" ]; then
-              GRAFANA_IP=$(aws ec2 describe-network-interfaces \
-                --network-interface-ids "$ENI_ID" \
-                --query 'NetworkInterfaces[0].PrivateIpAddress' \
-                --output text 2>/dev/null || echo "<not resolved>")
-            fi
-          fi
-
           echo ""
           echo "============================================================"
           echo "  Prometheus & Grafana are running"
           echo "============================================================"
           echo ""
-          echo "  Grafana private IP: $GRAFANA_IP"
-          echo "  Grafana port:       3000"
-          echo "  Default user:       admin"
-          echo "  Password:           from Secrets Manager: libraryai/GRAFANA_ADMIN_PASSWORD"
+          echo "  Grafana public URL:"
+          echo "  http://${{ vars.ALB_DNS }}/grafana"
           echo ""
-          echo "  Access options:"
-          echo "  1. If you have VPN/bastion access to the VPC:"
-          echo "     http://$GRAFANA_IP:3000"
-          echo ""
-          echo "  2. Port forward via SSM (requires Session Manager plugin):"
-          echo "     aws ssm start-session \\"
-          echo "       --target <bastion-instance-id> \\"
-          echo "       --document-name AWS-StartPortForwardingSessionToRemoteHost \\"
-          echo "       --parameters '{\"host\":[\"$GRAFANA_IP\"],\"portNumber\":[\"3000\"],\"localPortNumber\":[\"3000\"]}'"
-          echo "     Then open: http://localhost:3000"
-          echo ""
-          echo "  3. Temporarily add to your existing ALB target group on port 3000."
+          echo "  Login:    admin"
+          echo "  Password: (from Secrets Manager: libraryai/GRAFANA_ADMIN_PASSWORD)"
+          echo "            ${{ secrets.GRAFANA_ADMIN_PASSWORD }}"
           echo ""
           echo "  Notes:"
           echo "  - Dashboards may take a few minutes to populate with data."

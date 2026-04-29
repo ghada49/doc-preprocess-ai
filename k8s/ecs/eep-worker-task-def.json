@@ -29,9 +29,10 @@
         { "name": "PROMETHEUS_MULTIPROC_DIR", "value": "/tmp/prometheus_multiproc" },
         { "name": "IEP2A_LAYOUT_BACKEND", "value": "paddleocr" },
         { "name": "MLFLOW_TRACKING_URI", "value": "http://mlflow.libraryai.local:5000" },
-        { "name": "IEP0_URL",  "value": "http://iep0:8006" },
-        { "name": "IEP1A_URL", "value": "http://iep1a:8001" },
-        { "name": "IEP1B_URL", "value": "http://iep1b:8002" },
+        { "name": "COLD_START_TIMEOUT_SECONDS", "value": "600" },
+        { "name": "IEP0_URL",  "value": "IEP0_URL_VALUE" },
+        { "name": "IEP1A_URL", "value": "IEP1A_URL_VALUE" },
+        { "name": "IEP1B_URL", "value": "IEP1B_URL_VALUE" },
         { "name": "IEP1D_URL", "value": "http://iep1d:8003" },
         { "name": "IEP1D_SCALER_MODE",                  "value": "ecs" },
         { "name": "IEP1D_SERVICE_NAME",                  "value": "libraryai-iep1d" },
@@ -40,9 +41,9 @@
         { "name": "IEP1D_SCALE_TIMEOUT_SECONDS",         "value": "600" },
         { "name": "IEP1D_READY_TIMEOUT_SECONDS",         "value": "300" },
         { "name": "IEP1D_SCALE_DOWN_AFTER_IDLE_SECONDS", "value": "300" },
-        { "name": "IEP1E_URL", "value": "http://iep1e:8007" },
-        { "name": "IEP2A_URL", "value": "http://iep2a:8004" },
-        { "name": "IEP2B_URL", "value": "http://iep2b:8005" }
+        { "name": "IEP1E_URL", "value": "IEP1E_URL_VALUE" },
+        { "name": "IEP2A_URL", "value": "IEP2A_URL_VALUE" },
+        { "name": "IEP2B_URL", "value": "IEP2B_URL_VALUE" }
       ],
       "secrets": [
         { "name": "DATABASE_URL",         "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/DATABASE_URL" },

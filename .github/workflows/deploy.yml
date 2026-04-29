@@ -56,18 +56,22 @@ jobs:
           - service: iep0
             context: .
             dockerfile: services/iep0/Dockerfile
+            push_dockerhub: true
           - service: iep1a
             context: .
             dockerfile: services/iep1a/Dockerfile
+            push_dockerhub: true
           - service: iep1b
             context: .
             dockerfile: services/iep1b/Dockerfile
+            push_dockerhub: true
           - service: iep1d
             context: .
             dockerfile: services/iep1d/Dockerfile
           - service: iep1e
             context: .
             dockerfile: services/iep1e/Dockerfile
+            push_dockerhub: true
             build-args: |
               ENABLE_REAL_MODEL=true
           - service: dataset-builder
@@ -76,12 +80,14 @@ jobs:
           - service: iep2a
             context: .
             dockerfile: services/iep2a/Dockerfile
+            push_dockerhub: true
             build-args: |
               ENABLE_REAL_MODEL=true
               ENABLE_PADDLE_BACKEND=true
           - service: iep2b
             context: .
             dockerfile: services/iep2b/Dockerfile
+            push_dockerhub: true
             build-args: |
               ENABLE_REAL_MODEL=true
           - service: frontend
@@ -104,28 +110,53 @@ jobs:
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      # ── Model-weight download (iep1d / iep2a / iep2b only) ────────────────
+      - name: Log in to Docker Hub
+        if: matrix.push_dockerhub == true
+        uses: docker/login-action@v3
+        with:
+          username: gma51
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # ── Model-weight download (iep0 / iep1a / iep1b / iep1e / iep1d / iep2a / iep2b) ──
       # Weights are NOT committed to Git (see .gitignore).  They must be stored
       # in S3 and referenced via GitHub Actions repository variables:
       #
-      #   IEP1D_WEIGHTS_URI   s3://…/iep1d/best_model.pkl          (single file)
-      #   IEP2A_WEIGHTS_URI   s3://…/iep2a/pp-doclayoutv2.tar.gz   (tar.gz archive)
+      #   IEP0_WEIGHTS_URI    s3://libraryai2/models/iep0/iep0-models.tar.gz    (flat tar.gz)
+      #   IEP1A_WEIGHTS_URI   s3://libraryai2/models/iep1a/iep1a-models.tar.gz  (flat tar.gz)
+      #   IEP1B_WEIGHTS_URI   s3://libraryai2/models/iep1b/iep1b-models.tar.gz  (flat tar.gz)
+      #   IEP1E_WEIGHTS_URI   s3://libraryai2/models/iep1e/iep1e-models.tar.gz  (flat tar.gz)
+      #   IEP1D_WEIGHTS_URI   s3://…/iep1d/best_model.pkl                       (single file)
+      #   IEP2A_WEIGHTS_URI   s3://…/iep2a/pp-doclayoutv2.tar.gz               (tar.gz archive)
       #     Archive must contain one top-level directory whose contents unpack to:
       #       models/iep2a/paddle/PP-DocLayoutV2/{config.json,inference.yml,inference.pdiparams,…}
       #   IEP2B_WEIGHTS_URI   s3://…/iep2b/doclayout_yolo_docstructbench_imgsz1024.pt (single file)
       #
+      # IMPORTANT — archive format for iep0 / iep1a / iep1b / iep1e:
+      #   Archives were created with: tar -czf archive.tar.gz -C models/<svc> .
+      #   Contents are relative to the model directory (no top-level wrapper directory).
+      #   Extract with: tar -xzf "$ARCHIVE" -C "$DEST_DIR"  (do NOT use --strip-components=1)
+      #
       # Optional SHA-256 checksums (verified before extraction / use):
+      #   IEP0_WEIGHTS_SHA256 / IEP1A_WEIGHTS_SHA256 / IEP1B_WEIGHTS_SHA256 / IEP1E_WEIGHTS_SHA256
       #   IEP1D_WEIGHTS_SHA256 / IEP2A_WEIGHTS_SHA256 / IEP2B_WEIGHTS_SHA256
       #
       # IAM requirement: the github-actions-deploy OIDC role needs
-      #   s3:GetObject on arn:aws:s3:::libraryai-models/iep*
+      #   s3:GetObject on arn:aws:s3:::libraryai2/models/iep*
       # No long-lived keys — OIDC credentials from the step above are reused.
       - name: Download model weights
-        if: contains(fromJSON('["iep1d","iep2a","iep2b"]'), matrix.service)
+        if: contains(fromJSON('["iep0","iep1a","iep1b","iep1e","iep1d","iep2a","iep2b"]'), matrix.service)
         env:
+          IEP0_WEIGHTS_URI:     ${{ vars.IEP0_WEIGHTS_URI }}
+          IEP1A_WEIGHTS_URI:    ${{ vars.IEP1A_WEIGHTS_URI }}
+          IEP1B_WEIGHTS_URI:    ${{ vars.IEP1B_WEIGHTS_URI }}
+          IEP1E_WEIGHTS_URI:    ${{ vars.IEP1E_WEIGHTS_URI }}
           IEP1D_WEIGHTS_URI:    ${{ vars.IEP1D_WEIGHTS_URI }}
           IEP2A_WEIGHTS_URI:    ${{ vars.IEP2A_WEIGHTS_URI }}
           IEP2B_WEIGHTS_URI:    ${{ vars.IEP2B_WEIGHTS_URI }}
+          IEP0_WEIGHTS_SHA256:  ${{ vars.IEP0_WEIGHTS_SHA256 }}
+          IEP1A_WEIGHTS_SHA256: ${{ vars.IEP1A_WEIGHTS_SHA256 }}
+          IEP1B_WEIGHTS_SHA256: ${{ vars.IEP1B_WEIGHTS_SHA256 }}
+          IEP1E_WEIGHTS_SHA256: ${{ vars.IEP1E_WEIGHTS_SHA256 }}
           IEP1D_WEIGHTS_SHA256: ${{ vars.IEP1D_WEIGHTS_SHA256 }}
           IEP2A_WEIGHTS_SHA256: ${{ vars.IEP2A_WEIGHTS_SHA256 }}
           IEP2B_WEIGHTS_SHA256: ${{ vars.IEP2B_WEIGHTS_SHA256 }}
@@ -133,8 +164,92 @@ jobs:
           set -euo pipefail
           SVC="${{ matrix.service }}"
 
+          # ── Helper: flat tar.gz download → extract → verify ────────────────
+          # Archives for iep0/iep1a/iep1b/iep1e were created with:
+          #   tar -czf archive.tar.gz -C models/<svc> .
+          # so contents are relative to the model dir; no --strip-components needed.
+          download_flat_tar() {
+            local URI="$1" SHA256="$2" ARCHIVE="$3" DEST_DIR="$4"
+            shift 4
+            local REQ_FILES=("$@")
+
+            if [ -z "$URI" ]; then
+              echo "::error::$(echo "$ARCHIVE" | sed 's|/tmp/||;s|-weights.tar.gz||') weight URI not set. Add the corresponding WEIGHTS_URI variable in GitHub → Settings → Actions → Variables."
+              exit 1
+            fi
+
+            mkdir -p "$DEST_DIR"
+            echo "Downloading $(basename "$ARCHIVE") → $ARCHIVE"
+            aws s3 cp "$URI" "$ARCHIVE"
+            test -s "$ARCHIVE" || { echo "::error::Downloaded archive is empty: $ARCHIVE"; exit 1; }
+
+            if [ -n "$SHA256" ]; then
+              echo "$SHA256  $ARCHIVE" | sha256sum --check --strict
+              echo "Checksum OK."
+            else
+              echo "No checksum configured — skipping verification."
+            fi
+
+            # Flat archive: contents are relative to model dir — do NOT strip components.
+            tar -xzf "$ARCHIVE" -C "$DEST_DIR"
+            rm -f "$ARCHIVE"
+
+            for req in "${REQ_FILES[@]}"; do
+              if ! test -f "$req"; then
+                echo "::error::Required model file missing after extraction: $req"
+                exit 1
+              fi
+            done
+            echo "Model files verified."
+          }
+
+          # ── IEP0: flat tar.gz → models/iep0/ ─────────────────────────────
+          if [ "$SVC" = "iep0" ]; then
+            download_flat_tar \
+              "${IEP0_WEIGHTS_URI:-}" \
+              "${IEP0_WEIGHTS_SHA256:-}" \
+              "/tmp/iep0-weights.tar.gz" \
+              "models/iep0" \
+              "models/iep0/classifier.pt"
+
+          # ── IEP1A: flat tar.gz → models/iep1a/ ───────────────────────────
+          elif [ "$SVC" = "iep1a" ]; then
+            download_flat_tar \
+              "${IEP1A_WEIGHTS_URI:-}" \
+              "${IEP1A_WEIGHTS_SHA256:-}" \
+              "/tmp/iep1a-weights.tar.gz" \
+              "models/iep1a" \
+              "models/iep1a/Book_segmentation.pt" \
+              "models/iep1a/Newspaper_Segmentation.pt" \
+              "models/iep1a/Segmentation_microfilm.pt"
+
+          # ── IEP1B: flat tar.gz → models/iep1b/ ───────────────────────────
+          elif [ "$SVC" = "iep1b" ]; then
+            download_flat_tar \
+              "${IEP1B_WEIGHTS_URI:-}" \
+              "${IEP1B_WEIGHTS_SHA256:-}" \
+              "/tmp/iep1b-weights.tar.gz" \
+              "models/iep1b" \
+              "models/iep1b/Book_keypoint.pt" \
+              "models/iep1b/Microfilm_Keypoints.pt" \
+              "models/iep1b/Newspaper_Keypoints.pt"
+
+          # ── IEP1E: flat tar.gz → models/iep1e/ ───────────────────────────
+          elif [ "$SVC" = "iep1e" ]; then
+            download_flat_tar \
+              "${IEP1E_WEIGHTS_URI:-}" \
+              "${IEP1E_WEIGHTS_SHA256:-}" \
+              "/tmp/iep1e-weights.tar.gz" \
+              "models/iep1e" \
+              "models/iep1e/det/inference.pdiparams" \
+              "models/iep1e/det/inference.pdiparams.info" \
+              "models/iep1e/det/inference.pdmodel" \
+              "models/iep1e/rec/inference.pdiparams" \
+              "models/iep1e/rec/inference.pdiparams.info" \
+              "models/iep1e/rec/inference.pdmodel"
+
           # ── IEP2A: tar.gz archive → models/iep2a/paddle/PP-DocLayoutV2/ ──
-          if [ "$SVC" = "iep2a" ]; then
+          elif [ "$SVC" = "iep2a" ]; then
             URI="${IEP2A_WEIGHTS_URI:-}"
             SHA256="${IEP2A_WEIGHTS_SHA256:-}"
             DEST_DIR="models/iep2a/paddle/PP-DocLayoutV2"
@@ -215,6 +330,13 @@ jobs:
           build-args: ${{ matrix.build-args }}
           cache-from: type=registry,ref=${{ env.ECR_REGISTRY }}/libraryai-${{ matrix.service }}:latest
           cache-to: type=inline
+
+      - name: Push to Docker Hub (gma51)
+        if: matrix.push_dockerhub == true
+        run: |
+          docker pull ${{ env.ECR_REGISTRY }}/libraryai-${{ matrix.service }}:latest
+          docker tag ${{ env.ECR_REGISTRY }}/libraryai-${{ matrix.service }}:latest gma51/libraryai-${{ matrix.service }}:latest
+          docker push gma51/libraryai-${{ matrix.service }}:latest
 
   # ── 3. migrate staging database ───────────────────────────────────────────
   migrate-staging:
@@ -318,7 +440,13 @@ jobs:
               | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
               | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
               | sed "s/CLUSTER_NAME/${CLUSTER}/g" \
-              | sed 's|:latest|:${{ github.sha }}|g')
+              | sed 's|:latest|:${{ github.sha }}|g' \
+              | sed "s|IEP0_URL_VALUE|${{ vars.IEP0_URL || 'http://iep0:8006' }}|g" \
+              | sed "s|IEP1A_URL_VALUE|${{ vars.IEP1A_URL || 'http://iep1a:8001' }}|g" \
+              | sed "s|IEP1B_URL_VALUE|${{ vars.IEP1B_URL || 'http://iep1b:8002' }}|g" \
+              | sed "s|IEP1E_URL_VALUE|${{ vars.IEP1E_URL || 'http://iep1e:8007' }}|g" \
+              | sed "s|IEP2A_URL_VALUE|${{ vars.IEP2A_URL || 'http://iep2a:8004' }}|g" \
+              | sed "s|IEP2B_URL_VALUE|${{ vars.IEP2B_URL || 'http://iep2b:8005' }}|g")
             REVISION=$(aws ecs register-task-definition \
               --cli-input-json "$TASK_DEF" \
               --query 'taskDefinition.taskDefinitionArn' --output text)
@@ -630,7 +758,13 @@ jobs:
               | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
               | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
               | sed "s/CLUSTER_NAME/${CLUSTER}/g" \
-              | sed 's|:latest|:${{ github.sha }}|g')
+              | sed 's|:latest|:${{ github.sha }}|g' \
+              | sed "s|IEP0_URL_VALUE|${{ vars.IEP0_URL || 'http://iep0:8006' }}|g" \
+              | sed "s|IEP1A_URL_VALUE|${{ vars.IEP1A_URL || 'http://iep1a:8001' }}|g" \
+              | sed "s|IEP1B_URL_VALUE|${{ vars.IEP1B_URL || 'http://iep1b:8002' }}|g" \
+              | sed "s|IEP1E_URL_VALUE|${{ vars.IEP1E_URL || 'http://iep1e:8007' }}|g" \
+              | sed "s|IEP2A_URL_VALUE|${{ vars.IEP2A_URL || 'http://iep2a:8004' }}|g" \
+              | sed "s|IEP2B_URL_VALUE|${{ vars.IEP2B_URL || 'http://iep2b:8005' }}|g")
             REVISION=$(aws ecs register-task-definition \
               --cli-input-json "$TASK_DEF" \
               --query 'taskDefinition.taskDefinitionArn' --output text)

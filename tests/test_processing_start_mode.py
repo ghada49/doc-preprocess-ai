@@ -122,12 +122,14 @@ class TestMaybeTriggerScaleUp(unittest.TestCase):
 # ── 6: service inclusion/exclusion ────────────────────────────────────────────
 
 class TestScaleUpServiceList(unittest.TestCase):
-    """_do_scale_up must start exactly the right services and exclude the rest."""
+    """_do_scale_up must start exactly the right ECS services and exclude the rest.
 
+    iep0/iep1a/iep1b are started via RunPod (not ECS update_service) — they are
+    intentionally absent from EXPECTED_STARTED.
+    """
+
+    # ECS services started by update_service.  iep0/iep1a/iep1b are RunPod — excluded.
     EXPECTED_STARTED = {
-        "libraryai-iep0",
-        "libraryai-iep1a",
-        "libraryai-iep1b",
         "libraryai-iep1e",
         "libraryai-iep2a",
         "libraryai-iep2b",
@@ -145,24 +147,19 @@ class TestScaleUpServiceList(unittest.TestCase):
     }
 
     def _run_do_scale_up(self, env_extra: dict | None = None):
+        """Run _do_scale_up with no RUNPOD_API_KEY (RunPod path skipped)."""
         env = {
             "ECS_CLUSTER": "test-cluster",
-            "GPU_ASG_NAME": "test-asg",
-            "GPU_ASG_DESIRED": "1",
             "WORKER_DESIRED_COUNT": "2",
             "AWS_REGION": "us-east-1",
         }
         if env_extra:
             env.update(env_extra)
 
-        mock_asg = MagicMock()
         mock_ecs = MagicMock()
 
-        def boto_client(service, region_name=None):
-            return mock_asg if service == "autoscaling" else mock_ecs
-
         with patch.dict(os.environ, env, clear=False):
-            with patch("boto3.client", side_effect=boto_client):
+            with patch("boto3.client", return_value=mock_ecs):
                 from services.eep.app.scaling import normal_scaler
                 import importlib
                 importlib.reload(normal_scaler)  # reload so env vars are re-read
@@ -204,53 +201,66 @@ class TestScaleUpServiceList(unittest.TestCase):
         self.assertNotIn("libraryai-prometheus", started)
         self.assertNotIn("libraryai-grafana", started)
 
-    def test_gpu_asg_scaled(self):
+    def test_gpu_ieps_not_started_via_ecs(self):
+        """iep0/iep1a/iep1b are RunPod pods — must NOT appear in ECS update_service calls."""
+        mock_ecs = self._run_do_scale_up()
+        started = {c.kwargs["service"] for c in mock_ecs.update_service.call_args_list}
+        self.assertNotIn("libraryai-iep0", started)
+        self.assertNotIn("libraryai-iep1a", started)
+        self.assertNotIn("libraryai-iep1b", started)
+
+    def test_runpod_pods_created_when_api_key_set(self):
+        """When RUNPOD_API_KEY is set, _create_runpod_pods is called for iep0/iep1a/iep1b."""
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)  # reload before patching so reload doesn't undo the patch
+
         env = {
             "ECS_CLUSTER": "test-cluster",
-            "GPU_ASG_NAME": "my-gpu-asg",
-            "GPU_ASG_DESIRED": "2",
             "WORKER_DESIRED_COUNT": "2",
             "AWS_REGION": "us-east-1",
+            "RUNPOD_API_KEY": "test-key",
         }
-        mock_asg = MagicMock()
         mock_ecs = MagicMock()
-
-        def boto_client(service, region_name=None):
-            return mock_asg if service == "autoscaling" else mock_ecs
+        mock_ecs.describe_task_definition.return_value = {
+            "taskDefinition": {
+                "family": "libraryai-eep-worker",
+                "containerDefinitions": [{"name": "eep-worker", "environment": []}],
+            }
+        }
+        mock_ecs.register_task_definition.return_value = {
+            "taskDefinition": {
+                "taskDefinitionArn": "arn:aws:ecs:us-east-1:123:task-definition/libraryai-eep-worker:2"
+            }
+        }
 
         with patch.dict(os.environ, env, clear=False):
-            with patch("boto3.client", side_effect=boto_client):
-                from services.eep.app.scaling import normal_scaler
-                import importlib
-                importlib.reload(normal_scaler)
-                normal_scaler._do_scale_up()
+            with patch("boto3.client", return_value=mock_ecs):
+                with patch.object(
+                    normal_scaler,
+                    "_create_runpod_pods",
+                    return_value=(
+                        "https://pod1-8006.proxy.runpod.net",
+                        "https://pod2-8001.proxy.runpod.net",
+                        "https://pod3-8002.proxy.runpod.net",
+                    ),
+                ) as mock_create_pods:
+                    normal_scaler._do_scale_up()
 
-        mock_asg.set_desired_capacity.assert_called_once_with(
-            AutoScalingGroupName="my-gpu-asg",
-            DesiredCapacity=2,
-            HonorCooldown=False,
-        )
+        mock_create_pods.assert_called_once_with("test-key", "us-east-1")
+
+    def test_runpod_pods_skipped_when_no_api_key(self):
+        """When RUNPOD_API_KEY is absent, _create_runpod_pods is not called."""
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        with patch.object(normal_scaler, "_create_runpod_pods") as mock_create_pods:
+            self._run_do_scale_up()  # no RUNPOD_API_KEY in env
+        mock_create_pods.assert_not_called()
 
     def test_worker_desired_count_used(self):
-        env = {
-            "ECS_CLUSTER": "test-cluster",
-            "GPU_ASG_NAME": "asg",
-            "GPU_ASG_DESIRED": "1",
-            "WORKER_DESIRED_COUNT": "3",
-            "AWS_REGION": "us-east-1",
-        }
-        mock_asg = MagicMock()
-        mock_ecs = MagicMock()
-
-        def boto_client(service, region_name=None):
-            return mock_asg if service == "autoscaling" else mock_ecs
-
-        with patch.dict(os.environ, env, clear=False):
-            with patch("boto3.client", side_effect=boto_client):
-                from services.eep.app.scaling import normal_scaler
-                import importlib
-                importlib.reload(normal_scaler)
-                normal_scaler._do_scale_up()
+        mock_ecs = self._run_do_scale_up({"WORKER_DESIRED_COUNT": "3"})
 
         worker_calls = [
             c for c in mock_ecs.update_service.call_args_list
