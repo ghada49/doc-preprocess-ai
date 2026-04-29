@@ -87,11 +87,14 @@ jobs:
         id: register_drain
         if: steps.check_infra.outputs.infra_running == 'true'
         run: |
-          TASK_DEF=$(cat k8s/ecs/drain-monitor-task-def.json \
-            | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
-            | sed "s/REGION/${{ vars.AWS_REGION }}/g")
-          TASK_DEF_ARN=$(echo "$TASK_DEF" | aws ecs register-task-definition \
-            --cli-input-json file:///dev/stdin \
+          TASK_DEF_FILE=$(mktemp)
+          sed \
+            -e "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
+            -e "s/REGION/${{ vars.AWS_REGION }}/g" \
+            k8s/ecs/drain-monitor-task-def.json > "$TASK_DEF_FILE"
+          python3 -m json.tool "$TASK_DEF_FILE" > /dev/null
+          TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "file://$TASK_DEF_FILE" \
             --query 'taskDefinition.taskDefinitionArn' --output text)
           echo "task_def_arn=$TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
 
