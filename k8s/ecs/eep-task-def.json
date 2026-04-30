@@ -35,6 +35,10 @@
         { "name": "RUNPOD_GPU_TYPE_ID",           "value": "RUNPOD_GPU_TYPE_ID_VALUE" },
         { "name": "RUNPOD_GPU_TYPES",             "value": "RUNPOD_GPU_TYPES_VALUE" },
         { "name": "RUNPOD_CLOUD_TYPE",            "value": "RUNPOD_CLOUD_TYPE_VALUE" },
+        { "name": "RUNPOD_CLOUD_TYPES",           "value": "RUNPOD_CLOUD_TYPES_VALUE" },
+        { "name": "RUNPOD_CONTAINER_DISK_GB",     "value": "RUNPOD_CONTAINER_DISK_GB_VALUE" },
+        { "name": "RUNPOD_MIN_VCPU_PER_GPU",      "value": "RUNPOD_MIN_VCPU_PER_GPU_VALUE" },
+        { "name": "RUNPOD_MIN_RAM_PER_GPU",       "value": "RUNPOD_MIN_RAM_PER_GPU_VALUE" },
         { "name": "WORKER_DESIRED_COUNT",         "value": "2" },
         { "name": "AWS_REGION",                   "value": "REGION" }
       ],
