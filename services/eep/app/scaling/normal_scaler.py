@@ -362,6 +362,8 @@ def _create_runpod_pod_with_fallback(
     cloud_type: str | None = None,
 ) -> str:
     """Create one RunPod pod, trying GPU and cloud candidates in priority order."""
+    if not gpu_type_ids:
+        raise RuntimeError(f"No RunPod GPU candidates configured for {name}")
     if cloud_types is None:
         cloud_types = [_normalize_runpod_cloud_type(cloud_type or "COMMUNITY")]
     last_supply_error: Exception | None = None
@@ -629,8 +631,9 @@ def _runpod_gpu_type_candidates() -> list[str]:
         "5000 ADA": "NVIDIA RTX 5000 Ada Generation",
         "RTX 6000 ADA": "NVIDIA RTX 6000 Ada Generation",
         "6000 ADA": "NVIDIA RTX 6000 Ada Generation",
-        "RTX PRO 4500": "NVIDIA RTX Pro 4500",
-        "RTX Pro 4500": "NVIDIA RTX Pro 4500",
+        "RTX PRO 4500": "NVIDIA RTX PRO 4500 Blackwell",
+        "RTX Pro 4500": "NVIDIA RTX PRO 4500 Blackwell",
+        "NVIDIA RTX Pro 4500": "NVIDIA RTX PRO 4500 Blackwell",
         "RTX 4080 SUPER": "NVIDIA GeForce RTX 4080 SUPER",
         "4080 SUPER": "NVIDIA GeForce RTX 4080 SUPER",
         "RTX 5090": "NVIDIA GeForce RTX 5090",

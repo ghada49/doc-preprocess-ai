@@ -315,6 +315,7 @@ class TestScaleUpServiceList(unittest.TestCase):
         self.assertEqual(candidates[:3], ["NVIDIA A40", "NVIDIA RTX A5000", "NVIDIA GeForce RTX 4090"])
         self.assertIn("NVIDIA L4", candidates)
         self.assertIn("NVIDIA RTX A6000", candidates)
+        self.assertIn("NVIDIA RTX PRO 4500 Blackwell", candidates)
 
     def test_runpod_cloud_type_normalizes_security_alias(self):
         import importlib
@@ -359,13 +360,13 @@ class TestScaleUpServiceList(unittest.TestCase):
 class TestCreateRunPodPodWithFallback(unittest.TestCase):
     """_create_runpod_pod_with_fallback: SUPPLY_CONSTRAINT fallback behaviour."""
 
-    def _call(self, side_effects, gpu_types=None):
+    def _call(self, side_effects, gpu_types=None, cloud_types=None):
         import importlib
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
         gpu_types = gpu_types or ["NVIDIA GeForce RTX 4090", "NVIDIA RTX A5000"]
-        with patch.object(normal_scaler, "_create_runpod_pod", side_effect=side_effects):
+        with patch.object(normal_scaler, "_create_runpod_pod_rest", side_effect=side_effects):
             return normal_scaler._create_runpod_pod_with_fallback(
                 api_key="test-key",
                 name="libraryai-iep0",
@@ -373,25 +374,26 @@ class TestCreateRunPodPodWithFallback(unittest.TestCase):
                 port=8006,
                 gpu_type_ids=gpu_types,
                 cloud_type="COMMUNITY",
+                cloud_types=cloud_types,
             )
 
     def test_first_gpu_succeeds(self):
         result = self._call(["pod-id-abc"])
         self.assertEqual(result, "pod-id-abc")
 
-    def test_supply_constraint_on_first_falls_back_to_second(self):
+    def test_supply_constraint_on_first_falls_back_to_second_cloud(self):
         result = self._call([
             RuntimeError("SUPPLY_CONSTRAINT: no capacity"),
             "pod-id-fallback",
-        ])
+        ], cloud_types=["COMMUNITY", "SECURE"])
         self.assertEqual(result, "pod-id-fallback")
 
-    def test_all_gpus_supply_constrained_raises(self):
+    def test_all_clouds_supply_constrained_raises(self):
         with self.assertRaises(RuntimeError) as ctx:
             self._call([
                 RuntimeError("SUPPLY_CONSTRAINT: no capacity"),
                 RuntimeError("SUPPLY_CONSTRAINT: no capacity"),
-            ])
+            ], cloud_types=["COMMUNITY", "SECURE"])
         self.assertIn("exhausted", str(ctx.exception))
 
     def test_non_supply_error_propagates_immediately(self):
@@ -407,7 +409,7 @@ class TestCreateRunPodPodWithFallback(unittest.TestCase):
             call_count += 1
             raise RuntimeError("Unauthorized: invalid API key")
 
-        with patch.object(normal_scaler, "_create_runpod_pod", side_effect=side_effect):
+        with patch.object(normal_scaler, "_create_runpod_pod_rest", side_effect=side_effect):
             with self.assertRaises(RuntimeError) as ctx:
                 normal_scaler._create_runpod_pod_with_fallback(
                     api_key="bad-key",
@@ -416,8 +418,9 @@ class TestCreateRunPodPodWithFallback(unittest.TestCase):
                     port=8006,
                     gpu_type_ids=["NVIDIA GeForce RTX 4090", "NVIDIA RTX A5000"],
                     cloud_type="COMMUNITY",
+                    cloud_types=["COMMUNITY", "SECURE"],
                 )
-        self.assertEqual(call_count, 1, "Must not try next GPU on non-supply error")
+        self.assertEqual(call_count, 1, "Must not try next cloud on non-supply error")
         self.assertIn("Unauthorized", str(ctx.exception))
 
     def test_gpu_types_empty_raises(self):
@@ -446,6 +449,40 @@ class TestCreateRunPodPodWithFallback(unittest.TestCase):
         self.assertIn("NVIDIA RTX A5000", candidates)
         self.assertGreater(len(candidates), 1)
         self.assertEqual(candidates[0], "NVIDIA RTX 4000 Ada Generation")
+
+    def test_runpod_rest_create_uses_gpu_type_ids_payload(self):
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        class Response:
+            status_code = 200
+            text = '{"id":"pod-rest"}'
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"id": "pod-rest"}
+
+        with patch("httpx.post", return_value=Response()) as mock_post:
+            pod_id = normal_scaler._create_runpod_pod_rest(
+                api_key="test-key",
+                name="libraryai-iep1a",
+                image="gma51/libraryai-iep1a:latest",
+                port=8001,
+                gpu_type_ids=["NVIDIA RTX A5000", "NVIDIA GeForce RTX 4090"],
+                cloud_type="SECURE",
+            )
+
+        self.assertEqual(pod_id, "pod-rest")
+        _, kwargs = mock_post.call_args
+        payload = kwargs["json"]
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer test-key")
+        self.assertEqual(payload["gpuTypeIds"], ["NVIDIA RTX A5000", "NVIDIA GeForce RTX 4090"])
+        self.assertEqual(payload["gpuTypePriority"], "availability")
+        self.assertEqual(payload["ports"], ["8001/http"])
+        self.assertEqual(payload["env"]["IEP1A_MODELS_DIR"], "/app/models/iep1a")
 
 
 # ── 3: drain ignores human-review states ──────────────────────────────────────

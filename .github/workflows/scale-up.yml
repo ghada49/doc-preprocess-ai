@@ -34,10 +34,13 @@ jobs:
           RUNPOD_IEP0_POD_ID: ${{ vars.RUNPOD_IEP0_POD_ID || '' }}
           RUNPOD_IEP1A_POD_ID: ${{ vars.RUNPOD_IEP1A_POD_ID || '' }}
           RUNPOD_IEP1B_POD_ID: ${{ vars.RUNPOD_IEP1B_POD_ID || '' }}
-          RUNPOD_GPU_TYPE_ID: ${{ vars.RUNPOD_GPU_TYPE_ID || 'NVIDIA GeForce RTX 3080' }}
-          RUNPOD_GPU_TYPES: ${{ vars.RUNPOD_GPU_TYPES || 'NVIDIA RTX A5000,NVIDIA GeForce RTX 3090,NVIDIA GeForce RTX 4090,NVIDIA L4,NVIDIA RTX A4500,NVIDIA RTX A6000,NVIDIA A40,NVIDIA L40S' }}
+          RUNPOD_GPU_TYPE_ID: ${{ vars.RUNPOD_GPU_TYPE_ID || 'NVIDIA RTX A5000' }}
+          RUNPOD_GPU_TYPES: ${{ vars.RUNPOD_GPU_TYPES || 'NVIDIA RTX A5000,NVIDIA GeForce RTX 3090,NVIDIA GeForce RTX 4090,NVIDIA RTX 4000 Ada Generation,NVIDIA RTX A4000,NVIDIA RTX 2000 Ada Generation,NVIDIA L4,NVIDIA RTX A4500,NVIDIA RTX A6000,NVIDIA A40,NVIDIA L40S,NVIDIA RTX PRO 4500 Blackwell' }}
           RUNPOD_CLOUD_TYPE: ${{ vars.RUNPOD_CLOUD_TYPE || 'COMMUNITY' }}
           RUNPOD_CLOUD_TYPES: ${{ vars.RUNPOD_CLOUD_TYPES || 'COMMUNITY,SECURE' }}
+          RUNPOD_CONTAINER_DISK_GB: ${{ vars.RUNPOD_CONTAINER_DISK_GB || '50' }}
+          RUNPOD_MIN_VCPU_PER_GPU: ${{ vars.RUNPOD_MIN_VCPU_PER_GPU || '2' }}
+          RUNPOD_MIN_RAM_PER_GPU: ${{ vars.RUNPOD_MIN_RAM_PER_GPU || '8' }}
         run: |
           set -euo pipefail
 
@@ -59,6 +62,7 @@ jobs:
               "RTX 3090"|3090) echo "NVIDIA GeForce RTX 3090" ;;
               "RTX 4090"|4090) echo "NVIDIA GeForce RTX 4090" ;;
               "RTX A5000"|A5000) echo "NVIDIA RTX A5000" ;;
+              "RTX PRO 4500"|"RTX Pro 4500"|"NVIDIA RTX Pro 4500") echo "NVIDIA RTX PRO 4500 Blackwell" ;;
               *) echo "$1" ;;
             esac
           }
@@ -81,7 +85,7 @@ jobs:
             add_gpu_candidate "$GPU_TYPE"
           done
           if [ "${#GPU_CANDIDATES[@]}" -eq 0 ]; then
-            add_gpu_candidate "NVIDIA GeForce RTX 3080"
+            add_gpu_candidate "NVIDIA RTX A5000"
           fi
           RUNPOD_CLOUD_TYPE="$(normalize_cloud_type "$RUNPOD_CLOUD_TYPE")"
           CLOUD_CANDIDATES=()
@@ -136,17 +140,59 @@ jobs:
 
           create_pod() {
             local NAME="$1" IMAGE="$2" PORT="$3"
-            local GPU_TYPE RESPONSE
-            for GPU_TYPE in "${GPU_CANDIDATES[@]}"; do
-              for CLOUD_TYPE in "${CLOUD_CANDIDATES[@]}"; do
-                echo "Creating $NAME on RunPod gpuTypeId=$GPU_TYPE cloudType=$CLOUD_TYPE" >&2
-                RESPONSE=$(curl -sS -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
-                  -H "Content-Type: application/json" \
-                  -d "{\"query\":\"mutation { podFindAndDeployOnDemand(input: { name: \\\"${NAME}\\\", imageName: \\\"${IMAGE}\\\", gpuTypeId: \\\"${GPU_TYPE}\\\", cloudType: ${CLOUD_TYPE}, containerDiskInGb: 20, minMemoryInGb: 8, minVcpuCount: 2, ports: \\\"${PORT}/http\\\", startJupyter: false, startSsh: false }) { id } }\"}")
-                if echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(print('RunPod error:', d['errors'], file=sys.stderr) or 1) if 'errors' in d else print(d['data']['podFindAndDeployOnDemand']['id'])"; then
-                  return 0
-                fi
-              done
+            local GPU_JSON RESPONSE POD_ID PAYLOAD CLOUD_TYPE
+            GPU_JSON=$(printf '%s\n' "${GPU_CANDIDATES[@]}" | python3 -c 'import json,sys; print(json.dumps([line.strip() for line in sys.stdin if line.strip()]))')
+            for CLOUD_TYPE in "${CLOUD_CANDIDATES[@]}"; do
+              echo "Creating $NAME on RunPod REST cloudType=$CLOUD_TYPE gpuTypeIds=$GPU_JSON" >&2
+              PAYLOAD=$(python3 -c 'import json,os,sys
+name,image,port,cloud,gpu_json = sys.argv[1:6]
+env = {
+  "PYTHONPATH": "/app",
+  "AWS_REGION": os.environ.get("AWS_REGION", "eu-central-1"),
+  "S3_REGION": os.environ.get("AWS_REGION", "eu-central-1"),
+  "S3_BUCKET_NAME": "libraryai2",
+  "HEALTH_PORT": port,
+  "RUNPOD_TERMINATE_ON_IDLE": "true",
+}
+if name.endswith("iep0"):
+  env["IEP0_MODEL_PATH"] = "/app/models/iep0/classifier.pt"
+elif name.endswith("iep1a"):
+  env["IEP1A_MODELS_DIR"] = "/app/models/iep1a"
+elif name.endswith("iep1b"):
+  env["IEP1B_MODELS_DIR"] = "/app/models/iep1b"
+payload = {
+  "name": name,
+  "imageName": image,
+  "computeType": "GPU",
+  "cloudType": cloud,
+  "gpuCount": 1,
+  "gpuTypeIds": json.loads(gpu_json),
+  "gpuTypePriority": "availability",
+  "interruptible": False,
+  "containerDiskInGb": int(os.environ.get("RUNPOD_CONTAINER_DISK_GB", "50") or "50"),
+  "minVCPUPerGPU": int(os.environ.get("RUNPOD_MIN_VCPU_PER_GPU", "2") or "2"),
+  "minRAMPerGPU": int(os.environ.get("RUNPOD_MIN_RAM_PER_GPU", "8") or "8"),
+  "ports": [f"{port}/http"],
+  "env": env,
+}
+print(json.dumps(payload))' "$NAME" "$IMAGE" "$PORT" "$CLOUD_TYPE" "$GPU_JSON")
+              RESPONSE=$(curl -sS -X POST "https://rest.runpod.io/v1/pods" \
+                -H "Authorization: Bearer ${RUNPOD_API_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "$PAYLOAD")
+              POD_ID=$(echo "$RESPONSE" | python3 -c 'import json,sys
+d=json.load(sys.stdin)
+pod_id=d.get("id") or d.get("data", {}).get("id")
+if pod_id:
+  print(pod_id)
+  sys.exit(0)
+sys.exit(1)' 2>/dev/null || true)
+              if [ -n "$POD_ID" ]; then
+                echo "$POD_ID"
+                return 0
+              fi
+              echo "RunPod REST create failed for $NAME cloudType=$CLOUD_TYPE" >&2
+              echo "$RESPONSE" >&2
             done
             echo "ERROR: failed to create $NAME with all GPU candidates: ${GPU_CANDIDATES[*]}" >&2
             return 1
