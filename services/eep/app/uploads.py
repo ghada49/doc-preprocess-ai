@@ -67,6 +67,7 @@ def _s3_client() -> Any:
     """Return a boto3 S3 client using the canonical env-var config."""
     return boto3.client(
         "s3",
+        region_name=os.environ.get("AWS_REGION", "eu-central-1"),
         endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
         aws_access_key_id=_s3_access_key(),
         aws_secret_access_key=_s3_secret_key(),
