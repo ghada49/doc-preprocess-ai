@@ -487,17 +487,31 @@ jobs:
             esac
           }
 
+          image_tag_for() {
+            local svc=$1
+            if aws ecr describe-images \
+                --repository-name "libraryai-${svc}" \
+                --image-ids "imageTag=${GITHUB_SHA}" \
+                >/dev/null 2>&1; then
+              echo "${GITHUB_SHA}"
+            else
+              echo "latest"
+              echo "libraryai-${svc}: ${GITHUB_SHA} not found in ECR; using latest" >&2
+            fi
+          }
+
           SERVICES=(
             eep eep-worker eep-recovery shadow-worker retraining-worker
             dataset-builder frontend iep0 iep1a iep1b iep1d iep1e iep2a iep2b mlflow
           )
           for SVC in "${SERVICES[@]}"; do
             FILE="k8s/ecs/${SVC}-task-def.json"
+            IMAGE_TAG=$(image_tag_for "$SVC")
             TASK_DEF=$(cat "$FILE" \
               | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
               | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
               | sed "s/CLUSTER_NAME/${CLUSTER}/g" \
-              | sed 's|:latest|:${{ github.sha }}|g' \
+              | sed "s|:latest|:${IMAGE_TAG}|g" \
               | sed "s|IEP0_URL_VALUE|${{ vars.IEP0_URL || 'http://iep0:8006' }}|g" \
               | sed "s|IEP1A_URL_VALUE|${{ vars.IEP1A_URL || 'http://iep1a:8001' }}|g" \
               | sed "s|IEP1B_URL_VALUE|${{ vars.IEP1B_URL || 'http://iep1b:8002' }}|g" \
@@ -853,17 +867,31 @@ jobs:
             esac
           }
 
+          image_tag_for() {
+            local svc=$1
+            if aws ecr describe-images \
+                --repository-name "libraryai-${svc}" \
+                --image-ids "imageTag=${GITHUB_SHA}" \
+                >/dev/null 2>&1; then
+              echo "${GITHUB_SHA}"
+            else
+              echo "latest"
+              echo "libraryai-${svc}: ${GITHUB_SHA} not found in ECR; using latest" >&2
+            fi
+          }
+
           SERVICES=(
             eep eep-worker eep-recovery shadow-worker retraining-worker
             dataset-builder frontend iep0 iep1a iep1b iep1d iep1e iep2a iep2b mlflow
           )
           for SVC in "${SERVICES[@]}"; do
             FILE="k8s/ecs/${SVC}-task-def.json"
+            IMAGE_TAG=$(image_tag_for "$SVC")
             TASK_DEF=$(cat "$FILE" \
               | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
               | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
               | sed "s/CLUSTER_NAME/${CLUSTER}/g" \
-              | sed 's|:latest|:${{ github.sha }}|g' \
+              | sed "s|:latest|:${IMAGE_TAG}|g" \
               | sed "s|IEP0_URL_VALUE|${{ vars.IEP0_URL || 'http://iep0:8006' }}|g" \
               | sed "s|IEP1A_URL_VALUE|${{ vars.IEP1A_URL || 'http://iep1a:8001' }}|g" \
               | sed "s|IEP1B_URL_VALUE|${{ vars.IEP1B_URL || 'http://iep1b:8002' }}|g" \
