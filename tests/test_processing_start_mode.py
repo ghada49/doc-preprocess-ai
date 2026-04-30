@@ -300,6 +300,31 @@ class TestScaleUpServiceList(unittest.TestCase):
 
         mock_ecs.update_service.assert_not_called()
 
+    def test_runpod_gpu_candidates_normalize_aliases_and_fallbacks(self):
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        env = {
+            "RUNPOD_GPU_TYPE_ID": "A40",
+            "RUNPOD_GPU_TYPES": "NVIDIA RTX A5000,RTX 4090,A40",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            candidates = normal_scaler._runpod_gpu_type_candidates()
+
+        self.assertEqual(
+            candidates,
+            ["NVIDIA A40", "NVIDIA RTX A5000", "NVIDIA GeForce RTX 4090"],
+        )
+
+    def test_runpod_cloud_type_normalizes_security_alias(self):
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        self.assertEqual(normal_scaler._normalize_runpod_cloud_type("SECURITY"), "SECURE")
+        self.assertEqual(normal_scaler._normalize_runpod_cloud_type("community"), "COMMUNITY")
+
     def test_worker_desired_count_used(self):
         mock_ecs = self._run_do_scale_up({"WORKER_DESIRED_COUNT": "3"})
 
@@ -313,6 +338,100 @@ class TestScaleUpServiceList(unittest.TestCase):
         ]
         for c in worker_calls:
             self.assertEqual(c.kwargs["desiredCount"], 3)
+
+
+# ── RunPod pod-with-fallback unit tests ───────────────────────────────────────
+
+class TestCreateRunPodPodWithFallback(unittest.TestCase):
+    """_create_runpod_pod_with_fallback: SUPPLY_CONSTRAINT fallback behaviour."""
+
+    def _call(self, side_effects, gpu_types=None):
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        gpu_types = gpu_types or ["NVIDIA GeForce RTX 4090", "NVIDIA RTX A5000"]
+        with patch.object(normal_scaler, "_create_runpod_pod", side_effect=side_effects):
+            return normal_scaler._create_runpod_pod_with_fallback(
+                api_key="test-key",
+                name="libraryai-iep0",
+                image="gma51/libraryai-iep0:latest",
+                port=8006,
+                gpu_type_ids=gpu_types,
+                cloud_type="COMMUNITY",
+            )
+
+    def test_first_gpu_succeeds(self):
+        result = self._call(["pod-id-abc"])
+        self.assertEqual(result, "pod-id-abc")
+
+    def test_supply_constraint_on_first_falls_back_to_second(self):
+        result = self._call([
+            RuntimeError("SUPPLY_CONSTRAINT: no capacity"),
+            "pod-id-fallback",
+        ])
+        self.assertEqual(result, "pod-id-fallback")
+
+    def test_all_gpus_supply_constrained_raises(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            self._call([
+                RuntimeError("SUPPLY_CONSTRAINT: no capacity"),
+                RuntimeError("SUPPLY_CONSTRAINT: no capacity"),
+            ])
+        self.assertIn("exhausted", str(ctx.exception))
+
+    def test_non_supply_error_propagates_immediately(self):
+        """Auth failures and other non-capacity errors must not try the next GPU."""
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        call_count = 0
+
+        def side_effect(*_args, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("Unauthorized: invalid API key")
+
+        with patch.object(normal_scaler, "_create_runpod_pod", side_effect=side_effect):
+            with self.assertRaises(RuntimeError) as ctx:
+                normal_scaler._create_runpod_pod_with_fallback(
+                    api_key="bad-key",
+                    name="libraryai-iep0",
+                    image="gma51/libraryai-iep0:latest",
+                    port=8006,
+                    gpu_type_ids=["NVIDIA GeForce RTX 4090", "NVIDIA RTX A5000"],
+                    cloud_type="COMMUNITY",
+                )
+        self.assertEqual(call_count, 1, "Must not try next GPU on non-supply error")
+        self.assertIn("Unauthorized", str(ctx.exception))
+
+    def test_gpu_types_empty_raises(self):
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        with self.assertRaises(RuntimeError):
+            normal_scaler._create_runpod_pod_with_fallback(
+                api_key="key",
+                name="libraryai-iep0",
+                image="img",
+                port=8006,
+                gpu_type_ids=[],
+                cloud_type="COMMUNITY",
+            )
+
+    def test_runpod_gpu_types_empty_env_uses_defaults(self):
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        with patch.dict(os.environ, {"RUNPOD_GPU_TYPE_ID": "", "RUNPOD_GPU_TYPES": ""}, clear=False):
+            candidates = normal_scaler._runpod_gpu_type_candidates()
+
+        self.assertIn("NVIDIA GeForce RTX 4090", candidates)
+        self.assertGreater(len(candidates), 1)
+        self.assertEqual(candidates[0], "NVIDIA GeForce RTX 4090")
 
 
 # ── 3: drain ignores human-review states ──────────────────────────────────────

@@ -35,9 +35,56 @@ jobs:
           RUNPOD_IEP1A_POD_ID: ${{ vars.RUNPOD_IEP1A_POD_ID || '' }}
           RUNPOD_IEP1B_POD_ID: ${{ vars.RUNPOD_IEP1B_POD_ID || '' }}
           RUNPOD_GPU_TYPE_ID: ${{ vars.RUNPOD_GPU_TYPE_ID || 'NVIDIA GeForce RTX 3080' }}
+          RUNPOD_GPU_TYPES: ${{ vars.RUNPOD_GPU_TYPES || 'NVIDIA RTX A5000,NVIDIA GeForce RTX 4090,NVIDIA GeForce RTX 3090' }}
           RUNPOD_CLOUD_TYPE: ${{ vars.RUNPOD_CLOUD_TYPE || 'COMMUNITY' }}
         run: |
           set -euo pipefail
+
+          normalize_cloud_type() {
+            local VALUE
+            VALUE="$(echo "${1:-COMMUNITY}" | tr '[:lower:]' '[:upper:]')"
+            if [ "$VALUE" = "SECURITY" ]; then
+              echo "SECURE"
+            elif [ "$VALUE" = "SECURE" ] || [ "$VALUE" = "COMMUNITY" ]; then
+              echo "$VALUE"
+            else
+              echo "COMMUNITY"
+            fi
+          }
+
+          normalize_gpu_type() {
+            case "$1" in
+              A40) echo "NVIDIA A40" ;;
+              "RTX 3090"|3090) echo "NVIDIA GeForce RTX 3090" ;;
+              "RTX 4090"|4090) echo "NVIDIA GeForce RTX 4090" ;;
+              "RTX A5000"|A5000) echo "NVIDIA RTX A5000" ;;
+              *) echo "$1" ;;
+            esac
+          }
+
+          GPU_CANDIDATES=()
+          add_gpu_candidate() {
+            local RAW="$1" GPU EXISTING
+            RAW="$(echo "$RAW" | xargs)"
+            [ -z "$RAW" ] && return 0
+            GPU="$(normalize_gpu_type "$RAW")"
+            for EXISTING in "${GPU_CANDIDATES[@]}"; do
+              [ "$EXISTING" = "$GPU" ] && return 0
+            done
+            GPU_CANDIDATES+=("$GPU")
+          }
+
+          add_gpu_candidate "$RUNPOD_GPU_TYPE_ID"
+          IFS=',' read -ra EXTRA_GPU_TYPES <<< "$RUNPOD_GPU_TYPES"
+          for GPU_TYPE in "${EXTRA_GPU_TYPES[@]}"; do
+            add_gpu_candidate "$GPU_TYPE"
+          done
+          if [ "${#GPU_CANDIDATES[@]}" -eq 0 ]; then
+            add_gpu_candidate "NVIDIA GeForce RTX 3080"
+          fi
+          RUNPOD_CLOUD_TYPE="$(normalize_cloud_type "$RUNPOD_CLOUD_TYPE")"
+          echo "RunPod cloud type: $RUNPOD_CLOUD_TYPE"
+          echo "RunPod GPU candidates: ${GPU_CANDIDATES[*]}"
 
           if [ "$RUNPOD_POD_MODE" = "existing" ]; then
             IEP0_POD="$RUNPOD_IEP0_POD_ID"
@@ -74,10 +121,18 @@ jobs:
 
           create_pod() {
             local NAME="$1" IMAGE="$2" PORT="$3"
-            RESPONSE=$(curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
-              -H "Content-Type: application/json" \
-              -d "{\"query\":\"mutation { podFindAndDeployOnDemand(input: { name: \\\"${NAME}\\\", imageName: \\\"${IMAGE}\\\", gpuTypeId: \\\"${RUNPOD_GPU_TYPE_ID}\\\", cloudType: ${RUNPOD_CLOUD_TYPE}, containerDiskInGb: 20, minMemoryInGb: 8, minVcpuCount: 2, ports: \\\"${PORT}/http\\\", startJupyter: false, startSsh: false }) { id } }\"}")
-            echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(print('RunPod error:',d['errors'],file=sys.stderr) or 1) if 'errors' in d else print(d['data']['podFindAndDeployOnDemand']['id'])"
+            local GPU_TYPE RESPONSE
+            for GPU_TYPE in "${GPU_CANDIDATES[@]}"; do
+              echo "Creating $NAME on RunPod gpuTypeId=$GPU_TYPE cloudType=$RUNPOD_CLOUD_TYPE" >&2
+              RESPONSE=$(curl -sS -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "{\"query\":\"mutation { podFindAndDeployOnDemand(input: { name: \\\"${NAME}\\\", imageName: \\\"${IMAGE}\\\", gpuTypeId: \\\"${GPU_TYPE}\\\", cloudType: ${RUNPOD_CLOUD_TYPE}, containerDiskInGb: 20, minMemoryInGb: 8, minVcpuCount: 2, ports: \\\"${PORT}/http\\\", startJupyter: false, startSsh: false }) { id } }\"}")
+              if echo "$RESPONSE" | python3 -c "import sys,json; d=json.load(sys.stdin); sys.exit(print('RunPod error:', d['errors'], file=sys.stderr) or 1) if 'errors' in d else print(d['data']['podFindAndDeployOnDemand']['id'])"; then
+                return 0
+              fi
+            done
+            echo "ERROR: failed to create $NAME with all GPU candidates: ${GPU_CANDIDATES[*]}" >&2
+            return 1
           }
 
           IEP0_POD=$(create_pod  "libraryai-iep0"  "gma51/libraryai-iep0:latest"  "8006")

@@ -251,43 +251,31 @@ def _do_scale_up() -> None:
 def _create_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
     """Create RunPod pods for iep0, iep1a, iep1b. Returns (iep0_url, iep1a_url, iep1b_url)."""
     import boto3  # noqa: PLC0415
-    import httpx  # noqa: PLC0415
 
-    gpu_type_id = os.environ.get("RUNPOD_GPU_TYPE_ID", "NVIDIA GeForce RTX 3080").strip()
-    cloud_type = os.environ.get("RUNPOD_CLOUD_TYPE", "COMMUNITY").strip().upper()
+    gpu_type_ids = _runpod_gpu_type_candidates()
+    cloud_type = _normalize_runpod_cloud_type(os.environ.get("RUNPOD_CLOUD_TYPE", "COMMUNITY"))
 
     _IEP_PODS = [
         ("libraryai-iep0",  "gma51/libraryai-iep0:latest",  8006),
         ("libraryai-iep1a", "gma51/libraryai-iep1a:latest", 8001),
         ("libraryai-iep1b", "gma51/libraryai-iep1b:latest", 8002),
     ]
-    pod_ids: dict[str, str] = {}
     logger.info(
-        "normal_scaler: requesting RunPod pods gpu_type=%s cloud_type=%s",
-        gpu_type_id,
+        "normal_scaler: requesting RunPod pods gpu_candidates=%s cloud_type=%s",
+        ",".join(gpu_type_ids),
         cloud_type,
     )
 
+    pod_ids: dict[str, str] = {}
     for name, image, port in _IEP_PODS:
-        mutation = (
-            'mutation { podFindAndDeployOnDemand(input: {'
-            f' name: "{name}", imageName: "{image}",'
-            f' gpuTypeId: "{gpu_type_id}", cloudType: {cloud_type},'
-            f' containerDiskInGb: 20, minMemoryInGb: 8, minVcpuCount: 2,'
-            f' ports: "{port}/http", startJupyter: false, startSsh: false'
-            '}) { id } }'
+        pod_ids[name] = _create_runpod_pod_with_fallback(
+            api_key,
+            name,
+            image,
+            port,
+            gpu_type_ids,
+            cloud_type,
         )
-        resp = httpx.post(
-            f"https://api.runpod.io/graphql?api_key={api_key}",
-            json={"query": mutation},
-            timeout=30.0,
-        )
-        resp.raise_for_status()
-        data = resp.json()
-        if "errors" in data:
-            raise RuntimeError(f"RunPod error creating {name}: {data['errors']}")
-        pod_ids[name] = data["data"]["podFindAndDeployOnDemand"]["id"]
-        logger.info("normal_scaler: RunPod pod created for %s → id=%s", name, pod_ids[name])
 
     iep0_url  = f"https://{pod_ids['libraryai-iep0']}-8006.proxy.runpod.net"
     iep1a_url = f"https://{pod_ids['libraryai-iep1a']}-8001.proxy.runpod.net"
@@ -312,6 +300,172 @@ def _create_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
         logger.warning("normal_scaler: could not save pod IDs to S3: %s", exc)
 
     return iep0_url, iep1a_url, iep1b_url
+
+
+def _create_runpod_pod_with_fallback(
+    api_key: str,
+    name: str,
+    image: str,
+    port: int,
+    gpu_type_ids: list[str],
+    cloud_type: str,
+) -> str:
+    """
+    Create one RunPod pod, trying GPU candidates in priority order.
+
+    Only advances to the next GPU type on SUPPLY_CONSTRAINT (capacity unavailable).
+    Any other error (auth failure, bad image, network) is re-raised immediately.
+    """
+    last_supply_error: Exception | None = None
+    for gpu_type_id in gpu_type_ids:
+        logger.info(
+            "normal_scaler: attempting RunPod pod %s gpu_type=%r cloud_type=%s",
+            name,
+            gpu_type_id,
+            cloud_type,
+        )
+        try:
+            pod_id = _create_runpod_pod(api_key, name, image, port, gpu_type_id, cloud_type)
+            logger.info(
+                "normal_scaler: RunPod pod %s created with gpu_type=%r id=%s",
+                name,
+                gpu_type_id,
+                pod_id,
+            )
+            return pod_id
+        except RuntimeError as exc:
+            err_str = str(exc)
+            if "SUPPLY_CONSTRAINT" in err_str or "capacity" in err_str.lower():
+                logger.warning(
+                    "normal_scaler: SUPPLY_CONSTRAINT for %s gpu_type=%r cloud_type=%s — trying next",
+                    name,
+                    gpu_type_id,
+                    cloud_type,
+                )
+                last_supply_error = exc
+                continue
+            # Non-supply error (auth, bad image, etc.) — fail immediately, do not try next GPU
+            raise
+    raise RuntimeError(
+        f"All GPU candidates exhausted for {name} "
+        f"(tried {gpu_type_ids!r}, cloud_type={cloud_type!r}): {last_supply_error}"
+    )
+
+
+def _create_runpod_pod(
+    api_key: str,
+    name: str,
+    image: str,
+    port: int,
+    gpu_type_id: str,
+    cloud_type: str,
+) -> str:
+    """Create one RunPod pod for a specific GPU type."""
+    import httpx  # noqa: PLC0415
+
+    mutation = (
+        'mutation { podFindAndDeployOnDemand(input: {'
+        f' name: "{name}", imageName: "{image}",'
+        f' gpuTypeId: "{gpu_type_id}", cloudType: {cloud_type},'
+        f' containerDiskInGb: 20, minMemoryInGb: 8, minVcpuCount: 2,'
+        f' ports: "{port}/http", startJupyter: false, startSsh: false'
+        '}) { id } }'
+    )
+    resp = httpx.post(
+        f"https://api.runpod.io/graphql?api_key={api_key}",
+        json={"query": mutation},
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if "errors" in data:
+        raise RuntimeError(data["errors"])
+    pod_id = data["data"]["podFindAndDeployOnDemand"]["id"]
+    logger.info(
+        "normal_scaler: RunPod pod created for %s gpu_type=%s id=%s",
+        name,
+        gpu_type_id,
+        pod_id,
+    )
+    return pod_id
+
+
+def _create_runpod_pod_set(
+    api_key: str,
+    gpu_type_id: str,
+    cloud_type: str,
+    pods: list[tuple[str, str, int]],
+) -> dict[str, str]:
+    """Create the full GPU pod set for one RunPod GPU type."""
+    import httpx  # noqa: PLC0415
+
+    pod_ids: dict[str, str] = {}
+    for name, image, port in pods:
+        mutation = (
+            'mutation { podFindAndDeployOnDemand(input: {'
+            f' name: "{name}", imageName: "{image}",'
+            f' gpuTypeId: "{gpu_type_id}", cloudType: {cloud_type},'
+            f' containerDiskInGb: 20, minMemoryInGb: 8, minVcpuCount: 2,'
+            f' ports: "{port}/http", startJupyter: false, startSsh: false'
+            '}) { id } }'
+        )
+        resp = httpx.post(
+            f"https://api.runpod.io/graphql?api_key={api_key}",
+            json={"query": mutation},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if "errors" in data:
+            raise RuntimeError(f"RunPod error creating {name}: {data['errors']}")
+        pod_ids[name] = data["data"]["podFindAndDeployOnDemand"]["id"]
+        logger.info("normal_scaler: RunPod pod created for %s → id=%s", name, pod_ids[name])
+
+    return pod_ids
+
+
+def _normalize_runpod_cloud_type(value: str) -> str:
+    cloud_type = (value or "COMMUNITY").strip().upper()
+    if cloud_type == "SECURITY":
+        return "SECURE"
+    if cloud_type not in {"COMMUNITY", "SECURE"}:
+        logger.warning(
+            "normal_scaler: invalid RUNPOD_CLOUD_TYPE=%s, defaulting to COMMUNITY",
+            cloud_type,
+        )
+        return "COMMUNITY"
+    return cloud_type
+
+
+def _runpod_gpu_type_candidates() -> list[str]:
+    raw_values: list[str] = []
+    primary = os.environ.get("RUNPOD_GPU_TYPE_ID", "").strip()
+    fallback_list = os.environ.get("RUNPOD_GPU_TYPES", "").strip()
+    if primary:
+        raw_values.append(primary)
+    if fallback_list:
+        raw_values.extend(item.strip() for item in fallback_list.split(","))
+    if not raw_values:
+        # Default priority order: 4090 → A5000 → 3090
+        raw_values.extend(["NVIDIA GeForce RTX 4090", "NVIDIA RTX A5000", "NVIDIA GeForce RTX 3090"])
+
+    aliases = {
+        "A40": "NVIDIA A40",
+        "RTX 3090": "NVIDIA GeForce RTX 3090",
+        "3090": "NVIDIA GeForce RTX 3090",
+        "RTX 4090": "NVIDIA GeForce RTX 4090",
+        "4090": "NVIDIA GeForce RTX 4090",
+        "RTX A5000": "NVIDIA RTX A5000",
+        "A5000": "NVIDIA RTX A5000",
+    }
+    candidates: list[str] = []
+    for value in raw_values:
+        if not value:
+            continue
+        gpu_type = aliases.get(value, value)
+        if gpu_type not in candidates:
+            candidates.append(gpu_type)
+    return candidates
 
 
 def _resume_existing_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
