@@ -1,0 +1,12 @@
+{
+  "containerOverrides": [
+    {
+      "name": "migration",
+      "command": [
+        "python",
+        "-c",
+        "import os; from sqlalchemy import create_engine, text; engine=create_engine(os.environ['DATABASE_URL'].replace('postgresql+asyncpg://','postgresql+psycopg2://')); sql=text(\"update retraining_triggers set status='failed', resolved_at=now(), notes=coalesce(notes,'') || '; reset_after_runpod_callback_redeploy' where trigger_type='manual_retraining' and status in ('pending','processing')\"); conn=engine.connect(); tx=conn.begin(); result=conn.execute(sql); tx.commit(); print('updated=%s' % result.rowcount); conn.close()"
+      ]
+    }
+  ]
+}

@@ -93,6 +93,7 @@ _COOLDOWN_DAYS = 7
 
 # trigger_type → persistence_hours (spec Section 16.3)
 _TRIGGER_PERSISTENCE: dict[str, float] = {
+    "manual_retraining": 0.0,
     "escalation_rate_anomaly": 24.0,
     "auto_accept_rate_collapse": 24.0,
     "structural_agreement_degradation": 48.0,

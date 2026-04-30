@@ -1,6 +1,8 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useState } from "react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import toast from "react-hot-toast";
 import {
   CheckCircle,
   Clock,
@@ -9,9 +11,11 @@ import {
   XCircle,
   Zap,
 } from "lucide-react";
-import { getRetrainingStatus } from "@/lib/api/retraining";
+import { getRetrainingStatus, triggerManualRetraining } from "@/lib/api/retraining";
+import { getApiErrorMessage } from "@/lib/api/client";
 import { EmptyState } from "@/components/shared/empty-state";
 import { ErrorBanner } from "@/components/shared/error-banner";
+import { ConfirmModal } from "@/components/shared/confirm-modal";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
@@ -19,11 +23,29 @@ import type { RetrainingJobSummary, TriggerCooldown } from "@/types/api";
 import { cn, formatDate, formatRelative, snakeToTitle } from "@/lib/utils";
 
 export function RetrainingView() {
+  const queryClient = useQueryClient();
+  const [showTriggerModal, setShowTriggerModal] = useState(false);
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["retraining-status"],
     queryFn: getRetrainingStatus,
     staleTime: 20_000,
     refetchInterval: 30_000,
+  });
+
+  const triggerMutation = useMutation({
+    mutationFn: triggerManualRetraining,
+    onSuccess: (result) => {
+      if (result.worker_start_status === "failed") {
+        toast.error(result.worker_start_message || "Retraining queued, but worker start failed.");
+      } else {
+        toast.success(result.message || "Manual retraining queued.");
+      }
+      setShowTriggerModal(false);
+      queryClient.invalidateQueries({ queryKey: ["retraining-status"] });
+    },
+    onError: (error) => {
+      toast.error(getApiErrorMessage(error, "Could not queue manual retraining."));
+    },
   });
 
   if (isLoading) {
@@ -45,6 +67,7 @@ export function RetrainingView() {
   }
 
   const { summary, active_jobs, queued_jobs, recently_completed, trigger_cooldowns, as_of } = data;
+  const hasRetrainingInFlight = summary.active_count > 0 || summary.queued_count > 0;
 
   return (
     <div className="space-y-6">
@@ -62,17 +85,28 @@ export function RetrainingView() {
         />
       </div>
 
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-3">
         <p className="text-xs text-slate-500">As of {formatDate(as_of)}</p>
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={() => refetch()}
-          className="gap-1.5 text-slate-500"
-        >
-          <RefreshCw className={cn("h-3.5 w-3.5", isFetching && "animate-spin")} />
-          Refresh
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={() => refetch()}
+            className="gap-1.5 text-slate-500"
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", isFetching && "animate-spin")} />
+            Refresh
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => setShowTriggerModal(true)}
+            disabled={hasRetrainingInFlight || triggerMutation.isPending}
+            className="gap-1.5"
+          >
+            <Play className="h-3.5 w-3.5" />
+            Retrain
+          </Button>
+        </div>
       </div>
 
       <JobSection
@@ -120,6 +154,16 @@ export function RetrainingView() {
         jobs={recently_completed}
         emptyText="No jobs completed in the last 72h."
         variant="completed"
+      />
+
+      <ConfirmModal
+        open={showTriggerModal}
+        onOpenChange={setShowTriggerModal}
+        title="Start retraining?"
+        description="This queues a manual preprocessing retraining run for the IEP1A and IEP1B model pair."
+        confirmLabel="Start Retraining"
+        loading={triggerMutation.isPending}
+        onConfirm={() => triggerMutation.mutate()}
       />
     </div>
   );

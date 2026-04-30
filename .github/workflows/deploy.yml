@@ -53,6 +53,7 @@ jobs:
           - service: retraining-worker
             context: .
             dockerfile: services/retraining_worker/Dockerfile
+            push_dockerhub: true
           - service: iep0
             context: .
             dockerfile: services/iep0/Dockerfile
@@ -441,6 +442,9 @@ jobs:
               | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
               | sed "s/CLUSTER_NAME/${CLUSTER}/g" \
               | sed 's|:latest|:${{ github.sha }}|g' \
+              | sed "s|IEP1A_WEIGHTS_URI_VALUE|${{ vars.IEP1A_WEIGHTS_URI }}|g" \
+              | sed "s|IEP1B_WEIGHTS_URI_VALUE|${{ vars.IEP1B_WEIGHTS_URI }}|g" \
+              | sed "s|RETRAINING_CALLBACK_BASE_URL_VALUE|${{ vars.RETRAINING_CALLBACK_BASE_URL }}|g" \
               | sed "s|IEP0_URL_VALUE|${{ vars.IEP0_URL || 'http://iep0:8006' }}|g" \
               | sed "s|IEP1A_URL_VALUE|${{ vars.IEP1A_URL || 'http://iep1a:8001' }}|g" \
               | sed "s|IEP1B_URL_VALUE|${{ vars.IEP1B_URL || 'http://iep1b:8002' }}|g" \
@@ -759,6 +763,9 @@ jobs:
               | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
               | sed "s/CLUSTER_NAME/${CLUSTER}/g" \
               | sed 's|:latest|:${{ github.sha }}|g' \
+              | sed "s|IEP1A_WEIGHTS_URI_VALUE|${{ vars.IEP1A_WEIGHTS_URI }}|g" \
+              | sed "s|IEP1B_WEIGHTS_URI_VALUE|${{ vars.IEP1B_WEIGHTS_URI }}|g" \
+              | sed "s|RETRAINING_CALLBACK_BASE_URL_VALUE|${{ vars.RETRAINING_CALLBACK_BASE_URL }}|g" \
               | sed "s|IEP0_URL_VALUE|${{ vars.IEP0_URL || 'http://iep0:8006' }}|g" \
               | sed "s|IEP1A_URL_VALUE|${{ vars.IEP1A_URL || 'http://iep1a:8001' }}|g" \
               | sed "s|IEP1B_URL_VALUE|${{ vars.IEP1B_URL || 'http://iep1b:8002' }}|g" \
