@@ -241,7 +241,7 @@ def _do_scale_up() -> None:
 
     # 3. CPU IEP services ──────────────────────────────────────────────────────
     for svc in _CPU_IEP_SERVICES:
-        _update_service(ecs_client, cluster, svc, 1)
+        _update_service(ecs_client, cluster, svc, 1, force_new=True)
 
     # 4. Remaining worker services ─────────────────────────────────────────────
     for svc in ("libraryai-eep-recovery", "libraryai-shadow-worker"):
@@ -335,7 +335,7 @@ def _create_runpod_pod_with_fallback_gpu_only_unused(
             return pod_id
         except RuntimeError as exc:
             err_str = str(exc)
-            if "SUPPLY_CONSTRAINT" in err_str or "capacity" in err_str.lower():
+            if _is_runpod_supply_error(err_str):
                 logger.warning(
                     "normal_scaler: SUPPLY_CONSTRAINT for %s gpu_type=%r cloud_type=%s — trying next",
                     name,
@@ -385,7 +385,7 @@ def _create_runpod_pod_with_fallback(
             return pod_id
         except RuntimeError as exc:
             err_str = str(exc)
-            if "SUPPLY_CONSTRAINT" in err_str or "capacity" in err_str.lower():
+            if _is_runpod_supply_error(err_str):
                 logger.warning(
                     "normal_scaler: SUPPLY_CONSTRAINT for %s cloud_type=%s; trying next cloud",
                     name,
@@ -451,6 +451,17 @@ def _create_runpod_pod_rest(
     if not pod_id:
         raise RuntimeError(f"RunPod REST response missing pod id for {name}: {data}")
     return str(pod_id)
+
+
+def _is_runpod_supply_error(message: str) -> bool:
+    normalized = message.lower()
+    return (
+        "supply_constraint" in normalized
+        or "capacity" in normalized
+        or "no longer any instances available" in normalized
+        or "does not have the resources to deploy your pod" in normalized
+        or "try a different machine" in normalized
+    )
 
 
 def _runpod_iep_env(name: str, port: int) -> dict[str, str]:

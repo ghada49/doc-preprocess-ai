@@ -388,6 +388,17 @@ class TestCreateRunPodPodWithFallback(unittest.TestCase):
         ], cloud_types=["COMMUNITY", "SECURE"])
         self.assertEqual(result, "pod-id-fallback")
 
+    def test_runpod_resource_error_falls_back_to_second_cloud(self):
+        result = self._call([
+            RuntimeError(
+                "RunPod REST error creating libraryai-iep0: HTTP 500: "
+                "This machine does not have the resources to deploy your pod. "
+                "Please try a different machine"
+            ),
+            "pod-id-secure",
+        ], cloud_types=["COMMUNITY", "SECURE"])
+        self.assertEqual(result, "pod-id-secure")
+
     def test_all_clouds_supply_constrained_raises(self):
         with self.assertRaises(RuntimeError) as ctx:
             self._call([

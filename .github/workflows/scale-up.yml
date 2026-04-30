@@ -279,6 +279,7 @@ jobs:
               --cluster "$ECS_CLUSTER" \
               --service "libraryai-${SVC}" \
               --desired-count 1 \
+              --force-new-deployment \
               --no-cli-pager
             echo "Started libraryai-${SVC}"
           done
