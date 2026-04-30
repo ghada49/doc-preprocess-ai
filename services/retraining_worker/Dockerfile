@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM pytorch/pytorch:2.2.2-cuda11.8-cudnn8-runtime
 
 # OpenCV (pulled in via ultralytics) needs a few system libs on Debian slim images.
 # Note: libglib2.0-0 provides libgthread-2.0.so.0 (needed by cv2 import).
@@ -20,15 +20,9 @@ ENV PYTHONPATH=/app \
     PYTHONUNBUFFERED=1 \
     UV_HTTP_TIMEOUT=120
 
-# Prefer CPU wheels for Torch (Ultralytics dependency). The default PyPI torch builds
-# can pull very large CUDA-enabled wheels which are unnecessary for Step 7 CPU smoke.
-ENV UV_EXTRA_INDEX_URL=https://download.pytorch.org/whl/cpu
-
 # Install the shared runtime dependency set needed by the retraining worker and
 # its DB-backed task modules.
 RUN uv pip install --system \
-    "torch==2.5.1+cpu" \
-    "torchvision==0.20.1+cpu" \
     "fastapi>=0.110.0" \
     "uvicorn[standard]>=0.27.0" \
     "prometheus-client>=0.20.0" \

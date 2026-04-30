@@ -52,6 +52,7 @@ from services.eep.app.correction.ptiff_qa_viewer import router as ptiff_qa_viewe
 from services.eep.app.correction.queue import router as correction_queue_router
 from services.eep.app.correction.reject import router as correction_reject_router
 from services.eep.app.correction.send_to_review import router as send_to_review_router
+from services.eep.app.jobs.actions import router as job_actions_router
 from services.eep.app.jobs.download import router as jobs_download_router
 from services.eep.app.jobs.create import router as jobs_router
 from services.eep.app.jobs.list import router as job_list_router
@@ -115,6 +116,7 @@ app.include_router(uploads_router)
 app.include_router(jobs_router)
 app.include_router(job_list_router)
 app.include_router(job_status_router)
+app.include_router(job_actions_router)
 
 # ── Phase 7 admin routers ──────────────────────────────────────────────────────
 app.include_router(admin_dashboard_router)

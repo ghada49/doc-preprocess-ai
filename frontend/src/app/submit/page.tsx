@@ -61,6 +61,7 @@ export default function SubmitJobPage() {
       ...prev,
       ...selected.map((f) => ({ file: f, progress: 0 })),
     ]);
+    e.target.value = "";
     setUploadsDone(false);
   };
 
@@ -73,17 +74,28 @@ export default function SubmitJobPage() {
     if (files.length === 0) return;
     setUploading(true);
     setUploadsDone(false);
+    setFiles((prev) =>
+      prev.map((item) => ({
+        ...item,
+        error: undefined,
+        progress: item.objectUri ? 100 : 0,
+      }))
+    );
 
     const results = await Promise.allSettled(
       files.map((f, idx) =>
         uploadFile(f.file, idx + 1, (pct) => {
           setFiles((prev) =>
-            prev.map((item, i) => (i === idx ? { ...item, progress: pct } : item))
+            prev.map((item, i) =>
+              i === idx ? { ...item, error: undefined, progress: pct } : item
+            )
           );
         }).then((result) => {
           setFiles((prev) =>
             prev.map((item, i) =>
-              i === idx ? { ...item, objectUri: result.objectUri, progress: 100 } : item
+              i === idx
+                ? { ...item, error: undefined, objectUri: result.objectUri, progress: 100 }
+                : item
             )
           );
           return result;

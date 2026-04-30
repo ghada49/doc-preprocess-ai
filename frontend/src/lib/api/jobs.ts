@@ -1,7 +1,8 @@
-import { apiGet, apiPost } from "./client";
+import { apiDelete, apiGet, apiPost } from "./client";
 import type {
   CreateJobRequest,
   CreateJobResponse,
+  JobActionResponse,
   JobDetailResponse,
   JobsListParams,
   JobsListResponse,
@@ -17,4 +18,12 @@ export function listJobs(params?: JobsListParams): Promise<JobsListResponse> {
 
 export function getJob(jobId: string): Promise<JobDetailResponse> {
   return apiGet<JobDetailResponse>(`/v1/jobs/${jobId}`);
+}
+
+export function cancelJob(jobId: string): Promise<JobActionResponse> {
+  return apiPost<JobActionResponse>(`/v1/jobs/${jobId}/cancel`);
+}
+
+export function deleteJob(jobId: string): Promise<JobActionResponse> {
+  return apiDelete<JobActionResponse>(`/v1/jobs/${jobId}`);
 }

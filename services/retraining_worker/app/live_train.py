@@ -19,6 +19,7 @@ import logging
 import os
 import subprocess
 import sys
+import tarfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -26,6 +27,19 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _MATERIALS = ("book", "newspaper", "microfilm")
+
+_PRETRAINED_ARCHIVE_FILES: dict[str, dict[str, str]] = {
+    "iep1a": {
+        "book": "Book_segmentation.pt",
+        "newspaper": "Newspaper_Segmentation.pt",
+        "microfilm": "Segmentation_microfilm.pt",
+    },
+    "iep1b": {
+        "book": "Book_keypoint.pt",
+        "newspaper": "Newspaper_Keypoints.pt",
+        "microfilm": "Microfilm_Keypoints.pt",
+    },
+}
 
 
 class RetrainingTrainConfigError(ValueError):
@@ -197,7 +211,13 @@ def _download_pretrained_weights(
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     result: dict[str, Path] = {}
+    archive_uri = s3_uris.get("__archive__")
+    if archive_uri:
+        result.update(_download_pretrained_archive(client, archive_uri, dest_dir, service))
+
     for mat, uri in s3_uris.items():
+        if mat == "__archive__":
+            continue
         if not uri.startswith("s3://"):
             logger.warning(
                 "_download_pretrained_weights: skipping non-S3 URI for %s/%s: %r",
@@ -227,6 +247,85 @@ def _download_pretrained_weights(
                 uri,
                 exc,
             )
+    return result
+
+
+def _download_pretrained_archive(
+    client: object,
+    uri: str,
+    dest_dir: Path,
+    service: str,
+) -> dict[str, Path]:
+    """
+    Download a flat IEP1A/IEP1B model archive and extract material weights.
+
+    The GitHub weight variables are archive URIs used to build inference images.
+    Supporting those archives here lets retraining start from the same approved
+    S3 weights without adding separate per-material weight variables.
+    """
+    if not uri.startswith("s3://"):
+        logger.warning(
+            "_download_pretrained_archive: skipping non-S3 archive URI for %s: %r",
+            service,
+            uri,
+        )
+        return {}
+
+    without_scheme = uri[len("s3://"):]
+    bucket, _, key = without_scheme.partition("/")
+    archive_path = dest_dir / f"{service}_pretrained_archive.tar.gz"
+
+    try:
+        client.download_file(bucket, key, str(archive_path))  # type: ignore[attr-defined]
+    except Exception as exc:
+        logger.warning(
+            "_download_pretrained_archive: failed to download %s archive from %s — %s",
+            service,
+            uri,
+            exc,
+        )
+        return {}
+
+    extract_dir = dest_dir / f"{service}_archive"
+    extract_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        with tarfile.open(archive_path, "r:gz") as archive:
+            root = extract_dir.resolve()
+            for member in archive.getmembers():
+                member_path = (extract_dir / member.name).resolve()
+                if not str(member_path).startswith(str(root)):
+                    raise RuntimeError(f"Unsafe archive member path: {member.name}")
+            archive.extractall(extract_dir)
+    except Exception as exc:
+        logger.warning(
+            "_download_pretrained_archive: failed to extract %s archive %s — %s",
+            service,
+            archive_path,
+            exc,
+        )
+        return {}
+
+    result: dict[str, Path] = {}
+    expected = _PRETRAINED_ARCHIVE_FILES.get(service, {})
+    for material, filename in expected.items():
+        matches = list(extract_dir.rglob(filename))
+        if not matches:
+            logger.warning(
+                "_download_pretrained_archive: %s weight %s not found in %s",
+                material,
+                filename,
+                archive_path,
+            )
+            continue
+        local_path = dest_dir / f"{service}_{material}.pt"
+        matches[0].replace(local_path)
+        result[material] = local_path
+
+    logger.info(
+        "_download_pretrained_archive: service=%s materials=%s",
+        service,
+        sorted(result.keys()),
+    )
     return result
 
 

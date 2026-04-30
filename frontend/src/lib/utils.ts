@@ -84,7 +84,7 @@ export function pageStateLabel(state: string): string {
 
 export function jobStatusLabel(status: string): string {
   const labels: Record<string, string> = {
-    queued: "Waiting",
+    queued: "Queued",
     running: "Processing",
     done: "Ready",
     failed: "Issue found",
@@ -137,6 +137,7 @@ export function reviewReasonLabel(reason: string): string {
     crop_failed: "Could not find the page edges",
     quality_gate_failed: "Needs a quick review",
     manual_flag: "Marked for review",
+    job_canceled: "Job canceled",
   };
   return labels[reason] ?? "Please review this page";
 }

@@ -203,6 +203,14 @@ export async function apiPatch<T>(
   return response.data;
 }
 
+export async function apiDelete<T>(
+  path: string,
+  config?: AxiosRequestConfig
+): Promise<T> {
+  const response = await apiClient.delete<T>(path, config);
+  return response.data;
+}
+
 export async function uploadToStorage(
   uploadUrl: string,
   file: File,
