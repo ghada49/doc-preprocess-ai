@@ -76,6 +76,10 @@ from services.eep_worker.app.normalization_step import (
 )
 from services.eep_worker.app.split_step import SplitOutcome, run_split_normalization
 from services.eep_worker.app.iep1d_scaler import Iep1dScaler, Iep1dUnavailableError, build_iep1d_scaler
+from services.eep_worker.app.presigned_inputs import (
+    maybe_presign_input_uri,
+    maybe_presign_input_uris,
+)
 from services.eep_worker.app.rescue_step import RescueOutcome, run_rescue_flow
 from services.eep_worker.app.task import build_gate_config
 from services.eep_worker.app.watchdog import TaskWatchdog
@@ -547,7 +551,7 @@ async def _invoke_iep0_classification(
     payload = {
         "job_id": job_id,
         "page_number": page_number,
-        "image_uri": image_uri,
+        "image_uri": maybe_presign_input_uri(image_uri, iep0_endpoint),
     }
 
     try:
@@ -770,7 +774,7 @@ async def _call_iep0_batch(
     """
     payload = {
         "job_id": job_id,
-        "image_uris": image_uris,
+        "image_uris": maybe_presign_input_uris(image_uris, iep0_batch_endpoint),
     }
 
     try:
@@ -1028,7 +1032,7 @@ async def _call_layout_service(
     payload: dict[str, object] = {
         "job_id": job_id,
         "page_number": page_number,
-        "image_uri": image_uri,
+        "image_uri": maybe_presign_input_uri(image_uri, endpoint),
         "material_type": material_type,
     }
     if sub_page_index is not None:

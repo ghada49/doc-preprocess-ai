@@ -312,10 +312,9 @@ class TestScaleUpServiceList(unittest.TestCase):
         with patch.dict(os.environ, env, clear=False):
             candidates = normal_scaler._runpod_gpu_type_candidates()
 
-        self.assertEqual(
-            candidates,
-            ["NVIDIA A40", "NVIDIA RTX A5000", "NVIDIA GeForce RTX 4090"],
-        )
+        self.assertEqual(candidates[:3], ["NVIDIA A40", "NVIDIA RTX A5000", "NVIDIA GeForce RTX 4090"])
+        self.assertIn("NVIDIA L4", candidates)
+        self.assertIn("NVIDIA RTX A6000", candidates)
 
     def test_runpod_cloud_type_normalizes_security_alias(self):
         import importlib
@@ -324,6 +323,21 @@ class TestScaleUpServiceList(unittest.TestCase):
 
         self.assertEqual(normal_scaler._normalize_runpod_cloud_type("SECURITY"), "SECURE")
         self.assertEqual(normal_scaler._normalize_runpod_cloud_type("community"), "COMMUNITY")
+
+    def test_runpod_cloud_candidates_default_to_both_pools(self):
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        with patch.dict(os.environ, {"RUNPOD_CLOUD_TYPE": "COMMUNITY"}, clear=False):
+            self.assertEqual(normal_scaler._runpod_cloud_type_candidates(), ["COMMUNITY", "SECURE"])
+
+    def test_runpod_pod_mode_invalid_defaults_to_create(self):
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        self.assertEqual(normal_scaler._normalize_runpod_pod_mode("_create_runpod_pods"), "create")
 
     def test_worker_desired_count_used(self):
         mock_ecs = self._run_do_scale_up({"WORKER_DESIRED_COUNT": "3"})
@@ -429,9 +443,9 @@ class TestCreateRunPodPodWithFallback(unittest.TestCase):
         with patch.dict(os.environ, {"RUNPOD_GPU_TYPE_ID": "", "RUNPOD_GPU_TYPES": ""}, clear=False):
             candidates = normal_scaler._runpod_gpu_type_candidates()
 
-        self.assertIn("NVIDIA GeForce RTX 4090", candidates)
+        self.assertIn("NVIDIA RTX A5000", candidates)
         self.assertGreater(len(candidates), 1)
-        self.assertEqual(candidates[0], "NVIDIA GeForce RTX 4090")
+        self.assertEqual(candidates[0], "NVIDIA RTX 4000 Ada Generation")
 
 
 # ── 3: drain ignores human-review states ──────────────────────────────────────

@@ -180,7 +180,7 @@ def _do_scale_up() -> None:
     worker_desired = int(os.environ.get("WORKER_DESIRED_COUNT", "2"))
     region = os.environ.get("AWS_REGION", "us-east-1")
     runpod_api_key = os.environ.get("RUNPOD_API_KEY", "")
-    runpod_pod_mode = os.environ.get("RUNPOD_POD_MODE", "create").strip().lower()
+    runpod_pod_mode = _normalize_runpod_pod_mode(os.environ.get("RUNPOD_POD_MODE", "create"))
 
     ecs_client = boto3.client("ecs", region_name=region)
 
@@ -253,7 +253,7 @@ def _create_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
     import boto3  # noqa: PLC0415
 
     gpu_type_ids = _runpod_gpu_type_candidates()
-    cloud_type = _normalize_runpod_cloud_type(os.environ.get("RUNPOD_CLOUD_TYPE", "COMMUNITY"))
+    cloud_types = _runpod_cloud_type_candidates()
 
     _IEP_PODS = [
         ("libraryai-iep0",  "gma51/libraryai-iep0:latest",  8006),
@@ -261,9 +261,9 @@ def _create_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
         ("libraryai-iep1b", "gma51/libraryai-iep1b:latest", 8002),
     ]
     logger.info(
-        "normal_scaler: requesting RunPod pods gpu_candidates=%s cloud_type=%s",
+        "normal_scaler: requesting RunPod pods gpu_candidates=%s cloud_candidates=%s",
         ",".join(gpu_type_ids),
-        cloud_type,
+        ",".join(cloud_types),
     )
 
     pod_ids: dict[str, str] = {}
@@ -274,7 +274,7 @@ def _create_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
             image,
             port,
             gpu_type_ids,
-            cloud_type,
+            cloud_types,
         )
 
     iep0_url  = f"https://{pod_ids['libraryai-iep0']}-8006.proxy.runpod.net"
@@ -302,7 +302,7 @@ def _create_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
     return iep0_url, iep1a_url, iep1b_url
 
 
-def _create_runpod_pod_with_fallback(
+def _create_runpod_pod_with_fallback_gpu_only_unused(
     api_key: str,
     name: str,
     image: str,
@@ -349,6 +349,55 @@ def _create_runpod_pod_with_fallback(
     raise RuntimeError(
         f"All GPU candidates exhausted for {name} "
         f"(tried {gpu_type_ids!r}, cloud_type={cloud_type!r}): {last_supply_error}"
+    )
+
+
+def _create_runpod_pod_with_fallback(
+    api_key: str,
+    name: str,
+    image: str,
+    port: int,
+    gpu_type_ids: list[str],
+    cloud_types: list[str] | None = None,
+    cloud_type: str | None = None,
+) -> str:
+    """Create one RunPod pod, trying GPU and cloud candidates in priority order."""
+    if cloud_types is None:
+        cloud_types = [_normalize_runpod_cloud_type(cloud_type or "COMMUNITY")]
+    last_supply_error: Exception | None = None
+    for gpu_type_id in gpu_type_ids:
+        for cloud_type in cloud_types:
+            logger.info(
+                "normal_scaler: attempting RunPod pod %s gpu_type=%r cloud_type=%s",
+                name,
+                gpu_type_id,
+                cloud_type,
+            )
+            try:
+                pod_id = _create_runpod_pod(api_key, name, image, port, gpu_type_id, cloud_type)
+                logger.info(
+                    "normal_scaler: RunPod pod %s created with gpu_type=%r cloud_type=%s id=%s",
+                    name,
+                    gpu_type_id,
+                    cloud_type,
+                    pod_id,
+                )
+                return pod_id
+            except RuntimeError as exc:
+                err_str = str(exc)
+                if "SUPPLY_CONSTRAINT" in err_str or "capacity" in err_str.lower():
+                    logger.warning(
+                        "normal_scaler: SUPPLY_CONSTRAINT for %s gpu_type=%r cloud_type=%s; trying next",
+                        name,
+                        gpu_type_id,
+                        cloud_type,
+                    )
+                    last_supply_error = exc
+                    continue
+                raise
+    raise RuntimeError(
+        f"All GPU candidates exhausted for {name} "
+        f"(tried {gpu_type_ids!r}, cloud_types={cloud_types!r}): {last_supply_error}"
     )
 
 
@@ -437,6 +486,31 @@ def _normalize_runpod_cloud_type(value: str) -> str:
     return cloud_type
 
 
+def _runpod_cloud_type_candidates() -> list[str]:
+    primary = _normalize_runpod_cloud_type(os.environ.get("RUNPOD_CLOUD_TYPE", "COMMUNITY"))
+    raw = os.environ.get("RUNPOD_CLOUD_TYPES", "").strip()
+    values = [primary]
+    if raw:
+        values.extend(item.strip() for item in raw.split(","))
+    else:
+        values.append("SECURE" if primary == "COMMUNITY" else "COMMUNITY")
+
+    candidates: list[str] = []
+    for value in values:
+        cloud_type = _normalize_runpod_cloud_type(value)
+        if cloud_type not in candidates:
+            candidates.append(cloud_type)
+    return candidates
+
+
+def _normalize_runpod_pod_mode(value: str) -> str:
+    mode = (value or "create").strip().lower()
+    if mode in {"create", "existing"}:
+        return mode
+    logger.warning("normal_scaler: invalid RUNPOD_POD_MODE=%r, defaulting to create", value)
+    return "create"
+
+
 def _runpod_gpu_type_candidates() -> list[str]:
     raw_values: list[str] = []
     primary = os.environ.get("RUNPOD_GPU_TYPE_ID", "").strip()
@@ -445,9 +519,21 @@ def _runpod_gpu_type_candidates() -> list[str]:
         raw_values.append(primary)
     if fallback_list:
         raw_values.extend(item.strip() for item in fallback_list.split(","))
-    if not raw_values:
-        # Default priority order: 4090 → A5000 → 3090
-        raw_values.extend(["NVIDIA GeForce RTX 4090", "NVIDIA RTX A5000", "NVIDIA GeForce RTX 3090"])
+    raw_values.extend(
+        [
+            # Tier 1 — preferred (lower cost / good availability)
+            "NVIDIA RTX 4000 Ada Generation",
+            "NVIDIA RTX A4000",
+            "NVIDIA RTX 2000 Ada Generation",
+            "NVIDIA RTX A5000",
+            "NVIDIA RTX A4500",
+            # Tier 2 — fallback (higher-end / less available)
+            "NVIDIA L4",
+            "NVIDIA A40",
+            "NVIDIA RTX Pro 4500",
+            "NVIDIA RTX A6000",
+        ]
+    )
 
     aliases = {
         "A40": "NVIDIA A40",
@@ -457,6 +543,30 @@ def _runpod_gpu_type_candidates() -> list[str]:
         "4090": "NVIDIA GeForce RTX 4090",
         "RTX A5000": "NVIDIA RTX A5000",
         "A5000": "NVIDIA RTX A5000",
+        "L4": "NVIDIA L4",
+        "L40": "NVIDIA L40",
+        "L40S": "NVIDIA L40S",
+        "RTX A4000": "NVIDIA RTX A4000",
+        "A4000": "NVIDIA RTX A4000",
+        "RTX A4500": "NVIDIA RTX A4500",
+        "A4500": "NVIDIA RTX A4500",
+        "RTX A6000": "NVIDIA RTX A6000",
+        "A6000": "NVIDIA RTX A6000",
+        "RTX 4000 ADA": "NVIDIA RTX 4000 Ada Generation",
+        "4000 ADA": "NVIDIA RTX 4000 Ada Generation",
+        "RTX 4000": "NVIDIA RTX 4000 Ada Generation",
+        "RTX 2000 ADA": "NVIDIA RTX 2000 Ada Generation",
+        "2000 ADA": "NVIDIA RTX 2000 Ada Generation",
+        "RTX 5000 ADA": "NVIDIA RTX 5000 Ada Generation",
+        "5000 ADA": "NVIDIA RTX 5000 Ada Generation",
+        "RTX 6000 ADA": "NVIDIA RTX 6000 Ada Generation",
+        "6000 ADA": "NVIDIA RTX 6000 Ada Generation",
+        "RTX PRO 4500": "NVIDIA RTX Pro 4500",
+        "RTX Pro 4500": "NVIDIA RTX Pro 4500",
+        "RTX 4080 SUPER": "NVIDIA GeForce RTX 4080 SUPER",
+        "4080 SUPER": "NVIDIA GeForce RTX 4080 SUPER",
+        "RTX 5090": "NVIDIA GeForce RTX 5090",
+        "5090": "NVIDIA GeForce RTX 5090",
     }
     candidates: list[str] = []
     for value in raw_values:
