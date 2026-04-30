@@ -1,4 +1,4 @@
-name: Deploy
+﻿name: Deploy
 
 on:
   push:
@@ -452,7 +452,10 @@ jobs:
               | sed "s|RUNPOD_IEP1A_POD_ID_VALUE|${{ vars.RUNPOD_IEP1A_POD_ID || '' }}|g" \
               | sed "s|RUNPOD_IEP1B_POD_ID_VALUE|${{ vars.RUNPOD_IEP1B_POD_ID || '' }}|g" \
               | sed "s|RUNPOD_GPU_TYPE_ID_VALUE|${{ vars.RUNPOD_GPU_TYPE_ID || 'NVIDIA GeForce RTX 3080' }}|g" \
-              | sed "s|RUNPOD_CLOUD_TYPE_VALUE|${{ vars.RUNPOD_CLOUD_TYPE || 'COMMUNITY' }}|g")
+              | sed "s|RUNPOD_CLOUD_TYPE_VALUE|${{ vars.RUNPOD_CLOUD_TYPE || 'COMMUNITY' }}|g" \
+              | sed "s|GOOGLE_ENABLED_VALUE|${{ vars.GOOGLE_ENABLED || 'false' }}|g" \
+              | sed "s|GOOGLE_PROJECT_ID_VALUE|${{ vars.GOOGLE_PROJECT_ID || '' }}|g" \
+              | sed "s|GOOGLE_PROCESSOR_ID_LAYOUT_VALUE|${{ vars.GOOGLE_PROCESSOR_ID_LAYOUT || '' }}|g")
             REVISION=$(aws ecs register-task-definition \
               --cli-input-json "$TASK_DEF" \
               --query 'taskDefinition.taskDefinitionArn' --output text)
@@ -806,7 +809,10 @@ jobs:
               | sed "s|RUNPOD_IEP1A_POD_ID_VALUE|${{ vars.RUNPOD_IEP1A_POD_ID || '' }}|g" \
               | sed "s|RUNPOD_IEP1B_POD_ID_VALUE|${{ vars.RUNPOD_IEP1B_POD_ID || '' }}|g" \
               | sed "s|RUNPOD_GPU_TYPE_ID_VALUE|${{ vars.RUNPOD_GPU_TYPE_ID || 'NVIDIA GeForce RTX 3080' }}|g" \
-              | sed "s|RUNPOD_CLOUD_TYPE_VALUE|${{ vars.RUNPOD_CLOUD_TYPE || 'COMMUNITY' }}|g")
+              | sed "s|RUNPOD_CLOUD_TYPE_VALUE|${{ vars.RUNPOD_CLOUD_TYPE || 'COMMUNITY' }}|g" \
+              | sed "s|GOOGLE_ENABLED_VALUE|${{ vars.GOOGLE_ENABLED || 'false' }}|g" \
+              | sed "s|GOOGLE_PROJECT_ID_VALUE|${{ vars.GOOGLE_PROJECT_ID || '' }}|g" \
+              | sed "s|GOOGLE_PROCESSOR_ID_LAYOUT_VALUE|${{ vars.GOOGLE_PROCESSOR_ID_LAYOUT || '' }}|g")
             REVISION=$(aws ecs register-task-definition \
               --cli-input-json "$TASK_DEF" \
               --query 'taskDefinition.taskDefinitionArn' --output text)

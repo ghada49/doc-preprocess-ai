@@ -118,13 +118,7 @@ jobs:
               STATUS=$(curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
                 -H "Content-Type: application/json" \
                 -d "{\"query\":\"query { pod(input: {podId: \\\"${POD_ID}\\\"}) { desiredStatus runtime { uptimeInSeconds } } }\"}" \
-                | python3 -c "
-import sys, json
-d = json.load(sys.stdin)
-p = d['data']['pod']
-running = p.get('runtime') is not None
-print('RUNNING' if running else p.get('desiredStatus','UNKNOWN'))
-" 2>/dev/null || echo "UNKNOWN")
+                | python3 -c "import sys,json; d=json.load(sys.stdin); p=d['data']['pod']; print('RUNNING' if p.get('runtime') is not None else p.get('desiredStatus','UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
               echo "  attempt $i/40 — $NAME pod status=$STATUS"
               if [ "$STATUS" = "RUNNING" ]; then
                 # Pod is up — check service health endpoint

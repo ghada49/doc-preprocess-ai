@@ -40,7 +40,11 @@ COPY services/eep/ ./services/eep/
 COPY services/eep_worker/ ./services/eep_worker/
 COPY monitoring/__init__.py monitoring/drift_detector.py monitoring/drift_observer.py monitoring/baselines.json ./monitoring/
 
-RUN mkdir -p /tmp/prometheus_multiproc
+RUN mkdir -p /tmp/prometheus_multiproc /var/secrets/google
+
+COPY services/eep_worker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
 
 EXPOSE 9100
+ENTRYPOINT ["/entrypoint.sh"]
 CMD ["uvicorn", "services.eep_worker.app.main:app", "--host", "0.0.0.0", "--port", "9100"]
