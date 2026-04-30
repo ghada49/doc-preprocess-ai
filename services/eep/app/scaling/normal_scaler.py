@@ -200,19 +200,35 @@ def _do_scale_up() -> None:
             else:
                 iep0_url, iep1a_url, iep1b_url = _create_runpod_pods(runpod_api_key, region)
         except Exception as exc:  # noqa: BLE001
-            logger.error("normal_scaler: RunPod pod startup failed: %s", exc)
+            logger.error(
+                "normal_scaler: RunPod pod startup failed: %s — "
+                "aborting scale-up to avoid starting workers with stale GPU URLs. "
+                "Check RUNPOD_GPU_TYPE_ID / RUNPOD_CLOUD_TYPE vars or RunPod supply.",
+                exc,
+            )
+            return
     else:
         logger.warning("normal_scaler: RUNPOD_API_KEY not set — GPU pods not created")
 
+    if not iep0_url:
+        logger.error(
+            "normal_scaler: no RunPod URLs available — aborting scale-up. "
+            "Workers would time out against stale GPU service URLs."
+        )
+        return
+
     # 2. Start eep-worker with RunPod IEP URLs baked into task def ────────────
     eep_worker_task_def_arn: str | None = None
-    if iep0_url:
-        try:
-            eep_worker_task_def_arn = _register_eep_worker_with_runpod_urls(
-                ecs_client, iep0_url, iep1a_url, iep1b_url
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("normal_scaler: eep-worker task def update failed: %s", exc)
+    try:
+        eep_worker_task_def_arn = _register_eep_worker_with_runpod_urls(
+            ecs_client, iep0_url, iep1a_url, iep1b_url
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "normal_scaler: eep-worker task def update failed: %s — aborting scale-up.",
+            exc,
+        )
+        return
 
     _update_service(
         ecs_client,
@@ -220,7 +236,7 @@ def _do_scale_up() -> None:
         "libraryai-eep-worker",
         worker_desired,
         task_def_arn=eep_worker_task_def_arn,
-        force_new=eep_worker_task_def_arn is not None,
+        force_new=True,
     )
 
     # 3. CPU IEP services ──────────────────────────────────────────────────────

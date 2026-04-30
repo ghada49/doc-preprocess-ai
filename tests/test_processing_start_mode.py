@@ -147,11 +147,12 @@ class TestScaleUpServiceList(unittest.TestCase):
     }
 
     def _run_do_scale_up(self, env_extra: dict | None = None):
-        """Run _do_scale_up with no RUNPOD_API_KEY (RunPod path skipped)."""
+        """Run _do_scale_up with successful RunPod URL discovery."""
         env = {
             "ECS_CLUSTER": "test-cluster",
             "WORKER_DESIRED_COUNT": "2",
             "AWS_REGION": "us-east-1",
+            "RUNPOD_API_KEY": "test-key",
         }
         if env_extra:
             env.update(env_extra)
@@ -163,7 +164,21 @@ class TestScaleUpServiceList(unittest.TestCase):
                 from services.eep.app.scaling import normal_scaler
                 import importlib
                 importlib.reload(normal_scaler)  # reload so env vars are re-read
-                normal_scaler._do_scale_up()
+                with patch.object(
+                    normal_scaler,
+                    "_create_runpod_pods",
+                    return_value=(
+                        "https://pod1-8006.proxy.runpod.net",
+                        "https://pod2-8001.proxy.runpod.net",
+                        "https://pod3-8002.proxy.runpod.net",
+                    ),
+                ):
+                    with patch.object(
+                        normal_scaler,
+                        "_register_eep_worker_with_runpod_urls",
+                        return_value="arn:aws:ecs:us-east-1:123:task-definition/libraryai-eep-worker:2",
+                    ):
+                        normal_scaler._do_scale_up()
 
         return mock_ecs
 
@@ -256,8 +271,34 @@ class TestScaleUpServiceList(unittest.TestCase):
         importlib.reload(normal_scaler)
 
         with patch.object(normal_scaler, "_create_runpod_pods") as mock_create_pods:
-            self._run_do_scale_up()  # no RUNPOD_API_KEY in env
+            mock_ecs = self._run_do_scale_up({"RUNPOD_API_KEY": ""})
         mock_create_pods.assert_not_called()
+        mock_ecs.update_service.assert_not_called()
+
+    def test_runpod_startup_failure_aborts_without_starting_workers(self):
+        """RunPod create failures must not start workers with stale ECS DNS URLs."""
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        env = {
+            "ECS_CLUSTER": "test-cluster",
+            "WORKER_DESIRED_COUNT": "2",
+            "AWS_REGION": "us-east-1",
+            "RUNPOD_API_KEY": "test-key",
+        }
+        mock_ecs = MagicMock()
+
+        with patch.dict(os.environ, env, clear=False):
+            with patch("boto3.client", return_value=mock_ecs):
+                with patch.object(
+                    normal_scaler,
+                    "_create_runpod_pods",
+                    side_effect=RuntimeError("RunPod supply constraint"),
+                ):
+                    normal_scaler._do_scale_up()
+
+        mock_ecs.update_service.assert_not_called()
 
     def test_worker_desired_count_used(self):
         mock_ecs = self._run_do_scale_up({"WORKER_DESIRED_COUNT": "3"})
