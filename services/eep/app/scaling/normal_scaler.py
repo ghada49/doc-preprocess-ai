@@ -600,7 +600,6 @@ def _runpod_gpu_type_candidates() -> list[str]:
             # Tier 2 — fallback (higher-end / less available)
             "NVIDIA L4",
             "NVIDIA A40",
-            "NVIDIA RTX Pro 4500",
             "NVIDIA RTX A6000",
         ]
     )
@@ -631,9 +630,6 @@ def _runpod_gpu_type_candidates() -> list[str]:
         "5000 ADA": "NVIDIA RTX 5000 Ada Generation",
         "RTX 6000 ADA": "NVIDIA RTX 6000 Ada Generation",
         "6000 ADA": "NVIDIA RTX 6000 Ada Generation",
-        "RTX PRO 4500": "NVIDIA RTX PRO 4500 Blackwell",
-        "RTX Pro 4500": "NVIDIA RTX PRO 4500 Blackwell",
-        "NVIDIA RTX Pro 4500": "NVIDIA RTX PRO 4500 Blackwell",
         "RTX 4080 SUPER": "NVIDIA GeForce RTX 4080 SUPER",
         "4080 SUPER": "NVIDIA GeForce RTX 4080 SUPER",
         "RTX 5090": "NVIDIA GeForce RTX 5090",

@@ -315,7 +315,6 @@ class TestScaleUpServiceList(unittest.TestCase):
         self.assertEqual(candidates[:3], ["NVIDIA A40", "NVIDIA RTX A5000", "NVIDIA GeForce RTX 4090"])
         self.assertIn("NVIDIA L4", candidates)
         self.assertIn("NVIDIA RTX A6000", candidates)
-        self.assertIn("NVIDIA RTX PRO 4500 Blackwell", candidates)
 
     def test_runpod_cloud_type_normalizes_security_alias(self):
         import importlib
