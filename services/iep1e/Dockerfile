@@ -74,6 +74,8 @@ RUN if [ "$ENABLE_REAL_MODEL" = "true" ]; then \
 #              | tar -xf - -C /opt/models/iep1e/rec --strip-components=1"
 #   3. Rebuild: ENABLE_REAL_MODEL=true docker compose build iep1e
 COPY models/iep1e/ /opt/models/iep1e/
+COPY shared/ ./shared/
+COPY services/iep1e/ ./services/iep1e/
 
 EXPOSE 8007
 

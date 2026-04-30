@@ -153,6 +153,8 @@ jobs:
           IEP1D_WEIGHTS_URI:    ${{ vars.IEP1D_WEIGHTS_URI }}
           IEP2A_WEIGHTS_URI:    ${{ vars.IEP2A_WEIGHTS_URI }}
           IEP2B_WEIGHTS_URI:    ${{ vars.IEP2B_WEIGHTS_URI }}
+          IEP2A_PADDLE_MODEL_VERSION: ${{ vars.IEP2A_PADDLE_MODEL_VERSION || 'paddleocr-pp-doclayoutv2' }}
+          IEP2B_MODEL_VERSION: ${{ vars.IEP2B_MODEL_VERSION || 'doclayout-yolo-docstructbench' }}
           IEP0_WEIGHTS_SHA256:  ${{ vars.IEP0_WEIGHTS_SHA256 }}
           IEP1A_WEIGHTS_SHA256: ${{ vars.IEP1A_WEIGHTS_SHA256 }}
           IEP1B_WEIGHTS_SHA256: ${{ vars.IEP1B_WEIGHTS_SHA256 }}
@@ -283,6 +285,8 @@ jobs:
                 exit 1
               fi
             done
+            printf '%s\n' "$IEP2A_PADDLE_MODEL_VERSION" > "${DEST_DIR}.version"
+            test -s "${DEST_DIR}.version" || { echo "::error::IEP2A Paddle model version sidecar is empty: ${DEST_DIR}.version"; exit 1; }
             echo "iep2a model files verified."
 
           # ── IEP1D / IEP2B: single-file download ─────────────────────────
@@ -315,6 +319,10 @@ jobs:
               echo "$SVC checksum OK."
             else
               echo "No checksum configured for $SVC — skipping verification."
+            fi
+            if [ "$SVC" = "iep2b" ]; then
+              printf '%s\n' "$IEP2B_MODEL_VERSION" > "${DEST}.version"
+              test -s "${DEST}.version" || { echo "::error::IEP2B model version sidecar is empty: ${DEST}.version"; exit 1; }
             fi
           fi
 
