@@ -162,79 +162,602 @@ def maybe_trigger_scale_up(r: redis_lib.Redis) -> None:
 
 def _do_scale_up() -> None:
     """
-    Call AWS ASG + ECS APIs to start normal-processing infrastructure.
+    Start normal-processing infrastructure.
 
     Starts (in order):
-      1. GPU ASG → GPU_ASG_DESIRED instances
-      2. GPU IEP services (iep0, iep1a, iep1b) → 1
+      1. RunPod GPU pods (iep0, iep1a, iep1b) — if RUNPOD_API_KEY is set
+      2. eep-worker — with RunPod IEP URLs injected into a new task def revision
       3. CPU IEP services (iep1e, iep2a, iep2b) → 1
-      4. Worker services (eep-worker, eep-recovery, shadow-worker) → WORKER_DESIRED_COUNT
+      4. Remaining worker services (eep-recovery, shadow-worker) → WORKER_DESIRED_COUNT
 
     Does NOT start iep1d, retraining-worker, dataset-builder, prometheus, grafana.
 
     Individual failures are logged but do not abort remaining calls.
-    ECS update_service with the same desiredCount is idempotent.
     """
     import boto3  # noqa: PLC0415 — lazy import so tests can patch easily
 
     cluster = os.environ.get("ECS_CLUSTER", "")
-    asg_name = os.environ.get("GPU_ASG_NAME", "")
-    gpu_desired = int(os.environ.get("GPU_ASG_DESIRED", "1"))
     worker_desired = int(os.environ.get("WORKER_DESIRED_COUNT", "2"))
     region = os.environ.get("AWS_REGION", "us-east-1")
+    runpod_api_key = os.environ.get("RUNPOD_API_KEY", "")
+    runpod_pod_mode = _normalize_runpod_pod_mode(os.environ.get("RUNPOD_POD_MODE", "create"))
 
-    asg_client = boto3.client("autoscaling", region_name=region)
     ecs_client = boto3.client("ecs", region_name=region)
 
-    # 1. Scale GPU ASG ─────────────────────────────────────────────────────────
-    if asg_name:
-        try:
-            asg_client.set_desired_capacity(
-                AutoScalingGroupName=asg_name,
-                DesiredCapacity=gpu_desired,
-                HonorCooldown=False,
-            )
-            logger.info(
-                "normal_scaler: GPU ASG %r desired → %d", asg_name, gpu_desired
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.error("normal_scaler: GPU ASG scale failed: %s", exc)
-    else:
-        logger.warning(
-            "normal_scaler: GPU_ASG_NAME not set — GPU ASG scale skipped"
-        )
-
     if not cluster:
-        logger.warning(
-            "normal_scaler: ECS_CLUSTER not set — ECS service updates skipped"
+        logger.warning("normal_scaler: ECS_CLUSTER not set — ECS service updates skipped")
+        return
+
+    # 1. Create RunPod GPU pods and get their URLs ─────────────────────────────
+    iep0_url = iep1a_url = iep1b_url = ""
+    if runpod_api_key:
+        try:
+            if runpod_pod_mode == "existing":
+                iep0_url, iep1a_url, iep1b_url = _resume_existing_runpod_pods(
+                    runpod_api_key,
+                    region,
+                )
+            else:
+                iep0_url, iep1a_url, iep1b_url = _create_runpod_pods(runpod_api_key, region)
+        except Exception as exc:  # noqa: BLE001
+            logger.error(
+                "normal_scaler: RunPod pod startup failed: %s — "
+                "aborting scale-up to avoid starting workers with stale GPU URLs. "
+                "Check RUNPOD_GPU_TYPE_ID / RUNPOD_CLOUD_TYPE vars or RunPod supply.",
+                exc,
+            )
+            return
+    else:
+        logger.warning("normal_scaler: RUNPOD_API_KEY not set — GPU pods not created")
+
+    if not iep0_url:
+        logger.error(
+            "normal_scaler: no RunPod URLs available — aborting scale-up. "
+            "Workers would time out against stale GPU service URLs."
         )
         return
 
-    # 2. GPU IEP services ──────────────────────────────────────────────────────
-    for svc in _GPU_SERVICES:
-        _update_service(ecs_client, cluster, svc, 1)
+    # 2. Start eep-worker with RunPod IEP URLs baked into task def ────────────
+    eep_worker_task_def_arn: str | None = None
+    try:
+        eep_worker_task_def_arn = _register_eep_worker_with_runpod_urls(
+            ecs_client, iep0_url, iep1a_url, iep1b_url
+        )
+    except Exception as exc:  # noqa: BLE001
+        logger.error(
+            "normal_scaler: eep-worker task def update failed: %s — aborting scale-up.",
+            exc,
+        )
+        return
+
+    _update_service(
+        ecs_client,
+        cluster,
+        "libraryai-eep-worker",
+        worker_desired,
+        task_def_arn=eep_worker_task_def_arn,
+        force_new=True,
+    )
 
     # 3. CPU IEP services ──────────────────────────────────────────────────────
     for svc in _CPU_IEP_SERVICES:
         _update_service(ecs_client, cluster, svc, 1)
 
-    # 4. Worker services ───────────────────────────────────────────────────────
-    for svc in _WORKER_SERVICES:
+    # 4. Remaining worker services ─────────────────────────────────────────────
+    for svc in ("libraryai-eep-recovery", "libraryai-shadow-worker"):
         _update_service(ecs_client, cluster, svc, worker_desired)
 
 
-def _update_service(ecs_client, cluster: str, service: str, desired: int) -> None:
+def _create_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
+    """Create RunPod pods for iep0, iep1a, iep1b. Returns (iep0_url, iep1a_url, iep1b_url)."""
+    import boto3  # noqa: PLC0415
+
+    gpu_type_ids = _runpod_gpu_type_candidates()
+    cloud_types = _runpod_cloud_type_candidates()
+
+    _IEP_PODS = [
+        ("libraryai-iep0",  "gma51/libraryai-iep0:latest",  8006),
+        ("libraryai-iep1a", "gma51/libraryai-iep1a:latest", 8001),
+        ("libraryai-iep1b", "gma51/libraryai-iep1b:latest", 8002),
+    ]
+    logger.info(
+        "normal_scaler: requesting RunPod pods gpu_candidates=%s cloud_candidates=%s",
+        ",".join(gpu_type_ids),
+        ",".join(cloud_types),
+    )
+
+    pod_ids: dict[str, str] = {}
+    for name, image, port in _IEP_PODS:
+        pod_ids[name] = _create_runpod_pod_with_fallback(
+            api_key,
+            name,
+            image,
+            port,
+            gpu_type_ids,
+            cloud_types,
+        )
+
+    iep0_url  = f"https://{pod_ids['libraryai-iep0']}-8006.proxy.runpod.net"
+    iep1a_url = f"https://{pod_ids['libraryai-iep1a']}-8001.proxy.runpod.net"
+    iep1b_url = f"https://{pod_ids['libraryai-iep1b']}-8002.proxy.runpod.net"
+
+    # Persist pod IDs so scale-down workflow can terminate them
+    try:
+        import json  # noqa: PLC0415
+        bucket = os.environ.get("S3_BUCKET_NAME", "libraryai2")
+        s3 = boto3.client("s3", region_name=region)
+        s3.put_object(
+            Bucket=bucket,
+            Key="ops/runpod-pods.json",
+            Body=json.dumps({
+                "iep0":  pod_ids["libraryai-iep0"],
+                "iep1a": pod_ids["libraryai-iep1a"],
+                "iep1b": pod_ids["libraryai-iep1b"],
+            }).encode(),
+        )
+        logger.info("normal_scaler: RunPod pod IDs saved to s3://%s/ops/runpod-pods.json", bucket)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("normal_scaler: could not save pod IDs to S3: %s", exc)
+
+    return iep0_url, iep1a_url, iep1b_url
+
+
+def _create_runpod_pod_with_fallback_gpu_only_unused(
+    api_key: str,
+    name: str,
+    image: str,
+    port: int,
+    gpu_type_ids: list[str],
+    cloud_type: str,
+) -> str:
+    """
+    Create one RunPod pod, trying GPU candidates in priority order.
+
+    Only advances to the next GPU type on SUPPLY_CONSTRAINT (capacity unavailable).
+    Any other error (auth failure, bad image, network) is re-raised immediately.
+    """
+    last_supply_error: Exception | None = None
+    for gpu_type_id in gpu_type_ids:
+        logger.info(
+            "normal_scaler: attempting RunPod pod %s gpu_type=%r cloud_type=%s",
+            name,
+            gpu_type_id,
+            cloud_type,
+        )
+        try:
+            pod_id = _create_runpod_pod(api_key, name, image, port, gpu_type_id, cloud_type)
+            logger.info(
+                "normal_scaler: RunPod pod %s created with gpu_type=%r id=%s",
+                name,
+                gpu_type_id,
+                pod_id,
+            )
+            return pod_id
+        except RuntimeError as exc:
+            err_str = str(exc)
+            if "SUPPLY_CONSTRAINT" in err_str or "capacity" in err_str.lower():
+                logger.warning(
+                    "normal_scaler: SUPPLY_CONSTRAINT for %s gpu_type=%r cloud_type=%s — trying next",
+                    name,
+                    gpu_type_id,
+                    cloud_type,
+                )
+                last_supply_error = exc
+                continue
+            # Non-supply error (auth, bad image, etc.) — fail immediately, do not try next GPU
+            raise
+    raise RuntimeError(
+        f"All GPU candidates exhausted for {name} "
+        f"(tried {gpu_type_ids!r}, cloud_type={cloud_type!r}): {last_supply_error}"
+    )
+
+
+def _create_runpod_pod_with_fallback(
+    api_key: str,
+    name: str,
+    image: str,
+    port: int,
+    gpu_type_ids: list[str],
+    cloud_types: list[str] | None = None,
+    cloud_type: str | None = None,
+) -> str:
+    """Create one RunPod pod, trying GPU and cloud candidates in priority order."""
+    if not gpu_type_ids:
+        raise RuntimeError(f"No RunPod GPU candidates configured for {name}")
+    if cloud_types is None:
+        cloud_types = [_normalize_runpod_cloud_type(cloud_type or "COMMUNITY")]
+    last_supply_error: Exception | None = None
+    for cloud_type in cloud_types:
+        logger.info(
+            "normal_scaler: attempting RunPod REST pod %s gpu_types=%r cloud_type=%s",
+            name,
+            gpu_type_ids,
+            cloud_type,
+        )
+        try:
+            pod_id = _create_runpod_pod_rest(api_key, name, image, port, gpu_type_ids, cloud_type)
+            logger.info(
+                "normal_scaler: RunPod REST pod %s created cloud_type=%s id=%s",
+                name,
+                cloud_type,
+                pod_id,
+            )
+            return pod_id
+        except RuntimeError as exc:
+            err_str = str(exc)
+            if "SUPPLY_CONSTRAINT" in err_str or "capacity" in err_str.lower():
+                logger.warning(
+                    "normal_scaler: SUPPLY_CONSTRAINT for %s cloud_type=%s; trying next cloud",
+                    name,
+                    cloud_type,
+                )
+                last_supply_error = exc
+                continue
+            raise
+    raise RuntimeError(
+        f"All GPU candidates exhausted for {name} "
+        f"(tried {gpu_type_ids!r}, cloud_types={cloud_types!r}): {last_supply_error}"
+    )
+
+
+def _create_runpod_pod_rest(
+    api_key: str,
+    name: str,
+    image: str,
+    port: int,
+    gpu_type_ids: list[str],
+    cloud_type: str,
+) -> str:
+    """Create one RunPod pod through the REST API using GPU availability priority."""
+    import httpx  # noqa: PLC0415
+
+    payload = {
+        "name": name,
+        "imageName": image,
+        "computeType": "GPU",
+        "cloudType": cloud_type,
+        "gpuCount": 1,
+        "gpuTypeIds": gpu_type_ids,
+        "gpuTypePriority": "availability",
+        "interruptible": False,
+        "containerDiskInGb": int(os.environ.get("RUNPOD_CONTAINER_DISK_GB", "50")),
+        "minVCPUPerGPU": int(os.environ.get("RUNPOD_MIN_VCPU_PER_GPU", "2")),
+        "minRAMPerGPU": int(os.environ.get("RUNPOD_MIN_RAM_PER_GPU", "8")),
+        "ports": [f"{port}/http"],
+        "env": _runpod_iep_env(name, port),
+    }
+    volume_gb = int(os.environ.get("RUNPOD_VOLUME_GB", "0"))
+    if volume_gb > 0:
+        payload["volumeInGb"] = volume_gb
+        payload["volumeMountPath"] = os.environ.get("RUNPOD_VOLUME_MOUNT_PATH", "/workspace")
+
+    resp = httpx.post(
+        "https://rest.runpod.io/v1/pods",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=30.0,
+    )
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        body = resp.text[:1000]
+        raise RuntimeError(f"RunPod REST error creating {name}: HTTP {resp.status_code}: {body}") from exc
+
+    data = resp.json()
+    pod_id = data.get("id")
+    if not pod_id:
+        raise RuntimeError(f"RunPod REST response missing pod id for {name}: {data}")
+    return str(pod_id)
+
+
+def _runpod_iep_env(name: str, port: int) -> dict[str, str]:
+    env = {
+        "PYTHONPATH": "/app",
+        "AWS_REGION": os.environ.get("AWS_REGION", "eu-central-1"),
+        "S3_REGION": os.environ.get("S3_REGION") or os.environ.get("AWS_REGION", "eu-central-1"),
+        "S3_BUCKET_NAME": os.environ.get("S3_BUCKET_NAME", "libraryai2"),
+        "HEALTH_PORT": str(port),
+        "RUNPOD_TERMINATE_ON_IDLE": "true",
+    }
+    if name.endswith("iep0"):
+        env["IEP0_MODEL_PATH"] = os.environ.get("IEP0_MODEL_PATH", "/app/models/iep0/classifier.pt")
+    elif name.endswith("iep1a"):
+        env["IEP1A_MODELS_DIR"] = os.environ.get("IEP1A_MODELS_DIR", "/app/models/iep1a")
+    elif name.endswith("iep1b"):
+        env["IEP1B_MODELS_DIR"] = os.environ.get("IEP1B_MODELS_DIR", "/app/models/iep1b")
+    return env
+
+
+def _create_runpod_pod(
+    api_key: str,
+    name: str,
+    image: str,
+    port: int,
+    gpu_type_id: str,
+    cloud_type: str,
+) -> str:
+    """Create one RunPod pod for a specific GPU type."""
+    import httpx  # noqa: PLC0415
+
+    mutation = (
+        'mutation { podFindAndDeployOnDemand(input: {'
+        f' name: "{name}", imageName: "{image}",'
+        f' gpuTypeId: "{gpu_type_id}", cloudType: {cloud_type},'
+        f' containerDiskInGb: 20, minMemoryInGb: 8, minVcpuCount: 2,'
+        f' ports: "{port}/http", startJupyter: false, startSsh: false'
+        '}) { id } }'
+    )
+    resp = httpx.post(
+        f"https://api.runpod.io/graphql?api_key={api_key}",
+        json={"query": mutation},
+        timeout=30.0,
+    )
+    resp.raise_for_status()
+    data = resp.json()
+    if "errors" in data:
+        raise RuntimeError(data["errors"])
+    pod_id = data["data"]["podFindAndDeployOnDemand"]["id"]
+    logger.info(
+        "normal_scaler: RunPod pod created for %s gpu_type=%s id=%s",
+        name,
+        gpu_type_id,
+        pod_id,
+    )
+    return pod_id
+
+
+def _create_runpod_pod_set(
+    api_key: str,
+    gpu_type_id: str,
+    cloud_type: str,
+    pods: list[tuple[str, str, int]],
+) -> dict[str, str]:
+    """Create the full GPU pod set for one RunPod GPU type."""
+    import httpx  # noqa: PLC0415
+
+    pod_ids: dict[str, str] = {}
+    for name, image, port in pods:
+        mutation = (
+            'mutation { podFindAndDeployOnDemand(input: {'
+            f' name: "{name}", imageName: "{image}",'
+            f' gpuTypeId: "{gpu_type_id}", cloudType: {cloud_type},'
+            f' containerDiskInGb: 20, minMemoryInGb: 8, minVcpuCount: 2,'
+            f' ports: "{port}/http", startJupyter: false, startSsh: false'
+            '}) { id } }'
+        )
+        resp = httpx.post(
+            f"https://api.runpod.io/graphql?api_key={api_key}",
+            json={"query": mutation},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if "errors" in data:
+            raise RuntimeError(f"RunPod error creating {name}: {data['errors']}")
+        pod_ids[name] = data["data"]["podFindAndDeployOnDemand"]["id"]
+        logger.info("normal_scaler: RunPod pod created for %s → id=%s", name, pod_ids[name])
+
+    return pod_ids
+
+
+def _normalize_runpod_cloud_type(value: str) -> str:
+    cloud_type = (value or "COMMUNITY").strip().upper()
+    if cloud_type == "SECURITY":
+        return "SECURE"
+    if cloud_type not in {"COMMUNITY", "SECURE"}:
+        logger.warning(
+            "normal_scaler: invalid RUNPOD_CLOUD_TYPE=%s, defaulting to COMMUNITY",
+            cloud_type,
+        )
+        return "COMMUNITY"
+    return cloud_type
+
+
+def _runpod_cloud_type_candidates() -> list[str]:
+    primary = _normalize_runpod_cloud_type(os.environ.get("RUNPOD_CLOUD_TYPE", "COMMUNITY"))
+    raw = os.environ.get("RUNPOD_CLOUD_TYPES", "").strip()
+    values = [primary]
+    if raw:
+        values.extend(item.strip() for item in raw.split(","))
+    else:
+        values.append("SECURE" if primary == "COMMUNITY" else "COMMUNITY")
+
+    candidates: list[str] = []
+    for value in values:
+        cloud_type = _normalize_runpod_cloud_type(value)
+        if cloud_type not in candidates:
+            candidates.append(cloud_type)
+    return candidates
+
+
+def _normalize_runpod_pod_mode(value: str) -> str:
+    mode = (value or "create").strip().lower()
+    if mode in {"create", "existing"}:
+        return mode
+    logger.warning("normal_scaler: invalid RUNPOD_POD_MODE=%r, defaulting to create", value)
+    return "create"
+
+
+def _runpod_gpu_type_candidates() -> list[str]:
+    raw_values: list[str] = []
+    primary = os.environ.get("RUNPOD_GPU_TYPE_ID", "").strip()
+    fallback_list = os.environ.get("RUNPOD_GPU_TYPES", "").strip()
+    if primary:
+        raw_values.append(primary)
+    if fallback_list:
+        raw_values.extend(item.strip() for item in fallback_list.split(","))
+    raw_values.extend(
+        [
+            # Tier 1 — preferred (lower cost / good availability)
+            "NVIDIA RTX 4000 Ada Generation",
+            "NVIDIA RTX A4000",
+            "NVIDIA RTX 2000 Ada Generation",
+            "NVIDIA RTX A5000",
+            "NVIDIA RTX A4500",
+            # Tier 2 — fallback (higher-end / less available)
+            "NVIDIA L4",
+            "NVIDIA A40",
+            "NVIDIA RTX A6000",
+        ]
+    )
+
+    aliases = {
+        "A40": "NVIDIA A40",
+        "RTX 3090": "NVIDIA GeForce RTX 3090",
+        "3090": "NVIDIA GeForce RTX 3090",
+        "RTX 4090": "NVIDIA GeForce RTX 4090",
+        "4090": "NVIDIA GeForce RTX 4090",
+        "RTX A5000": "NVIDIA RTX A5000",
+        "A5000": "NVIDIA RTX A5000",
+        "L4": "NVIDIA L4",
+        "L40": "NVIDIA L40",
+        "L40S": "NVIDIA L40S",
+        "RTX A4000": "NVIDIA RTX A4000",
+        "A4000": "NVIDIA RTX A4000",
+        "RTX A4500": "NVIDIA RTX A4500",
+        "A4500": "NVIDIA RTX A4500",
+        "RTX A6000": "NVIDIA RTX A6000",
+        "A6000": "NVIDIA RTX A6000",
+        "RTX 4000 ADA": "NVIDIA RTX 4000 Ada Generation",
+        "4000 ADA": "NVIDIA RTX 4000 Ada Generation",
+        "RTX 4000": "NVIDIA RTX 4000 Ada Generation",
+        "RTX 2000 ADA": "NVIDIA RTX 2000 Ada Generation",
+        "2000 ADA": "NVIDIA RTX 2000 Ada Generation",
+        "RTX 5000 ADA": "NVIDIA RTX 5000 Ada Generation",
+        "5000 ADA": "NVIDIA RTX 5000 Ada Generation",
+        "RTX 6000 ADA": "NVIDIA RTX 6000 Ada Generation",
+        "6000 ADA": "NVIDIA RTX 6000 Ada Generation",
+        "RTX 4080 SUPER": "NVIDIA GeForce RTX 4080 SUPER",
+        "4080 SUPER": "NVIDIA GeForce RTX 4080 SUPER",
+        "RTX 5090": "NVIDIA GeForce RTX 5090",
+        "5090": "NVIDIA GeForce RTX 5090",
+    }
+    candidates: list[str] = []
+    for value in raw_values:
+        if not value:
+            continue
+        gpu_type = aliases.get(value, value)
+        if gpu_type not in candidates:
+            candidates.append(gpu_type)
+    return candidates
+
+
+def _resume_existing_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
+    """Resume known RunPod pods and return their stable proxy URLs."""
+    import boto3  # noqa: PLC0415
+    import httpx  # noqa: PLC0415
+
+    pods = {
+        "iep0": (os.environ.get("RUNPOD_IEP0_POD_ID", "").strip(), 8006),
+        "iep1a": (os.environ.get("RUNPOD_IEP1A_POD_ID", "").strip(), 8001),
+        "iep1b": (os.environ.get("RUNPOD_IEP1B_POD_ID", "").strip(), 8002),
+    }
+    missing = [name for name, (pod_id, _) in pods.items() if not pod_id]
+    if missing:
+        raise RuntimeError(f"RUNPOD_POD_MODE=existing but pod IDs are missing: {missing}")
+
+    logger.info(
+        "normal_scaler: resuming existing RunPod pods iep0=%s iep1a=%s iep1b=%s",
+        pods["iep0"][0],
+        pods["iep1a"][0],
+        pods["iep1b"][0],
+    )
+
+    for name, (pod_id, _) in pods.items():
+        mutation = (
+            'mutation { podResume(input: {'
+            f' podId: "{pod_id}", gpuCount: 1'
+            '}) { id desiredStatus imageName } }'
+        )
+        resp = httpx.post(
+            f"https://api.runpod.io/graphql?api_key={api_key}",
+            json={"query": mutation},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if "errors" in data:
+            raise RuntimeError(f"RunPod error resuming {name}: {data['errors']}")
+        status = data["data"]["podResume"].get("desiredStatus")
+        logger.info("normal_scaler: RunPod pod resumed for %s id=%s status=%s", name, pod_id, status)
+
+    try:
+        import json  # noqa: PLC0415
+        bucket = os.environ.get("S3_BUCKET_NAME", "libraryai2")
+        s3 = boto3.client("s3", region_name=region)
+        s3.put_object(
+            Bucket=bucket,
+            Key="ops/runpod-pods.json",
+            Body=json.dumps({name: pod_id for name, (pod_id, _) in pods.items()}).encode(),
+        )
+        logger.info("normal_scaler: existing RunPod pod IDs saved to s3://%s/ops/runpod-pods.json", bucket)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("normal_scaler: could not save existing pod IDs to S3: %s", exc)
+
+    return (
+        f"https://{pods['iep0'][0]}-8006.proxy.runpod.net",
+        f"https://{pods['iep1a'][0]}-8001.proxy.runpod.net",
+        f"https://{pods['iep1b'][0]}-8002.proxy.runpod.net",
+    )
+
+
+# Fields returned by describe_task_definition that must be stripped before re-registering.
+_TASK_DEF_READONLY_FIELDS = frozenset({
+    "taskDefinitionArn", "revision", "status", "requiresAttributes",
+    "compatibilities", "registeredAt", "registeredBy", "deregisteredAt",
+})
+
+
+def _register_eep_worker_with_runpod_urls(
+    ecs_client,
+    iep0_url: str,
+    iep1a_url: str,
+    iep1b_url: str,
+) -> str:
+    """
+    Read the current eep-worker task definition, patch IEP URL env vars with
+    RunPod URLs, register a new revision, and return its ARN.
+    """
+    resp = ecs_client.describe_task_definition(taskDefinition="libraryai-eep-worker")
+    task_def: dict = {k: v for k, v in resp["taskDefinition"].items()
+                      if k not in _TASK_DEF_READONLY_FIELDS}
+
+    url_overrides = {"IEP0_URL": iep0_url, "IEP1A_URL": iep1a_url, "IEP1B_URL": iep1b_url}
+    for container in task_def.get("containerDefinitions", []):
+        container["environment"] = [
+            {"name": e["name"], "value": url_overrides.get(e["name"], e["value"])}
+            for e in container.get("environment", [])
+        ]
+
+    new_rev = ecs_client.register_task_definition(**task_def)
+    arn: str = new_rev["taskDefinition"]["taskDefinitionArn"]
+    logger.info("normal_scaler: registered eep-worker task def %s with RunPod URLs", arn)
+    return arn
+
+
+def _update_service(
+    ecs_client,
+    cluster: str,
+    service: str,
+    desired: int,
+    *,
+    task_def_arn: str | None = None,
+    force_new: bool = False,
+) -> None:
     """Call ecs:UpdateService, logging success or failure. Never raises."""
-    # Safety guard — should never be reached given the constants above.
     assert service not in _EXCLUDED_SERVICES, (
         f"BUG: _update_service called for excluded service {service!r}"
     )
+    kwargs: dict = {"cluster": cluster, "service": service, "desiredCount": desired}
+    if task_def_arn:
+        kwargs["taskDefinition"] = task_def_arn
+    if force_new:
+        kwargs["forceNewDeployment"] = True
     try:
-        ecs_client.update_service(
-            cluster=cluster,
-            service=service,
-            desiredCount=desired,
-        )
+        ecs_client.update_service(**kwargs)
         logger.info("normal_scaler: %s desired → %d", service, desired)
     except Exception as exc:  # noqa: BLE001
         logger.error("normal_scaler: failed to update %s: %s", service, exc)

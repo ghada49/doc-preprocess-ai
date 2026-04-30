@@ -30,6 +30,7 @@ import os
 import pathlib
 from typing import Any, Protocol
 from urllib.parse import urlparse, urlsplit, urlunsplit
+from urllib.request import urlopen
 
 # ── Protocol ───────────────────────────────────────────────────────────────────
 
@@ -151,6 +152,42 @@ class S3Backend:
         self._client.put_object(Bucket=bucket, Key=key, Body=data)
 
 
+class HttpReadBackend:
+    """
+    http(s):// read-only backend for presigned artifact URLs.
+
+    External inference services can read temporary S3 GET URLs without carrying
+    AWS credentials. Writes remain restricted to file:// and s3:// backends.
+    """
+
+    def __init__(self, timeout_seconds: float | None = None) -> None:
+        self._timeout_seconds = (
+            _env_float("HTTP_READ_TIMEOUT_SECONDS", 60.0)
+            if timeout_seconds is None
+            else timeout_seconds
+        )
+
+    @staticmethod
+    def _validate_uri(uri: str) -> None:
+        parsed = urlparse(uri)
+        if parsed.scheme not in {"http", "https"}:
+            raise ValueError(f"HttpReadBackend requires an http(s):// URI; got: {uri!r}")
+        if not parsed.netloc:
+            raise ValueError(f"Missing host in HTTP URI: {uri!r}")
+
+    def get_bytes(self, uri: str) -> bytes:
+        self._validate_uri(uri)
+        with urlopen(uri, timeout=self._timeout_seconds) as response:  # noqa: S310
+            status = getattr(response, "status", None)
+            if status is not None and int(status) >= 400:
+                raise OSError(f"HTTP artifact read failed with status {status} for {uri!r}")
+            return response.read()
+
+    def put_bytes(self, uri: str, data: bytes) -> None:
+        self._validate_uri(uri)
+        raise NotImplementedError("HttpReadBackend is read-only")
+
+
 def rewrite_presigned_url_for_public_endpoint(url: str) -> str:
     """
     Rewrite a presigned S3 URL to a browser-reachable endpoint when configured.
@@ -195,7 +232,11 @@ def get_backend(uri: str) -> StorageBackend:
         return LocalFileBackend()
     if scheme == "s3":
         return S3Backend()
-    raise ValueError(f"Unsupported URI scheme '{scheme}'. Supported schemes: file://, s3://")
+    if scheme in {"http", "https"}:
+        return HttpReadBackend()
+    raise ValueError(
+        f"Unsupported URI scheme '{scheme}'. Supported schemes: file://, s3://, http://, https://"
+    )
 
 
 def _env_float(name: str, default: float) -> float:

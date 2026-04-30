@@ -122,12 +122,14 @@ class TestMaybeTriggerScaleUp(unittest.TestCase):
 # ── 6: service inclusion/exclusion ────────────────────────────────────────────
 
 class TestScaleUpServiceList(unittest.TestCase):
-    """_do_scale_up must start exactly the right services and exclude the rest."""
+    """_do_scale_up must start exactly the right ECS services and exclude the rest.
 
+    iep0/iep1a/iep1b are started via RunPod (not ECS update_service) — they are
+    intentionally absent from EXPECTED_STARTED.
+    """
+
+    # ECS services started by update_service.  iep0/iep1a/iep1b are RunPod — excluded.
     EXPECTED_STARTED = {
-        "libraryai-iep0",
-        "libraryai-iep1a",
-        "libraryai-iep1b",
         "libraryai-iep1e",
         "libraryai-iep2a",
         "libraryai-iep2b",
@@ -145,28 +147,38 @@ class TestScaleUpServiceList(unittest.TestCase):
     }
 
     def _run_do_scale_up(self, env_extra: dict | None = None):
+        """Run _do_scale_up with successful RunPod URL discovery."""
         env = {
             "ECS_CLUSTER": "test-cluster",
-            "GPU_ASG_NAME": "test-asg",
-            "GPU_ASG_DESIRED": "1",
             "WORKER_DESIRED_COUNT": "2",
             "AWS_REGION": "us-east-1",
+            "RUNPOD_API_KEY": "test-key",
         }
         if env_extra:
             env.update(env_extra)
 
-        mock_asg = MagicMock()
         mock_ecs = MagicMock()
 
-        def boto_client(service, region_name=None):
-            return mock_asg if service == "autoscaling" else mock_ecs
-
         with patch.dict(os.environ, env, clear=False):
-            with patch("boto3.client", side_effect=boto_client):
+            with patch("boto3.client", return_value=mock_ecs):
                 from services.eep.app.scaling import normal_scaler
                 import importlib
                 importlib.reload(normal_scaler)  # reload so env vars are re-read
-                normal_scaler._do_scale_up()
+                with patch.object(
+                    normal_scaler,
+                    "_create_runpod_pods",
+                    return_value=(
+                        "https://pod1-8006.proxy.runpod.net",
+                        "https://pod2-8001.proxy.runpod.net",
+                        "https://pod3-8002.proxy.runpod.net",
+                    ),
+                ):
+                    with patch.object(
+                        normal_scaler,
+                        "_register_eep_worker_with_runpod_urls",
+                        return_value="arn:aws:ecs:us-east-1:123:task-definition/libraryai-eep-worker:2",
+                    ):
+                        normal_scaler._do_scale_up()
 
         return mock_ecs
 
@@ -204,53 +216,131 @@ class TestScaleUpServiceList(unittest.TestCase):
         self.assertNotIn("libraryai-prometheus", started)
         self.assertNotIn("libraryai-grafana", started)
 
-    def test_gpu_asg_scaled(self):
+    def test_gpu_ieps_not_started_via_ecs(self):
+        """iep0/iep1a/iep1b are RunPod pods — must NOT appear in ECS update_service calls."""
+        mock_ecs = self._run_do_scale_up()
+        started = {c.kwargs["service"] for c in mock_ecs.update_service.call_args_list}
+        self.assertNotIn("libraryai-iep0", started)
+        self.assertNotIn("libraryai-iep1a", started)
+        self.assertNotIn("libraryai-iep1b", started)
+
+    def test_runpod_pods_created_when_api_key_set(self):
+        """When RUNPOD_API_KEY is set, _create_runpod_pods is called for iep0/iep1a/iep1b."""
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)  # reload before patching so reload doesn't undo the patch
+
         env = {
             "ECS_CLUSTER": "test-cluster",
-            "GPU_ASG_NAME": "my-gpu-asg",
-            "GPU_ASG_DESIRED": "2",
             "WORKER_DESIRED_COUNT": "2",
             "AWS_REGION": "us-east-1",
+            "RUNPOD_API_KEY": "test-key",
         }
-        mock_asg = MagicMock()
         mock_ecs = MagicMock()
-
-        def boto_client(service, region_name=None):
-            return mock_asg if service == "autoscaling" else mock_ecs
+        mock_ecs.describe_task_definition.return_value = {
+            "taskDefinition": {
+                "family": "libraryai-eep-worker",
+                "containerDefinitions": [{"name": "eep-worker", "environment": []}],
+            }
+        }
+        mock_ecs.register_task_definition.return_value = {
+            "taskDefinition": {
+                "taskDefinitionArn": "arn:aws:ecs:us-east-1:123:task-definition/libraryai-eep-worker:2"
+            }
+        }
 
         with patch.dict(os.environ, env, clear=False):
-            with patch("boto3.client", side_effect=boto_client):
-                from services.eep.app.scaling import normal_scaler
-                import importlib
-                importlib.reload(normal_scaler)
-                normal_scaler._do_scale_up()
+            with patch("boto3.client", return_value=mock_ecs):
+                with patch.object(
+                    normal_scaler,
+                    "_create_runpod_pods",
+                    return_value=(
+                        "https://pod1-8006.proxy.runpod.net",
+                        "https://pod2-8001.proxy.runpod.net",
+                        "https://pod3-8002.proxy.runpod.net",
+                    ),
+                ) as mock_create_pods:
+                    normal_scaler._do_scale_up()
 
-        mock_asg.set_desired_capacity.assert_called_once_with(
-            AutoScalingGroupName="my-gpu-asg",
-            DesiredCapacity=2,
-            HonorCooldown=False,
-        )
+        mock_create_pods.assert_called_once_with("test-key", "us-east-1")
 
-    def test_worker_desired_count_used(self):
+    def test_runpod_pods_skipped_when_no_api_key(self):
+        """When RUNPOD_API_KEY is absent, _create_runpod_pods is not called."""
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        with patch.object(normal_scaler, "_create_runpod_pods") as mock_create_pods:
+            mock_ecs = self._run_do_scale_up({"RUNPOD_API_KEY": ""})
+        mock_create_pods.assert_not_called()
+        mock_ecs.update_service.assert_not_called()
+
+    def test_runpod_startup_failure_aborts_without_starting_workers(self):
+        """RunPod create failures must not start workers with stale ECS DNS URLs."""
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
         env = {
             "ECS_CLUSTER": "test-cluster",
-            "GPU_ASG_NAME": "asg",
-            "GPU_ASG_DESIRED": "1",
-            "WORKER_DESIRED_COUNT": "3",
+            "WORKER_DESIRED_COUNT": "2",
             "AWS_REGION": "us-east-1",
+            "RUNPOD_API_KEY": "test-key",
         }
-        mock_asg = MagicMock()
         mock_ecs = MagicMock()
 
-        def boto_client(service, region_name=None):
-            return mock_asg if service == "autoscaling" else mock_ecs
-
         with patch.dict(os.environ, env, clear=False):
-            with patch("boto3.client", side_effect=boto_client):
-                from services.eep.app.scaling import normal_scaler
-                import importlib
-                importlib.reload(normal_scaler)
-                normal_scaler._do_scale_up()
+            with patch("boto3.client", return_value=mock_ecs):
+                with patch.object(
+                    normal_scaler,
+                    "_create_runpod_pods",
+                    side_effect=RuntimeError("RunPod supply constraint"),
+                ):
+                    normal_scaler._do_scale_up()
+
+        mock_ecs.update_service.assert_not_called()
+
+    def test_runpod_gpu_candidates_normalize_aliases_and_fallbacks(self):
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        env = {
+            "RUNPOD_GPU_TYPE_ID": "A40",
+            "RUNPOD_GPU_TYPES": "NVIDIA RTX A5000,RTX 4090,A40",
+        }
+        with patch.dict(os.environ, env, clear=False):
+            candidates = normal_scaler._runpod_gpu_type_candidates()
+
+        self.assertEqual(candidates[:3], ["NVIDIA A40", "NVIDIA RTX A5000", "NVIDIA GeForce RTX 4090"])
+        self.assertIn("NVIDIA L4", candidates)
+        self.assertIn("NVIDIA RTX A6000", candidates)
+
+    def test_runpod_cloud_type_normalizes_security_alias(self):
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        self.assertEqual(normal_scaler._normalize_runpod_cloud_type("SECURITY"), "SECURE")
+        self.assertEqual(normal_scaler._normalize_runpod_cloud_type("community"), "COMMUNITY")
+
+    def test_runpod_cloud_candidates_default_to_both_pools(self):
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        with patch.dict(os.environ, {"RUNPOD_CLOUD_TYPE": "COMMUNITY"}, clear=False):
+            self.assertEqual(normal_scaler._runpod_cloud_type_candidates(), ["COMMUNITY", "SECURE"])
+
+    def test_runpod_pod_mode_invalid_defaults_to_create(self):
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        self.assertEqual(normal_scaler._normalize_runpod_pod_mode("_create_runpod_pods"), "create")
+
+    def test_worker_desired_count_used(self):
+        mock_ecs = self._run_do_scale_up({"WORKER_DESIRED_COUNT": "3"})
 
         worker_calls = [
             c for c in mock_ecs.update_service.call_args_list
@@ -262,6 +352,136 @@ class TestScaleUpServiceList(unittest.TestCase):
         ]
         for c in worker_calls:
             self.assertEqual(c.kwargs["desiredCount"], 3)
+
+
+# ── RunPod pod-with-fallback unit tests ───────────────────────────────────────
+
+class TestCreateRunPodPodWithFallback(unittest.TestCase):
+    """_create_runpod_pod_with_fallback: SUPPLY_CONSTRAINT fallback behaviour."""
+
+    def _call(self, side_effects, gpu_types=None, cloud_types=None):
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        gpu_types = gpu_types or ["NVIDIA GeForce RTX 4090", "NVIDIA RTX A5000"]
+        with patch.object(normal_scaler, "_create_runpod_pod_rest", side_effect=side_effects):
+            return normal_scaler._create_runpod_pod_with_fallback(
+                api_key="test-key",
+                name="libraryai-iep0",
+                image="gma51/libraryai-iep0:latest",
+                port=8006,
+                gpu_type_ids=gpu_types,
+                cloud_type="COMMUNITY",
+                cloud_types=cloud_types,
+            )
+
+    def test_first_gpu_succeeds(self):
+        result = self._call(["pod-id-abc"])
+        self.assertEqual(result, "pod-id-abc")
+
+    def test_supply_constraint_on_first_falls_back_to_second_cloud(self):
+        result = self._call([
+            RuntimeError("SUPPLY_CONSTRAINT: no capacity"),
+            "pod-id-fallback",
+        ], cloud_types=["COMMUNITY", "SECURE"])
+        self.assertEqual(result, "pod-id-fallback")
+
+    def test_all_clouds_supply_constrained_raises(self):
+        with self.assertRaises(RuntimeError) as ctx:
+            self._call([
+                RuntimeError("SUPPLY_CONSTRAINT: no capacity"),
+                RuntimeError("SUPPLY_CONSTRAINT: no capacity"),
+            ], cloud_types=["COMMUNITY", "SECURE"])
+        self.assertIn("exhausted", str(ctx.exception))
+
+    def test_non_supply_error_propagates_immediately(self):
+        """Auth failures and other non-capacity errors must not try the next GPU."""
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        call_count = 0
+
+        def side_effect(*_args, **_kwargs):
+            nonlocal call_count
+            call_count += 1
+            raise RuntimeError("Unauthorized: invalid API key")
+
+        with patch.object(normal_scaler, "_create_runpod_pod_rest", side_effect=side_effect):
+            with self.assertRaises(RuntimeError) as ctx:
+                normal_scaler._create_runpod_pod_with_fallback(
+                    api_key="bad-key",
+                    name="libraryai-iep0",
+                    image="gma51/libraryai-iep0:latest",
+                    port=8006,
+                    gpu_type_ids=["NVIDIA GeForce RTX 4090", "NVIDIA RTX A5000"],
+                    cloud_type="COMMUNITY",
+                    cloud_types=["COMMUNITY", "SECURE"],
+                )
+        self.assertEqual(call_count, 1, "Must not try next cloud on non-supply error")
+        self.assertIn("Unauthorized", str(ctx.exception))
+
+    def test_gpu_types_empty_raises(self):
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        with self.assertRaises(RuntimeError):
+            normal_scaler._create_runpod_pod_with_fallback(
+                api_key="key",
+                name="libraryai-iep0",
+                image="img",
+                port=8006,
+                gpu_type_ids=[],
+                cloud_type="COMMUNITY",
+            )
+
+    def test_runpod_gpu_types_empty_env_uses_defaults(self):
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        with patch.dict(os.environ, {"RUNPOD_GPU_TYPE_ID": "", "RUNPOD_GPU_TYPES": ""}, clear=False):
+            candidates = normal_scaler._runpod_gpu_type_candidates()
+
+        self.assertIn("NVIDIA RTX A5000", candidates)
+        self.assertGreater(len(candidates), 1)
+        self.assertEqual(candidates[0], "NVIDIA RTX 4000 Ada Generation")
+
+    def test_runpod_rest_create_uses_gpu_type_ids_payload(self):
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        class Response:
+            status_code = 200
+            text = '{"id":"pod-rest"}'
+
+            def raise_for_status(self):
+                return None
+
+            def json(self):
+                return {"id": "pod-rest"}
+
+        with patch("httpx.post", return_value=Response()) as mock_post:
+            pod_id = normal_scaler._create_runpod_pod_rest(
+                api_key="test-key",
+                name="libraryai-iep1a",
+                image="gma51/libraryai-iep1a:latest",
+                port=8001,
+                gpu_type_ids=["NVIDIA RTX A5000", "NVIDIA GeForce RTX 4090"],
+                cloud_type="SECURE",
+            )
+
+        self.assertEqual(pod_id, "pod-rest")
+        _, kwargs = mock_post.call_args
+        payload = kwargs["json"]
+        self.assertEqual(kwargs["headers"]["Authorization"], "Bearer test-key")
+        self.assertEqual(payload["gpuTypeIds"], ["NVIDIA RTX A5000", "NVIDIA GeForce RTX 4090"])
+        self.assertEqual(payload["gpuTypePriority"], "availability")
+        self.assertEqual(payload["ports"], ["8001/http"])
+        self.assertEqual(payload["env"]["IEP1A_MODELS_DIR"], "/app/models/iep1a")
 
 
 # ── 3: drain ignores human-review states ──────────────────────────────────────

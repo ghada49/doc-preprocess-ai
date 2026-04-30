@@ -22,7 +22,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
-from shared.io.storage import LocalFileBackend, S3Backend, StorageBackend, get_backend
+from shared.io.storage import HttpReadBackend, LocalFileBackend, S3Backend, StorageBackend, get_backend
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -192,6 +192,52 @@ class TestS3BackendParseUri:
 # ── get_backend ────────────────────────────────────────────────────────────────
 
 
+class _FakeHttpResponse:
+    status = 200
+
+    def __init__(self, data: bytes) -> None:
+        self._data = data
+
+    def __enter__(self) -> "_FakeHttpResponse":
+        return self
+
+    def __exit__(self, *args: object) -> None:
+        return None
+
+    def read(self) -> bytes:
+        return self._data
+
+
+class TestHttpReadBackend:
+    def test_get_bytes_downloads_http_url(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        captured: dict[str, object] = {}
+
+        def fake_urlopen(uri: str, timeout: float) -> _FakeHttpResponse:
+            captured["uri"] = uri
+            captured["timeout"] = timeout
+            return _FakeHttpResponse(b"image bytes")
+
+        monkeypatch.setattr("shared.io.storage.urlopen", fake_urlopen)
+
+        backend = HttpReadBackend(timeout_seconds=12.0)
+
+        assert backend.get_bytes("https://example.com/file.tiff?X-Amz-Signature=x") == b"image bytes"
+        assert captured == {
+            "uri": "https://example.com/file.tiff?X-Amz-Signature=x",
+            "timeout": 12.0,
+        }
+
+    def test_put_bytes_is_not_supported(self) -> None:
+        backend = HttpReadBackend()
+        with pytest.raises(NotImplementedError, match="read-only"):
+            backend.put_bytes("https://example.com/file.tiff", b"data")
+
+    def test_wrong_scheme_raises(self) -> None:
+        backend = HttpReadBackend()
+        with pytest.raises(ValueError, match="http"):
+            backend.get_bytes("s3://bucket/key")
+
+
 class TestGetBackend:
     def test_file_scheme_returns_local(self) -> None:
         backend = get_backend("file:///some/path/artifact.tiff")
@@ -207,9 +253,13 @@ class TestGetBackend:
         with pytest.raises(ValueError, match="Unsupported URI scheme"):
             get_backend("gs://bucket/key")
 
-    def test_unsupported_scheme_http_raises(self) -> None:
-        with pytest.raises(ValueError, match="Unsupported URI scheme"):
-            get_backend("http://example.com/file")
+    def test_http_scheme_returns_http_read_backend(self) -> None:
+        backend = get_backend("http://example.com/file")
+        assert isinstance(backend, HttpReadBackend)
+
+    def test_https_scheme_returns_http_read_backend(self) -> None:
+        backend = get_backend("https://example.com/file")
+        assert isinstance(backend, HttpReadBackend)
 
     def test_unsupported_scheme_ftp_raises(self) -> None:
         with pytest.raises(ValueError, match="Unsupported URI scheme"):
@@ -258,5 +308,10 @@ class TestProtocolCompliance:
 
     def test_s3_backend_is_storage_backend(self, s3_backend: S3Backend) -> None:
         b: StorageBackend = s3_backend
+        assert hasattr(b, "get_bytes")
+        assert hasattr(b, "put_bytes")
+
+    def test_http_backend_is_storage_backend(self) -> None:
+        b: StorageBackend = HttpReadBackend()
         assert hasattr(b, "get_bytes")
         assert hasattr(b, "put_bytes")

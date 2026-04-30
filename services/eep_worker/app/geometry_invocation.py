@@ -52,6 +52,7 @@ from services.eep.app.gates.geometry_selection import (
     run_geometry_selection,
 )
 from services.eep_worker.app.circuit_breaker import CircuitBreaker
+from services.eep_worker.app.presigned_inputs import maybe_presign_input_uri
 from shared.gpu.backend import BackendError, BackendErrorKind, GPUBackend
 from shared.schemas.geometry import GeometryResponse
 
@@ -460,10 +461,13 @@ async def invoke_geometry_services(
                               (both failed or both skipped).  The gate is NOT
                               called in this case.
     """
+    request_image_uri = maybe_presign_input_uri(proxy_image_uri, iep1a_endpoint)
+    request_image_uri = maybe_presign_input_uri(request_image_uri, iep1b_endpoint)
+
     payload: dict[str, Any] = {
         "job_id": job_id,
         "page_number": page_number,
-        "image_uri": proxy_image_uri,
+        "image_uri": request_image_uri,
         "material_type": material_type,
     }
 

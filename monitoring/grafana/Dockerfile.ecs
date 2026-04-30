@@ -16,7 +16,14 @@
 
 FROM grafana/grafana:latest
 
-# Copy all provisioning (datasources + dashboards)
+ENV GF_PATHS_PROVISIONING=/etc/grafana/provisioning
+ENV PROMETHEUS_URL=http://prometheus.libraryai.local:9090
+
+# Copy provisioning YAML into Grafana's provisioning tree.
 COPY monitoring/grafana/provisioning/ /etc/grafana/provisioning/
+
+# Keep dashboard JSON outside the provisioning config directory so the
+# dashboard provider only scans dashboard documents.
+COPY monitoring/grafana/dashboards/*.json /var/lib/grafana/dashboards/libraryai/
 
 EXPOSE 3000

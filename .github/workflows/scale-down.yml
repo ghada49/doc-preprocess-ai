@@ -18,7 +18,6 @@ permissions:
 env:
   AWS_REGION:            ${{ vars.AWS_REGION }}
   ECS_CLUSTER:           ${{ vars.ECS_CLUSTER }}
-  GPU_ASG:               ${{ vars.GPU_ASG_NAME }}
   DRAIN_TIMEOUT_MINUTES: ${{ vars.DRAIN_TIMEOUT_MINUTES || '120' }}
   FORCE:                 ${{ inputs.force || 'false' }}
   DRAIN_SUBNET:          ${{ vars.DRAIN_SUBNET_ID }}
@@ -40,11 +39,14 @@ jobs:
       - name: Register drain-monitor task definition
         id: register_drain
         run: |
-          TASK_DEF=$(cat k8s/ecs/drain-monitor-task-def.json \
-            | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
-            | sed "s/REGION/${{ vars.AWS_REGION }}/g")
-          TASK_DEF_ARN=$(echo "$TASK_DEF" | aws ecs register-task-definition \
-            --cli-input-json file:///dev/stdin \
+          TASK_DEF_FILE=$(mktemp)
+          sed \
+            -e "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
+            -e "s/REGION/${{ vars.AWS_REGION }}/g" \
+            k8s/ecs/drain-monitor-task-def.json > "$TASK_DEF_FILE"
+          python3 -m json.tool "$TASK_DEF_FILE" > /dev/null
+          TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "file://$TASK_DEF_FILE" \
             --query 'taskDefinition.taskDefinitionArn' --output text)
           echo "task_def_arn=$TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
 
@@ -170,53 +172,68 @@ jobs:
             --services libraryai-iep1d libraryai-iep1e libraryai-iep2a libraryai-iep2b
           echo "CPU IEP services stopped."
 
-      # ── Step 7: Stop GPU IEP services ────────────────────────────────────
-      - name: Stop GPU IEP services (iep0, iep1a, iep1b)
+      # ── Step 7: Terminate RunPod GPU pods (iep0, iep1a, iep1b) ──────────
+      - name: Terminate RunPod GPU pods
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          RUNPOD_POD_MODE: ${{ vars.RUNPOD_POD_MODE || 'create' }}
+          RUNPOD_IEP0_POD_ID: ${{ vars.RUNPOD_IEP0_POD_ID || '' }}
+          RUNPOD_IEP1A_POD_ID: ${{ vars.RUNPOD_IEP1A_POD_ID || '' }}
+          RUNPOD_IEP1B_POD_ID: ${{ vars.RUNPOD_IEP1B_POD_ID || '' }}
         run: |
-          for SVC in iep0 iep1a iep1b; do
-            DESIRED=$(aws ecs describe-services \
-              --cluster "$ECS_CLUSTER" \
-              --services "libraryai-${SVC}" \
-              --query 'services[0].desiredCount' --output text 2>/dev/null || echo "0")
-            if [ "$DESIRED" != "0" ] && [ "$DESIRED" != "None" ]; then
-              aws ecs update-service \
-                --cluster "$ECS_CLUSTER" \
-                --service "libraryai-${SVC}" \
-                --desired-count 0 \
-                --no-cli-pager
-              echo "libraryai-${SVC} desired → 0"
-            else
-              echo "libraryai-${SVC} already at 0 — skipping"
-            fi
-          done
-          RUNNING=()
-          for SVC in iep0 iep1a iep1b; do
-            COUNT=$(aws ecs describe-services \
-              --cluster "$ECS_CLUSTER" \
-              --services "libraryai-${SVC}" \
-              --query 'services[0].runningCount' --output text 2>/dev/null || echo "0")
-            if [ "$COUNT" != "0" ] && [ "$COUNT" != "None" ]; then
-              RUNNING+=("libraryai-${SVC}")
-            fi
-          done
-          if [ ${#RUNNING[@]} -gt 0 ]; then
-            aws ecs wait services-stable \
-              --cluster "$ECS_CLUSTER" \
-              --services "${RUNNING[@]}"
-          fi
-          echo "GPU IEP services stopped."
+          set -euo pipefail
 
-      # ── Step 8: Scale GPU EC2 ASG to 0 ───────────────────────────────────
-      - name: Scale GPU ASG to 0
-        run: |
-          aws autoscaling update-auto-scaling-group \
-            --auto-scaling-group-name "$GPU_ASG" \
-            --min-size 0 \
-            --desired-capacity 0
-          echo "GPU ASG desired → 0 (EC2 GPU instances will terminate)"
+          if [ "$RUNPOD_POD_MODE" = "existing" ]; then
+            IEP0_POD="$RUNPOD_IEP0_POD_ID"
+            IEP1A_POD="$RUNPOD_IEP1A_POD_ID"
+            IEP1B_POD="$RUNPOD_IEP1B_POD_ID"
+            ACTION="stop"
+            ACTION_PAST="Stopped"
+          else
+            ACTION="terminate"
+            ACTION_PAST="Terminated"
+          fi
+
+          # Read pod IDs saved by scale-up
+          if [ "$ACTION" = "terminate" ]; then
+            POD_JSON=$(aws s3 cp s3://libraryai2/ops/runpod-pods.json - 2>/dev/null || echo "{}")
+            IEP0_POD=$(echo  "$POD_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('iep0',''))"  2>/dev/null || true)
+            IEP1A_POD=$(echo "$POD_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('iep1a',''))" 2>/dev/null || true)
+            IEP1B_POD=$(echo "$POD_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('iep1b',''))" 2>/dev/null || true)
+          fi
+
+          terminate_pod() {
+            local POD_ID="$1" NAME="$2"
+            if [ -z "$POD_ID" ]; then
+              echo "$NAME: no pod ID found — skipping"
+              return
+            fi
+            if [ "$ACTION" = "stop" ]; then
+              curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "{\"query\":\"mutation { podStop(input: {podId: \\\"${POD_ID}\\\"}) { id desiredStatus } }\"}" \
+                > /dev/null
+            else
+              curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "{\"query\":\"mutation { podTerminate(input: {podId: \\\"${POD_ID}\\\"}) }\"}" \
+                > /dev/null
+            fi
+            echo "$ACTION_PAST $NAME pod: $POD_ID"
+          }
+
+          terminate_pod "$IEP0_POD"  "iep0"
+          terminate_pod "$IEP1A_POD" "iep1a"
+          terminate_pod "$IEP1B_POD" "iep1b"
+
+          if [ "$ACTION" = "terminate" ]; then
+            # Clean up the pod IDs file
+            aws s3 rm s3://libraryai2/ops/runpod-pods.json 2>/dev/null || true
+          fi
+          echo "RunPod pods handled with action=$ACTION."
 
       - name: Scale-down complete
         run: |
           echo "All processing services stopped."
           echo "Persistent services left running: EEP API, RDS, ElastiCache, S3."
-          echo "GPU EC2 ASG scaled to 0."
+          echo "RunPod GPU pods stopped or terminated."

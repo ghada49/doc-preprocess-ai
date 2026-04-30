@@ -28,13 +28,25 @@
         { "name": "ECS_CLUSTER",                  "value": "CLUSTER_NAME" },
         { "name": "GPU_ASG_NAME",                 "value": "GPU_ASG_NAME" },
         { "name": "GPU_ASG_DESIRED",              "value": "1" },
+        { "name": "RUNPOD_POD_MODE",              "value": "RUNPOD_POD_MODE_VALUE" },
+        { "name": "RUNPOD_IEP0_POD_ID",           "value": "RUNPOD_IEP0_POD_ID_VALUE" },
+        { "name": "RUNPOD_IEP1A_POD_ID",          "value": "RUNPOD_IEP1A_POD_ID_VALUE" },
+        { "name": "RUNPOD_IEP1B_POD_ID",          "value": "RUNPOD_IEP1B_POD_ID_VALUE" },
+        { "name": "RUNPOD_GPU_TYPE_ID",           "value": "RUNPOD_GPU_TYPE_ID_VALUE" },
+        { "name": "RUNPOD_GPU_TYPES",             "value": "RUNPOD_GPU_TYPES_VALUE" },
+        { "name": "RUNPOD_CLOUD_TYPE",            "value": "RUNPOD_CLOUD_TYPE_VALUE" },
+        { "name": "RUNPOD_CLOUD_TYPES",           "value": "RUNPOD_CLOUD_TYPES_VALUE" },
+        { "name": "RUNPOD_CONTAINER_DISK_GB",     "value": "RUNPOD_CONTAINER_DISK_GB_VALUE" },
+        { "name": "RUNPOD_MIN_VCPU_PER_GPU",      "value": "RUNPOD_MIN_VCPU_PER_GPU_VALUE" },
+        { "name": "RUNPOD_MIN_RAM_PER_GPU",       "value": "RUNPOD_MIN_RAM_PER_GPU_VALUE" },
         { "name": "WORKER_DESIRED_COUNT",         "value": "2" },
         { "name": "AWS_REGION",                   "value": "REGION" }
       ],
       "secrets": [
         { "name": "DATABASE_URL",         "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/DATABASE_URL" },
         { "name": "REDIS_URL",            "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/REDIS_URL" },
-        { "name": "JWT_SECRET_KEY",       "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/JWT_SECRET_KEY" }
+        { "name": "JWT_SECRET_KEY",       "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/JWT_SECRET_KEY" },
+        { "name": "RUNPOD_API_KEY",       "valueFrom": "arn:aws:secretsmanager:REGION:ACCOUNT_ID:secret:libraryai/RUNPOD_API_KEY" }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
