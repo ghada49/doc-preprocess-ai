@@ -417,6 +417,7 @@ jobs:
           TASK_DEF=$(cat k8s/ecs/migration-task-def.json \
             | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
             | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
+            | sed "s|AWS_${{ vars.AWS_REGION }}|AWS_REGION|g" \
             | sed 's|:latest|:${{ github.sha }}|g')
           ARN=$(aws ecs register-task-definition \
             --cli-input-json "$TASK_DEF" \
@@ -511,6 +512,7 @@ jobs:
             TASK_DEF=$(cat "$FILE" \
               | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
               | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
+              | sed "s|AWS_${{ vars.AWS_REGION }}|AWS_REGION|g" \
               | sed "s/CLUSTER_NAME/${CLUSTER}/g" \
               | sed "s|:latest|:${IMAGE_TAG}|g" \
               | sed "s|IEP1A_WEIGHTS_URI_VALUE|${{ vars.IEP1A_WEIGHTS_URI }}|g" \
@@ -527,7 +529,7 @@ jobs:
               | sed "s|RUNPOD_IEP1A_POD_ID_VALUE|${{ vars.RUNPOD_IEP1A_POD_ID || '' }}|g" \
               | sed "s|RUNPOD_IEP1B_POD_ID_VALUE|${{ vars.RUNPOD_IEP1B_POD_ID || '' }}|g" \
               | sed "s|RUNPOD_GPU_TYPE_ID_VALUE|${{ vars.RUNPOD_GPU_TYPE_ID || 'NVIDIA RTX A5000' }}|g" \
-              | sed "s|RUNPOD_GPU_TYPES_VALUE|${{ vars.RUNPOD_GPU_TYPES || 'NVIDIA RTX A5000,NVIDIA GeForce RTX 3090,NVIDIA GeForce RTX 4090,NVIDIA RTX 4000 Ada Generation,NVIDIA RTX A4000,NVIDIA RTX 2000 Ada Generation,NVIDIA L4,NVIDIA RTX A4500,NVIDIA RTX A6000,NVIDIA A40,NVIDIA L40S,NVIDIA RTX PRO 4500 Blackwell' }}|g" \
+              | sed "s|RUNPOD_GPU_TYPES_VALUE|${{ vars.RUNPOD_GPU_TYPES || 'NVIDIA RTX A5000,NVIDIA GeForce RTX 3090,NVIDIA GeForce RTX 4090,NVIDIA RTX 4000 Ada Generation,NVIDIA RTX A4000,NVIDIA RTX 2000 Ada Generation,NVIDIA L4,NVIDIA RTX A4500,NVIDIA RTX A6000,NVIDIA A40,NVIDIA L40S' }}|g" \
               | sed "s|RUNPOD_CLOUD_TYPE_VALUE|${{ vars.RUNPOD_CLOUD_TYPE || 'COMMUNITY' }}|g" \
               | sed "s|RUNPOD_CLOUD_TYPES_VALUE|${{ vars.RUNPOD_CLOUD_TYPES || 'COMMUNITY,SECURE' }}|g" \
               | sed "s|RUNPOD_CONTAINER_DISK_GB_VALUE|${{ vars.RUNPOD_CONTAINER_DISK_GB || '50' }}|g" \
@@ -800,6 +802,7 @@ jobs:
           TASK_DEF=$(cat k8s/ecs/migration-task-def.json \
             | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
             | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
+            | sed "s|AWS_${{ vars.AWS_REGION }}|AWS_REGION|g" \
             | sed 's|:latest|:${{ github.sha }}|g')
           ARN=$(aws ecs register-task-definition \
             --cli-input-json "$TASK_DEF" \
@@ -894,6 +897,7 @@ jobs:
             TASK_DEF=$(cat "$FILE" \
               | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
               | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
+              | sed "s|AWS_${{ vars.AWS_REGION }}|AWS_REGION|g" \
               | sed "s/CLUSTER_NAME/${CLUSTER}/g" \
               | sed "s|:latest|:${IMAGE_TAG}|g" \
               | sed "s|IEP1A_WEIGHTS_URI_VALUE|${{ vars.IEP1A_WEIGHTS_URI }}|g" \
@@ -910,7 +914,7 @@ jobs:
               | sed "s|RUNPOD_IEP1A_POD_ID_VALUE|${{ vars.RUNPOD_IEP1A_POD_ID || '' }}|g" \
               | sed "s|RUNPOD_IEP1B_POD_ID_VALUE|${{ vars.RUNPOD_IEP1B_POD_ID || '' }}|g" \
               | sed "s|RUNPOD_GPU_TYPE_ID_VALUE|${{ vars.RUNPOD_GPU_TYPE_ID || 'NVIDIA RTX A5000' }}|g" \
-              | sed "s|RUNPOD_GPU_TYPES_VALUE|${{ vars.RUNPOD_GPU_TYPES || 'NVIDIA RTX A5000,NVIDIA GeForce RTX 3090,NVIDIA GeForce RTX 4090,NVIDIA RTX 4000 Ada Generation,NVIDIA RTX A4000,NVIDIA RTX 2000 Ada Generation,NVIDIA L4,NVIDIA RTX A4500,NVIDIA RTX A6000,NVIDIA A40,NVIDIA L40S,NVIDIA RTX PRO 4500 Blackwell' }}|g" \
+              | sed "s|RUNPOD_GPU_TYPES_VALUE|${{ vars.RUNPOD_GPU_TYPES || 'NVIDIA RTX A5000,NVIDIA GeForce RTX 3090,NVIDIA GeForce RTX 4090,NVIDIA RTX 4000 Ada Generation,NVIDIA RTX A4000,NVIDIA RTX 2000 Ada Generation,NVIDIA L4,NVIDIA RTX A4500,NVIDIA RTX A6000,NVIDIA A40,NVIDIA L40S' }}|g" \
               | sed "s|RUNPOD_CLOUD_TYPE_VALUE|${{ vars.RUNPOD_CLOUD_TYPE || 'COMMUNITY' }}|g" \
               | sed "s|RUNPOD_CLOUD_TYPES_VALUE|${{ vars.RUNPOD_CLOUD_TYPES || 'COMMUNITY,SECURE' }}|g" \
               | sed "s|RUNPOD_CONTAINER_DISK_GB_VALUE|${{ vars.RUNPOD_CONTAINER_DISK_GB || '50' }}|g" \
