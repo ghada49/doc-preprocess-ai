@@ -464,9 +464,16 @@ jobs:
                 --query 'services[0].status' --output text 2>/dev/null \
                 | grep -qE "ACTIVE|DRAINING"; then
               SC=$(sc_config "$SVC")
+              DESIRED_ARGS=()
+              case "$SVC" in
+                eep-worker|eep-recovery|shadow-worker|retraining-worker|dataset-builder|iep0|iep1a|iep1b|iep1d|iep1e|iep2a|iep2b)
+                  DESIRED_ARGS=(--desired-count 0)
+                  ;;
+              esac
               aws ecs update-service \
                 --cluster "$CLUSTER" \
                 --service "libraryai-${SVC}" \
+                "${DESIRED_ARGS[@]}" \
                 --task-definition "$REVISION" \
                 --service-connect-configuration "$SC" \
                 --force-new-deployment \
@@ -474,6 +481,29 @@ jobs:
               echo "Updated staging service libraryai-${SVC}"
             else
               echo "libraryai-${SVC} not yet created in staging — skipping update"
+            fi
+          done
+
+      - name: Ensure staging processing services are stopped
+        run: |
+          set -e
+          # Deploy only refreshes task definitions for off-by-default processing
+          # services. Immediate processing scale-up is owned by normal_scaler.py,
+          # which injects live RunPod URLs before starting eep-worker.
+          for SVC in eep-worker eep-recovery shadow-worker retraining-worker dataset-builder iep0 iep1a iep1b iep1d iep1e iep2a iep2b; do
+            if aws ecs describe-services \
+                --cluster "$CLUSTER" \
+                --services "libraryai-${SVC}" \
+                --query 'services[0].status' --output text 2>/dev/null \
+                | grep -qE "ACTIVE|DRAINING"; then
+              aws ecs update-service \
+                --cluster "$CLUSTER" \
+                --service "libraryai-${SVC}" \
+                --desired-count 0 \
+                --no-cli-pager
+              echo "libraryai-${SVC} desired -> 0"
+            else
+              echo "libraryai-${SVC} not present in staging — skipping"
             fi
           done
 
@@ -788,9 +818,16 @@ jobs:
                 --query 'services[0].status' --output text 2>/dev/null \
                 | grep -qE "ACTIVE|DRAINING"; then
               SC=$(sc_config "$SVC")
+              DESIRED_ARGS=()
+              case "$SVC" in
+                eep-worker|eep-recovery|shadow-worker|retraining-worker|dataset-builder|iep0|iep1a|iep1b|iep1d|iep1e|iep2a|iep2b)
+                  DESIRED_ARGS=(--desired-count 0)
+                  ;;
+              esac
               aws ecs update-service \
                 --cluster "$CLUSTER" \
                 --service "libraryai-${SVC}" \
+                "${DESIRED_ARGS[@]}" \
                 --task-definition "$REVISION" \
                 --service-connect-configuration "$SC" \
                 --force-new-deployment \
@@ -798,6 +835,29 @@ jobs:
               echo "Updated production service libraryai-${SVC}"
             else
               echo "libraryai-${SVC} not yet created in production — skipping update"
+            fi
+          done
+
+      - name: Ensure production processing services are stopped
+        run: |
+          set -e
+          # Deploy only refreshes task definitions for off-by-default processing
+          # services. Immediate processing scale-up is owned by normal_scaler.py,
+          # which injects live RunPod URLs before starting eep-worker.
+          for SVC in eep-worker eep-recovery shadow-worker retraining-worker dataset-builder iep0 iep1a iep1b iep1d iep1e iep2a iep2b; do
+            if aws ecs describe-services \
+                --cluster "$CLUSTER" \
+                --services "libraryai-${SVC}" \
+                --query 'services[0].status' --output text 2>/dev/null \
+                | grep -qE "ACTIVE|DRAINING"; then
+              aws ecs update-service \
+                --cluster "$CLUSTER" \
+                --service "libraryai-${SVC}" \
+                --desired-count 0 \
+                --no-cli-pager
+              echo "libraryai-${SVC} desired -> 0"
+            else
+              echo "libraryai-${SVC} not present in production — skipping"
             fi
           done
 
