@@ -635,11 +635,45 @@ def _runpod_gpu_type_candidates() -> list[str]:
         "RTX 5090": "NVIDIA GeForce RTX 5090",
         "5090": "NVIDIA GeForce RTX 5090",
     }
+    rest_supported_gpu_types = {
+        "NVIDIA GeForce RTX 4090",
+        "NVIDIA A40",
+        "NVIDIA RTX A5000",
+        "NVIDIA GeForce RTX 5090",
+        "NVIDIA H100 80GB HBM3",
+        "NVIDIA GeForce RTX 3090",
+        "NVIDIA RTX A4500",
+        "NVIDIA L40S",
+        "NVIDIA H200",
+        "NVIDIA L4",
+        "NVIDIA RTX 6000 Ada Generation",
+        "NVIDIA A100-SXM4-80GB",
+        "NVIDIA RTX 4000 Ada Generation",
+        "NVIDIA RTX A6000",
+        "NVIDIA A100 80GB PCIe",
+        "NVIDIA RTX 2000 Ada Generation",
+        "NVIDIA RTX A4000",
+        "NVIDIA RTX PRO 6000 Blackwell Server Edition",
+        "NVIDIA H100 PCIe",
+        "NVIDIA H100 NVL",
+        "NVIDIA L40",
+        "NVIDIA B200",
+        "NVIDIA GeForce RTX 3080 Ti",
+        "NVIDIA RTX PRO 6000 Blackwell Workstation Edition",
+        "NVIDIA GeForce RTX 3080",
+        "NVIDIA GeForce RTX 3070",
+    }
     candidates: list[str] = []
     for value in raw_values:
         if not value:
             continue
         gpu_type = aliases.get(value, value)
+        if gpu_type not in rest_supported_gpu_types:
+            logger.warning(
+                "normal_scaler: skipping unsupported RunPod REST gpu_type_id=%r",
+                gpu_type,
+            )
+            continue
         if gpu_type not in candidates:
             candidates.append(gpu_type)
     return candidates

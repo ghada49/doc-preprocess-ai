@@ -307,12 +307,13 @@ class TestScaleUpServiceList(unittest.TestCase):
 
         env = {
             "RUNPOD_GPU_TYPE_ID": "A40",
-            "RUNPOD_GPU_TYPES": "NVIDIA RTX A5000,RTX 4090,A40",
+            "RUNPOD_GPU_TYPES": "NVIDIA RTX A5000,RTX 4090,A40,NVIDIA RTX PRO 4500 Blackwell",
         }
         with patch.dict(os.environ, env, clear=False):
             candidates = normal_scaler._runpod_gpu_type_candidates()
 
         self.assertEqual(candidates[:3], ["NVIDIA A40", "NVIDIA RTX A5000", "NVIDIA GeForce RTX 4090"])
+        self.assertNotIn("NVIDIA RTX PRO 4500 Blackwell", candidates)
         self.assertIn("NVIDIA L4", candidates)
         self.assertIn("NVIDIA RTX A6000", candidates)
 

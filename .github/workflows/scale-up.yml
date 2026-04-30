@@ -62,7 +62,38 @@ jobs:
               "RTX 3090"|3090) echo "NVIDIA GeForce RTX 3090" ;;
               "RTX 4090"|4090) echo "NVIDIA GeForce RTX 4090" ;;
               "RTX A5000"|A5000) echo "NVIDIA RTX A5000" ;;
+              "RTX A4000"|A4000) echo "NVIDIA RTX A4000" ;;
+              "RTX A4500"|A4500) echo "NVIDIA RTX A4500" ;;
+              "RTX A6000"|A6000) echo "NVIDIA RTX A6000" ;;
+              L4) echo "NVIDIA L4" ;;
+              L40) echo "NVIDIA L40" ;;
+              L40S) echo "NVIDIA L40S" ;;
+              "RTX 4000 ADA"|"4000 ADA"|"RTX 4000") echo "NVIDIA RTX 4000 Ada Generation" ;;
+              "RTX 2000 ADA"|"2000 ADA") echo "NVIDIA RTX 2000 Ada Generation" ;;
               *) echo "$1" ;;
+            esac
+          }
+
+          is_supported_gpu_type() {
+            case "$1" in
+              "NVIDIA GeForce RTX 4090"|"NVIDIA A40"|"NVIDIA RTX A5000"|\
+              "NVIDIA GeForce RTX 5090"|"NVIDIA H100 80GB HBM3"|\
+              "NVIDIA GeForce RTX 3090"|"NVIDIA RTX A4500"|"NVIDIA L40S"|\
+              "NVIDIA H200"|"NVIDIA L4"|"NVIDIA RTX 6000 Ada Generation"|\
+              "NVIDIA A100-SXM4-80GB"|"NVIDIA RTX 4000 Ada Generation"|\
+              "NVIDIA RTX A6000"|"NVIDIA A100 80GB PCIe"|\
+              "NVIDIA RTX 2000 Ada Generation"|"NVIDIA RTX A4000"|\
+              "NVIDIA RTX PRO 6000 Blackwell Server Edition"|"NVIDIA H100 PCIe"|\
+              "NVIDIA H100 NVL"|"NVIDIA L40"|"NVIDIA B200"|\
+              "NVIDIA GeForce RTX 3080 Ti"|\
+              "NVIDIA RTX PRO 6000 Blackwell Workstation Edition"|\
+              "NVIDIA GeForce RTX 3080"|"NVIDIA GeForce RTX 3070")
+                return 0
+                ;;
+              *)
+                echo "::warning::Skipping unsupported RunPod REST GPU type: $1"
+                return 1
+                ;;
             esac
           }
 
@@ -72,6 +103,7 @@ jobs:
             RAW="$(echo "$RAW" | xargs)"
             [ -z "$RAW" ] && return 0
             GPU="$(normalize_gpu_type "$RAW")"
+            is_supported_gpu_type "$GPU" || return 0
             for EXISTING in "${GPU_CANDIDATES[@]}"; do
               [ "$EXISTING" = "$GPU" ] && return 0
             done
@@ -225,6 +257,7 @@ jobs:
           TASK_DEF=$(cat k8s/ecs/eep-worker-task-def.json \
             | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
             | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
+            | sed "s|AWS_${{ vars.AWS_REGION }}|AWS_REGION|g" \
             | sed "s/CLUSTER_NAME/${CLUSTER}/g" \
             | sed "s|IEP0_URL_VALUE|${IEP0_URL}|g" \
             | sed "s|IEP1A_URL_VALUE|${IEP1A_URL}|g" \
