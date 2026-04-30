@@ -11,6 +11,10 @@ on:
         default: "full"
         type: choice
         options: [full, staging-only]
+      force_rebuild:
+        description: "Rebuild all images (use when only GitHub variables changed)"
+        type: boolean
+        default: false
 
 permissions:
   id-token: write
@@ -41,45 +45,57 @@ jobs:
           - service: eep
             context: .
             dockerfile: services/eep/Dockerfile
+            paths: services/eep shared
           - service: eep-worker
             context: .
             dockerfile: services/eep_worker/Dockerfile
+            paths: services/eep_worker shared
           - service: eep-recovery
             context: .
             dockerfile: services/eep_recovery/Dockerfile
+            paths: services/eep_recovery shared
           - service: shadow-worker
             context: .
             dockerfile: services/shadow_worker/Dockerfile
+            paths: services/shadow_worker shared
           - service: retraining-worker
             context: .
             dockerfile: services/retraining_worker/Dockerfile
+            paths: services/retraining_worker
           - service: iep0
             context: .
             dockerfile: services/iep0/Dockerfile
+            paths: services/iep0
             push_dockerhub: true
           - service: iep1a
             context: .
             dockerfile: services/iep1a/Dockerfile
+            paths: services/iep1a
             push_dockerhub: true
           - service: iep1b
             context: .
             dockerfile: services/iep1b/Dockerfile
+            paths: services/iep1b
             push_dockerhub: true
           - service: iep1d
             context: .
             dockerfile: services/iep1d/Dockerfile
+            paths: services/iep1d
           - service: iep1e
             context: .
             dockerfile: services/iep1e/Dockerfile
+            paths: services/iep1e
             push_dockerhub: true
             build-args: |
               ENABLE_REAL_MODEL=true
           - service: dataset-builder
             context: .
             dockerfile: services/dataset_builder/Dockerfile
+            paths: services/dataset_builder
           - service: iep2a
             context: .
             dockerfile: services/iep2a/Dockerfile
+            paths: services/iep2a
             push_dockerhub: true
             build-args: |
               ENABLE_REAL_MODEL=true
@@ -87,19 +103,51 @@ jobs:
           - service: iep2b
             context: .
             dockerfile: services/iep2b/Dockerfile
+            paths: services/iep2b
             push_dockerhub: true
             build-args: |
               ENABLE_REAL_MODEL=true
           - service: frontend
             context: frontend
             dockerfile: frontend/Dockerfile
+            paths: frontend
             build-args: |
               NEXT_PUBLIC_API_BASE_URL=${{ vars.NEXT_PUBLIC_API_BASE_URL }}
           - service: mlflow
             context: .
             dockerfile: services/mlflow/Dockerfile
+            paths: services/mlflow
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect service changes
+        id: changed
+        run: |
+          if [[ "${{ inputs.force_rebuild || 'false' }}" == "true" ]]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "${{ matrix.service }}: force_rebuild=true — will build"
+            exit 0
+          fi
+          # On a branch ahead of main: compare to merge base with main.
+          # On main (or no origin/main): compare to the previous commit.
+          if git rev-parse --verify origin/main >/dev/null 2>&1; then
+            BASE=$(git merge-base origin/main HEAD)
+            if [ "$BASE" = "$(git rev-parse HEAD)" ]; then
+              BASE="HEAD~1"  # HEAD is on main — compare to previous commit
+            fi
+          else
+            BASE="HEAD~1"
+          fi
+          CHANGED=$(git diff --name-only "$BASE" HEAD -- ${{ matrix.paths }} | wc -l)
+          if [ "$CHANGED" -gt 0 ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "${{ matrix.service }}: $CHANGED changed files since $BASE — will build"
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "${{ matrix.service }}: no changes detected since $BASE — skipping build"
+          fi
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -144,7 +192,7 @@ jobs:
       #   s3:GetObject on arn:aws:s3:::libraryai2/models/iep*
       # No long-lived keys — OIDC credentials from the step above are reused.
       - name: Download model weights
-        if: contains(fromJSON('["iep0","iep1a","iep1b","iep1e","iep1d","iep2a","iep2b"]'), matrix.service)
+        if: steps.changed.outputs.skip != 'true' && contains(fromJSON('["iep0","iep1a","iep1b","iep1e","iep1d","iep2a","iep2b"]'), matrix.service)
         env:
           IEP0_WEIGHTS_URI:     ${{ vars.IEP0_WEIGHTS_URI }}
           IEP1A_WEIGHTS_URI:    ${{ vars.IEP1A_WEIGHTS_URI }}
@@ -327,6 +375,7 @@ jobs:
           fi
 
       - name: Build and push libraryai-${{ matrix.service }}
+        if: steps.changed.outputs.skip != 'true'
         uses: docker/build-push-action@v5
         with:
           context: ${{ matrix.context }}
@@ -340,7 +389,7 @@ jobs:
           cache-to: type=inline
 
       - name: Push to Docker Hub (gma51)
-        if: matrix.push_dockerhub == true
+        if: steps.changed.outputs.skip != 'true' && matrix.push_dockerhub == true
         run: |
           docker pull ${{ env.ECR_REGISTRY }}/libraryai-${{ matrix.service }}:latest
           docker tag ${{ env.ECR_REGISTRY }}/libraryai-${{ matrix.service }}:latest gma51/libraryai-${{ matrix.service }}:latest

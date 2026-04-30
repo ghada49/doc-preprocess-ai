@@ -365,40 +365,108 @@ def _create_runpod_pod_with_fallback(
     if cloud_types is None:
         cloud_types = [_normalize_runpod_cloud_type(cloud_type or "COMMUNITY")]
     last_supply_error: Exception | None = None
-    for gpu_type_id in gpu_type_ids:
-        for cloud_type in cloud_types:
+    for cloud_type in cloud_types:
+        logger.info(
+            "normal_scaler: attempting RunPod REST pod %s gpu_types=%r cloud_type=%s",
+            name,
+            gpu_type_ids,
+            cloud_type,
+        )
+        try:
+            pod_id = _create_runpod_pod_rest(api_key, name, image, port, gpu_type_ids, cloud_type)
             logger.info(
-                "normal_scaler: attempting RunPod pod %s gpu_type=%r cloud_type=%s",
+                "normal_scaler: RunPod REST pod %s created cloud_type=%s id=%s",
                 name,
-                gpu_type_id,
                 cloud_type,
+                pod_id,
             )
-            try:
-                pod_id = _create_runpod_pod(api_key, name, image, port, gpu_type_id, cloud_type)
-                logger.info(
-                    "normal_scaler: RunPod pod %s created with gpu_type=%r cloud_type=%s id=%s",
+            return pod_id
+        except RuntimeError as exc:
+            err_str = str(exc)
+            if "SUPPLY_CONSTRAINT" in err_str or "capacity" in err_str.lower():
+                logger.warning(
+                    "normal_scaler: SUPPLY_CONSTRAINT for %s cloud_type=%s; trying next cloud",
                     name,
-                    gpu_type_id,
                     cloud_type,
-                    pod_id,
                 )
-                return pod_id
-            except RuntimeError as exc:
-                err_str = str(exc)
-                if "SUPPLY_CONSTRAINT" in err_str or "capacity" in err_str.lower():
-                    logger.warning(
-                        "normal_scaler: SUPPLY_CONSTRAINT for %s gpu_type=%r cloud_type=%s; trying next",
-                        name,
-                        gpu_type_id,
-                        cloud_type,
-                    )
-                    last_supply_error = exc
-                    continue
-                raise
+                last_supply_error = exc
+                continue
+            raise
     raise RuntimeError(
         f"All GPU candidates exhausted for {name} "
         f"(tried {gpu_type_ids!r}, cloud_types={cloud_types!r}): {last_supply_error}"
     )
+
+
+def _create_runpod_pod_rest(
+    api_key: str,
+    name: str,
+    image: str,
+    port: int,
+    gpu_type_ids: list[str],
+    cloud_type: str,
+) -> str:
+    """Create one RunPod pod through the REST API using GPU availability priority."""
+    import httpx  # noqa: PLC0415
+
+    payload = {
+        "name": name,
+        "imageName": image,
+        "computeType": "GPU",
+        "cloudType": cloud_type,
+        "gpuCount": 1,
+        "gpuTypeIds": gpu_type_ids,
+        "gpuTypePriority": "availability",
+        "interruptible": False,
+        "containerDiskInGb": int(os.environ.get("RUNPOD_CONTAINER_DISK_GB", "50")),
+        "minVCPUPerGPU": int(os.environ.get("RUNPOD_MIN_VCPU_PER_GPU", "2")),
+        "minRAMPerGPU": int(os.environ.get("RUNPOD_MIN_RAM_PER_GPU", "8")),
+        "ports": [f"{port}/http"],
+        "env": _runpod_iep_env(name, port),
+    }
+    volume_gb = int(os.environ.get("RUNPOD_VOLUME_GB", "0"))
+    if volume_gb > 0:
+        payload["volumeInGb"] = volume_gb
+        payload["volumeMountPath"] = os.environ.get("RUNPOD_VOLUME_MOUNT_PATH", "/workspace")
+
+    resp = httpx.post(
+        "https://rest.runpod.io/v1/pods",
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        json=payload,
+        timeout=30.0,
+    )
+    try:
+        resp.raise_for_status()
+    except httpx.HTTPStatusError as exc:
+        body = resp.text[:1000]
+        raise RuntimeError(f"RunPod REST error creating {name}: HTTP {resp.status_code}: {body}") from exc
+
+    data = resp.json()
+    pod_id = data.get("id")
+    if not pod_id:
+        raise RuntimeError(f"RunPod REST response missing pod id for {name}: {data}")
+    return str(pod_id)
+
+
+def _runpod_iep_env(name: str, port: int) -> dict[str, str]:
+    env = {
+        "PYTHONPATH": "/app",
+        "AWS_REGION": os.environ.get("AWS_REGION", "eu-central-1"),
+        "S3_REGION": os.environ.get("S3_REGION") or os.environ.get("AWS_REGION", "eu-central-1"),
+        "S3_BUCKET_NAME": os.environ.get("S3_BUCKET_NAME", "libraryai2"),
+        "HEALTH_PORT": str(port),
+        "RUNPOD_TERMINATE_ON_IDLE": "true",
+    }
+    if name.endswith("iep0"):
+        env["IEP0_MODEL_PATH"] = os.environ.get("IEP0_MODEL_PATH", "/app/models/iep0/classifier.pt")
+    elif name.endswith("iep1a"):
+        env["IEP1A_MODELS_DIR"] = os.environ.get("IEP1A_MODELS_DIR", "/app/models/iep1a")
+    elif name.endswith("iep1b"):
+        env["IEP1B_MODELS_DIR"] = os.environ.get("IEP1B_MODELS_DIR", "/app/models/iep1b")
+    return env
 
 
 def _create_runpod_pod(
