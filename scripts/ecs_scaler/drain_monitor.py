@@ -91,11 +91,13 @@ PAGE_ACTIVE_STATES = (
 
 def _check_db(conn) -> tuple[int, int]:
     with conn.cursor() as cur:
+        # active_jobs: jobs still in a non-terminal status that have at least one
+        # processable page.  Uses job_id (the actual PK column) not id.
         cur.execute(
             """
-            SELECT COUNT(DISTINCT j.id)
+            SELECT COUNT(DISTINCT j.job_id)
             FROM jobs j
-            JOIN job_pages p ON p.job_id = j.id
+            JOIN job_pages p ON p.job_id = j.job_id
             WHERE j.status IN ('queued', 'running')
               AND p.status = ANY(%s)
             """,
@@ -111,12 +113,16 @@ def _check_db(conn) -> tuple[int, int]:
 
 
 def _is_drained(queues: dict[str, int], active_jobs: int, active_pages: int) -> bool:
+    # active_pages is the authoritative signal: if no pages are in a processable
+    # state and queues are empty, the drain is complete.  active_jobs is reported
+    # for visibility but NOT required to be zero — job status rows lag slightly
+    # behind page state transitions and checking them independently causes
+    # spurious "not drained" results (active_jobs>0 while active_pages=0).
     return (
         queues["pending"] == 0
         and queues["processing"] == 0
         and queues["shadow_pending"] == 0
         and queues["shadow_processing"] == 0
-        and active_jobs == 0
         and active_pages == 0
     )
 
