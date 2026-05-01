@@ -46,6 +46,7 @@
           "value": "http://libraryai-staging-alb-520535967.eu-central-1.elb.amazonaws.com"
         },
         { "name": "MLFLOW_TRACKING_URI", "value": "http://mlflow.libraryai.local:5000" },
+        { "name": "RETRAINING_MLFLOW_EXPERIMENT", "value": "libraryai_preprocessing" },
         { "name": "LIBRARYAI_RETRAINING_TRAIN", "value": "stub" },
         { "name": "LIBRARYAI_RETRAINING_GOLDEN_EVAL", "value": "stub" },
         { "name": "RETRAINING_DATASET_MODE", "value": "corrected_hybrid" },

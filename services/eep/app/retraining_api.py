@@ -308,6 +308,7 @@ def _create_callback_model_versions(
     *,
     job: RetrainingJob,
     payload: RunPodRetrainingCallbackRequest,
+    mlflow_run_id: str | None,
 ) -> str | None:
     created_tags: list[str] = []
     requested_versions = payload.model_versions
@@ -317,7 +318,7 @@ def _create_callback_model_versions(
             RunPodModelVersionPayload(
                 service_name="iep1a",
                 version_tag=f"rt-{job.job_id.replace('-', '')[:12]}-iep1a",
-                mlflow_run_id=payload.mlflow_run_id,
+                mlflow_run_id=mlflow_run_id,
                 dataset_version=payload.dataset_version,
                 gate_results=_stub_gate_results(),
                 notes="created from RunPod callback",
@@ -325,7 +326,7 @@ def _create_callback_model_versions(
             RunPodModelVersionPayload(
                 service_name="iep1b",
                 version_tag=f"rt-{job.job_id.replace('-', '')[:12]}-iep1b",
-                mlflow_run_id=payload.mlflow_run_id,
+                mlflow_run_id=mlflow_run_id,
                 dataset_version=payload.dataset_version,
                 gate_results=_stub_gate_results(),
                 notes="created from RunPod callback",
@@ -350,7 +351,7 @@ def _create_callback_model_versions(
                 model_id=str(uuid.uuid4()),
                 service_name=version.service_name,
                 version_tag=version.version_tag,
-                mlflow_run_id=version.mlflow_run_id or payload.mlflow_run_id,
+                mlflow_run_id=mlflow_run_id or version.mlflow_run_id,
                 dataset_version=version.dataset_version or payload.dataset_version,
                 stage="staging",
                 gate_results=version.gate_results or _stub_gate_results(),
@@ -360,6 +361,115 @@ def _create_callback_model_versions(
         created_tags.append(version.version_tag)
 
     return ",".join(created_tags) if created_tags else None
+
+
+def _callback_mlflow_run_id(
+    *,
+    job: RetrainingJob,
+    payload: RunPodRetrainingCallbackRequest,
+) -> str | None:
+    """
+    Create a real MLflow run from a RunPod callback when EEP can reach MLflow.
+
+    The RunPod pod is intentionally outside the AWS VPC and should not need
+    direct access to private MLflow. EEP receives the callback, logs the run to
+    the internal MLflow service, then stores the real run id in the DB. If
+    MLflow is not configured or unavailable, the callback still succeeds and
+    falls back to the worker-provided run id.
+    """
+    existing_run_id = (payload.mlflow_run_id or "").strip() or None
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
+    if not tracking_uri:
+        return existing_run_id
+
+    try:
+        import mlflow  # type: ignore[import]
+    except Exception:
+        logger.warning(
+            "runpod_callback: MLFLOW_TRACKING_URI is set but mlflow is not installed; "
+            "using worker-provided run_id=%s",
+            existing_run_id,
+        )
+        return existing_run_id
+
+    experiment = os.environ.get(
+        "RETRAINING_MLFLOW_EXPERIMENT",
+        "libraryai_preprocessing",
+    ).strip() or "libraryai_preprocessing"
+
+    try:
+        mlflow.set_tracking_uri(tracking_uri)
+        mlflow.set_experiment(experiment)
+        run_name = f"runpod-{job.pipeline_type}-{job.job_id[:8]}"
+        with mlflow.start_run(run_name=run_name) as active_run:
+            real_run_id = active_run.info.run_id
+
+            mlflow.set_tags(
+                {
+                    "libraryai.source": "runpod_callback",
+                    "libraryai.trigger_id": payload.trigger_id,
+                    "libraryai.job_id": payload.job_id,
+                    "libraryai.pipeline_type": job.pipeline_type,
+                    "libraryai.worker_run_id": existing_run_id or "",
+                }
+            )
+            mlflow.log_param("trigger_id", payload.trigger_id)
+            mlflow.log_param("job_id", payload.job_id)
+            mlflow.log_param("pipeline_type", job.pipeline_type)
+            if payload.dataset_version:
+                mlflow.log_param("dataset_version", payload.dataset_version)
+            if payload.result_model_version:
+                mlflow.log_param("result_model_version", payload.result_model_version)
+            if payload.promotion_decision:
+                mlflow.log_param("promotion_decision", payload.promotion_decision)
+            if payload.result_mAP is not None:
+                mlflow.log_metric("result_mAP", float(payload.result_mAP))
+
+            model_versions_payload = [
+                version.model_dump(mode="json") for version in payload.model_versions
+            ]
+            if model_versions_payload:
+                mlflow.log_dict(
+                    {"model_versions": model_versions_payload},
+                    "model_versions.json",
+                )
+            for version in payload.model_versions:
+                prefix = version.service_name
+                mlflow.log_param(f"{prefix}.version_tag", version.version_tag)
+                if version.dataset_version:
+                    mlflow.log_param(f"{prefix}.dataset_version", version.dataset_version)
+                for gate_name, gate_value in (version.gate_results or {}).items():
+                    if isinstance(gate_value, dict):
+                        raw_value = gate_value.get("value")
+                        if isinstance(raw_value, (int, float)):
+                            mlflow.log_metric(f"{prefix}.{gate_name}", float(raw_value))
+                        regressions = gate_value.get("regressions")
+                        if isinstance(regressions, (int, float)):
+                            mlflow.log_metric(
+                                f"{prefix}.{gate_name}.regressions",
+                                float(regressions),
+                            )
+                        passed = gate_value.get("pass")
+                        if isinstance(passed, bool):
+                            mlflow.log_metric(
+                                f"{prefix}.{gate_name}.pass",
+                                1.0 if passed else 0.0,
+                            )
+
+        logger.info(
+            "runpod_callback: logged MLflow run job_id=%s run_id=%s experiment=%s",
+            payload.job_id,
+            real_run_id,
+            experiment,
+        )
+        return real_run_id
+    except Exception:
+        logger.exception(
+            "runpod_callback: MLflow logging failed for job_id=%s; using worker-provided run_id=%s",
+            payload.job_id,
+            existing_run_id,
+        )
+        return existing_run_id
 
 
 # ── Endpoint ──────────────────────────────────────────────────────────────────
@@ -608,13 +718,23 @@ def runpod_retraining_callback(
         job.completed_at = now
         job.error_message = payload.error_message or "RunPod retraining failed."
     else:
-        created_versions = _create_callback_model_versions(db, job=job, payload=payload)
+        mlflow_run_id = _callback_mlflow_run_id(job=job, payload=payload)
+        created_versions = _create_callback_model_versions(
+            db,
+            job=job,
+            payload=payload,
+            mlflow_run_id=mlflow_run_id,
+        )
         trigger.status = "completed"
         trigger.resolved_at = now
-        trigger.mlflow_run_id = payload.mlflow_run_id
+        trigger.mlflow_run_id = mlflow_run_id
         job.status = "completed"
         job.completed_at = now
-        job.mlflow_run_id = payload.mlflow_run_id
+        job.mlflow_experiment = os.environ.get(
+            "RETRAINING_MLFLOW_EXPERIMENT",
+            "libraryai_preprocessing",
+        )
+        job.mlflow_run_id = mlflow_run_id
         job.dataset_version = payload.dataset_version
         job.result_model_version = payload.result_model_version or created_versions
         job.result_mAP = payload.result_mAP
