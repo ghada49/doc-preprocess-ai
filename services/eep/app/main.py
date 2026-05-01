@@ -36,7 +36,10 @@ Real implementations:
   GET  /v1/jobs/{job_id}/output/download.zip      → LIVE (Packet 5.0c — ZIP stream)
 """
 
+import asyncio
 import os
+from collections.abc import AsyncGenerator
+from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,6 +65,7 @@ from services.eep.app.policy_api import router as policy_router
 from services.eep.app.promotion_api import router as promotion_router
 from services.eep.app.retraining_api import router as retraining_api_router
 from services.eep.app.retraining_webhook import router as retraining_webhook_router
+from services.eep.app.service_status import run_service_status_loop
 from services.eep.app.uploads import router as uploads_router
 from shared.logging_config import setup_logging
 from shared.middleware import configure_observability
@@ -78,6 +82,19 @@ def _get_cors_allow_origins() -> list[str]:
     return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
 
+@asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
+    service_status_task = asyncio.create_task(run_service_status_loop())
+    try:
+        yield
+    finally:
+        service_status_task.cancel()
+        try:
+            await service_status_task
+        except asyncio.CancelledError:
+            pass
+
+
 app = FastAPI(
     title="EEP — Execution Engine Pipeline",
     version="0.1.0",
@@ -86,6 +103,7 @@ app = FastAPI(
         "Owns job management, page routing, quality gates, artifact persistence, "
         "lineage recording, and all acceptance decisions."
     ),
+    lifespan=_lifespan,
 )
 
 cors_allow_origins = _get_cors_allow_origins()
