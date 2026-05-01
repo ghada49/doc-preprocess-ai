@@ -49,6 +49,7 @@ from shared.metrics import EEP_GEOMETRY_SELECTION_ROUTE
 from services.eep.app.gates.geometry_selection import (
     GeometrySelectionResult,
     PreprocessingGateConfig,
+    _area_fraction_bounds_for_material,
     run_geometry_selection,
 )
 from services.eep_worker.app.circuit_breaker import CircuitBreaker
@@ -442,6 +443,20 @@ def _observe_geometry_metrics(
     EEP_GEOMETRY_SELECTION_ROUTE.labels(route=route_decision).inc()
 
 
+def _page_area_fractions(response: GeometryResponse | None) -> list[float]:
+    if response is None:
+        return []
+    return [region.page_area_fraction for region in response.pages]
+
+
+def _has_area_fraction_failure(selection_result: GeometrySelectionResult) -> bool:
+    for sanity in selection_result.sanity_results.values():
+        failed = sanity.get("failed_checks")
+        if isinstance(failed, list) and "area_fraction_plausible" in failed:
+            return True
+    return False
+
+
 # ── Main entry point ───────────────────────────────────────────────────────────
 
 
@@ -554,14 +569,37 @@ async def invoke_geometry_services(
     # ── Debug: log geometry gate outcome ──────────────────────────────────────
     logger.info(
         "geometry_gate: job=%s page=%d route=%s review=%s sanity=%s "
-        "tta_var=%s structural_agreement=%s",
+        "tta_var=%s structural_agreement=%s area_fractions=%s",
         job_id, page_number,
         selection_result.route_decision,
         selection_result.review_reason,
         selection_result.sanity_results,
         selection_result.tta_variance_per_model,
         selection_result.structural_agreement,
+        {
+            "iep1a": _page_area_fractions(outcome_a.response),
+            "iep1b": _page_area_fractions(outcome_b.response),
+        },
     )
+    if material_type == "newspaper" and _has_area_fraction_failure(selection_result):
+        logger.warning(
+            "newspaper_area_fraction_gate: job=%s page=%d route=%s review=%s "
+            "structural_agreement=%s area_bounds=%s mild_iep1b_min=%s "
+            "iep1a_area_fractions=%s iep1b_area_fractions=%s sanity=%s",
+            job_id,
+            page_number,
+            selection_result.route_decision,
+            selection_result.review_reason,
+            selection_result.structural_agreement,
+            _area_fraction_bounds_for_material(
+                gate_config or PreprocessingGateConfig(),
+                "newspaper",
+            ),
+            (gate_config or PreprocessingGateConfig()).newspaper_iep1b_mild_area_min_fraction,
+            _page_area_fractions(outcome_a.response),
+            _page_area_fractions(outcome_b.response),
+            selection_result.sanity_results,
+        )
 
     # ── Drift observation (best-effort; never blocks return) ─────────────────
     _observe_geometry_metrics(

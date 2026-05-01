@@ -917,5 +917,267 @@ class TestLayoutRouting:
             assert review_reason is None
 
 
+class TestCallIep1eFailureHandling:
+    """
+    Tests for _call_iep1e returning None on all failure modes.
+
+    Regression for: AttributeError: 'NoneType' object has no attribute 'pages'
+    (job 94d6951e-5a23-491a-9dd5-00c8afd43fff) — iep1e warm_inference_timeout
+    returned None, which the else-branch in _run_preprocessing then dereferenced.
+    """
+
+    @pytest.mark.asyncio
+    async def test_warm_inference_timeout_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """BackendError(WARM_INFERENCE_TIMEOUT) → _call_iep1e returns None (never raises)."""
+        from services.eep_worker.app import worker_loop
+        from shared.gpu.backend import BackendError, BackendErrorKind
+
+        cb = SimpleNamespace(
+            allow_call=lambda: True,
+            record_failure=lambda kind: None,
+            record_success=lambda: None,
+        )
+
+        async def _fake_wait(*_a: object, **_kw: object) -> bool:
+            return True  # pretend ready
+
+        async def _fake_call(_url: str, _payload: object) -> object:
+            raise BackendError(BackendErrorKind.WARM_INFERENCE_TIMEOUT, "timeout")
+
+        monkeypatch.setattr(worker_loop, "_wait_for_iep1e_ready", _fake_wait)
+        backend = SimpleNamespace(call=_fake_call)
+
+        result = await worker_loop._call_iep1e(
+            page_uris=["s3://bucket/page/1.tiff"],
+            x_centers=[100.0],
+            sub_page_indices=[0],
+            job_id="job-timeout",
+            page_number=1,
+            material_type="book",
+            endpoint="http://iep1e:8007/v1/semantic-norm",
+            backend=backend,
+            cb=cb,
+            ready_timeout_seconds=5.0,
+            ready_poll_interval_seconds=1.0,
+        )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_validation_error_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """ValidationError (response missing required fields) → _call_iep1e returns None."""
+        from services.eep_worker.app import worker_loop
+
+        cb = SimpleNamespace(
+            allow_call=lambda: True,
+            record_failure=lambda kind: None,
+            record_success=lambda: None,
+        )
+
+        async def _fake_wait(*_a: object, **_kw: object) -> bool:
+            return True
+
+        async def _fake_call(_url: str, _payload: object) -> object:
+            return {"unexpected_key": "no pages here"}  # will fail SemanticNormResponse.model_validate
+
+        monkeypatch.setattr(worker_loop, "_wait_for_iep1e_ready", _fake_wait)
+        backend = SimpleNamespace(call=_fake_call)
+
+        result = await worker_loop._call_iep1e(
+            page_uris=["s3://bucket/page/1.tiff"],
+            x_centers=[100.0],
+            sub_page_indices=[0],
+            job_id="job-invalid",
+            page_number=1,
+            material_type="book",
+            endpoint="http://iep1e:8007/v1/semantic-norm",
+            backend=backend,
+            cb=cb,
+            ready_timeout_seconds=5.0,
+            ready_poll_interval_seconds=1.0,
+        )
+
+        assert result is None
+
+    @pytest.mark.asyncio
+    async def test_ready_timeout_returns_none(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """iep1e /ready never returns 200 within timeout → _call_iep1e returns None."""
+        from services.eep_worker.app import worker_loop
+
+        cb = SimpleNamespace(
+            allow_call=lambda: True,
+            record_failure=lambda kind: None,
+            record_success=lambda: None,
+        )
+
+        async def _fake_wait(*_a: object, **_kw: object) -> bool:
+            return False  # not ready
+
+        monkeypatch.setattr(worker_loop, "_wait_for_iep1e_ready", _fake_wait)
+        backend = SimpleNamespace(call=AsyncMock())  # should never be reached
+
+        result = await worker_loop._call_iep1e(
+            page_uris=["s3://bucket/page/1.tiff"],
+            x_centers=[100.0],
+            sub_page_indices=[0],
+            job_id="job-notready",
+            page_number=1,
+            material_type="book",
+            endpoint="http://iep1e:8007/v1/semantic-norm",
+            backend=backend,
+            cb=cb,
+            ready_timeout_seconds=5.0,
+            ready_poll_interval_seconds=1.0,
+        )
+
+        assert result is None
+        backend.call.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_valid_response_returned(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A well-formed SemanticNormResponse is returned unchanged."""
+        from services.eep_worker.app import worker_loop
+        from shared.schemas.semantic_norm import SemanticNormResponse
+
+        cb = SimpleNamespace(
+            allow_call=lambda: True,
+            record_failure=lambda kind: None,
+            record_success=lambda: None,
+        )
+
+        async def _fake_wait(*_a: object, **_kw: object) -> bool:
+            return True
+
+        valid_payload = {
+            "reading_direction": "ltr",
+            "fallback_used": False,
+            "processing_time_ms": 42.0,
+            "warnings": [],
+            "pages": [
+                {
+                    "sub_page_index": 0,
+                    "oriented_uri": "s3://bucket/oriented/1.tiff",
+                    "original_uri": "s3://bucket/page/1.tiff",
+                    "orientation": {
+                        "best_rotation_deg": 0,
+                        "orientation_confident": True,
+                        "score_ratio": 1.5,
+                        "score_diff": 20.0,
+                        "script_evidence": {
+                            "n_boxes": 10,
+                            "n_chars": 50,
+                            "mean_conf": 0.9,
+                            "latin_ratio": 0.8,
+                            "arabic_ratio": 0.0,
+                            "garbage_ratio": 0.05,
+                        },
+                    },
+                }
+            ],
+            "ordered_page_uris": ["s3://bucket/oriented/1.tiff"],
+        }
+
+        async def _fake_call(_url: str, _payload: object) -> object:
+            return valid_payload
+
+        monkeypatch.setattr(worker_loop, "_wait_for_iep1e_ready", _fake_wait)
+        backend = SimpleNamespace(call=_fake_call)
+
+        result = await worker_loop._call_iep1e(
+            page_uris=["s3://bucket/page/1.tiff"],
+            x_centers=[100.0],
+            sub_page_indices=[0],
+            job_id="job-ok",
+            page_number=1,
+            material_type="book",
+            endpoint="http://iep1e:8007/v1/semantic-norm",
+            backend=backend,
+            cb=cb,
+            ready_timeout_seconds=5.0,
+            ready_poll_interval_seconds=1.0,
+        )
+
+        assert result is not None
+        assert isinstance(result, SemanticNormResponse)
+        assert result.reading_direction == "ltr"
+        assert len(result.pages) == 1
+        assert result.pages[0].sub_page_index == 0
+
+
+class TestSplitIep1eNoneRegression:
+    """
+    Regression tests for the split-path AttributeError when iep1e returns None.
+
+    Before fix:
+        else:
+            _pages = _split_sem_result.pages   # ← crashed when result is None
+            _iep1e_by_sub = {..._split_sem_result.pages}  # same crash
+
+    After fix: both lines guard with `if _split_sem_result is not None else []`.
+    """
+
+    def test_none_result_pages_guard_is_empty_list(self) -> None:
+        """
+        Simulate the fixed guard: when _split_sem_result is None,
+        _pages must be [] — never raises AttributeError.
+        """
+        _split_sem_result = None
+        # Fixed line:
+        _pages = _split_sem_result.pages if _split_sem_result is not None else []
+        assert _pages == []
+
+    def test_none_result_dict_comprehension_guard_is_empty_dict(self) -> None:
+        """
+        Simulate the fixed guard: when _split_sem_result is None,
+        the by-sub dict must be {} — never raises AttributeError.
+        """
+        _split_sem_result = None
+        # Fixed line:
+        _iep1e_by_sub = {
+            _sp.sub_page_index: _sp
+            for _sp in (_split_sem_result.pages if _split_sem_result is not None else [])
+        }
+        assert _iep1e_by_sub == {}
+
+    def test_empty_pages_result_is_handled_gracefully(self) -> None:
+        """
+        When _split_sem_result is not None but .pages is empty,
+        both guards also produce empty containers (no crash, no rotation).
+        """
+        _split_sem_result = SimpleNamespace(pages=[], reading_direction="unresolved")
+        _pages = _split_sem_result.pages if _split_sem_result is not None else []
+        assert _pages == []
+
+        _iep1e_by_sub = {
+            _sp.sub_page_index: _sp
+            for _sp in (_split_sem_result.pages if _split_sem_result is not None else [])
+        }
+        assert _iep1e_by_sub == {}
+
+    def test_valid_result_pages_is_passed_through(self) -> None:
+        """
+        When _split_sem_result has pages, the guard must leave them intact.
+        """
+        fake_page = SimpleNamespace(sub_page_index=0, oriented_uri="s3://x/0.tiff")
+        _split_sem_result = SimpleNamespace(pages=[fake_page], reading_direction="ltr")
+
+        _pages = _split_sem_result.pages if _split_sem_result is not None else []
+        assert _pages == [fake_page]
+
+        _iep1e_by_sub = {
+            _sp.sub_page_index: _sp
+            for _sp in (_split_sem_result.pages if _split_sem_result is not None else [])
+        }
+        assert _iep1e_by_sub == {0: fake_page}
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

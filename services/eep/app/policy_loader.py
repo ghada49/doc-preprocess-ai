@@ -27,6 +27,7 @@ Direct name matches (YAML key equals dataclass field name):
   preprocessing.page_area_preference_threshold → page_area_preference_threshold
   preprocessing.geometry_sanity_area_min_fraction → geometry_sanity_area_min_fraction
   preprocessing.geometry_sanity_area_max_fraction → geometry_sanity_area_max_fraction
+  preprocessing.area_fraction_bounds           → area_fraction_bounds
   preprocessing.artifact_validation_threshold  → artifact_validation_threshold
   preprocessing.aspect_ratio_bounds            → aspect_ratio_bounds
 
@@ -72,6 +73,7 @@ from sqlalchemy.orm import Session
 
 from services.eep.app.db.models import PolicyVersion
 from services.eep.app.gates.geometry_selection import (
+    _DEFAULT_AREA_FRACTION_BOUNDS,
     _DEFAULT_ASPECT_RATIO_BOUNDS,
     PreprocessingGateConfig,
 )
@@ -132,6 +134,36 @@ def _parse_aspect_ratio_bounds(
     return result
 
 
+def _parse_area_fraction_bounds(
+    raw: Any,
+    default: dict[str, tuple[float, float]],
+) -> dict[str, tuple[float, float]]:
+    """
+    Parse area_fraction_bounds from policy YAML value.
+
+    Expected shape:
+        book: [0.15, 1.0]
+        newspaper: [0.10, 1.0]
+        archival_document: [0.15, 1.0]
+        microfilm: [0.15, 1.0]
+
+    Partial overrides are merged with defaults.
+    """
+    if not isinstance(raw, dict):
+        return dict(default)
+    result: dict[str, tuple[float, float]] = dict(default)
+    for material_type, bounds in raw.items():
+        if isinstance(bounds, list | tuple) and len(bounds) == 2:
+            try:
+                lo = float(bounds[0])
+                hi = float(bounds[1])
+                if 0.0 <= lo <= hi <= 1.0:
+                    result[material_type] = (lo, hi)
+            except (TypeError, ValueError):
+                pass
+    return result
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
@@ -181,6 +213,22 @@ def parse_gate_config(
     aspect_ratio_bounds = _parse_aspect_ratio_bounds(
         pre.get("aspect_ratio_bounds"),
         _DEFAULT_ASPECT_RATIO_BOUNDS,
+    )
+    area_fraction_bounds = _parse_area_fraction_bounds(
+        pre.get("area_fraction_bounds"),
+        _DEFAULT_AREA_FRACTION_BOUNDS,
+    )
+    newspaper_iep1b_mild_area_min_fraction = _safe_float(
+        pre.get("newspaper_iep1b_mild_area_min_fraction"),
+        defaults.newspaper_iep1b_mild_area_min_fraction,
+    )
+    newspaper_strong_iep1a_geometry_confidence_min = _safe_float(
+        pre.get("newspaper_strong_iep1a_geometry_confidence_min"),
+        defaults.newspaper_strong_iep1a_geometry_confidence_min,
+    )
+    newspaper_strong_iep1a_tta_agreement_min = _safe_float(
+        pre.get("newspaper_strong_iep1a_tta_agreement_min"),
+        defaults.newspaper_strong_iep1a_tta_agreement_min,
     )
 
     # ── Spec YAML aliases (spec key ≠ dataclass field name) ──────────────────
@@ -251,7 +299,13 @@ def parse_gate_config(
     return PreprocessingGateConfig(
         geometry_sanity_area_min_fraction=geometry_sanity_area_min_fraction,
         geometry_sanity_area_max_fraction=geometry_sanity_area_max_fraction,
+        area_fraction_bounds=area_fraction_bounds,
         aspect_ratio_bounds=aspect_ratio_bounds,
+        newspaper_iep1b_mild_area_min_fraction=newspaper_iep1b_mild_area_min_fraction,
+        newspaper_strong_iep1a_geometry_confidence_min=(
+            newspaper_strong_iep1a_geometry_confidence_min
+        ),
+        newspaper_strong_iep1a_tta_agreement_min=newspaper_strong_iep1a_tta_agreement_min,
         split_confidence_threshold=split_confidence_threshold,
         tta_variance_ceiling=tta_variance_ceiling,
         page_area_preference_threshold=page_area_preference_threshold,

@@ -402,6 +402,49 @@ def _runpod_pod_running_and_healthy(api_key: str, pod_id: str, health_url: str) 
         return False
 
 
+def _runpod_role_short(service_name: str) -> str:
+    """Map libraryai-iep0 → iep0 for RunPod S3 bookkeeping."""
+    if service_name.endswith("iep0"):
+        return "iep0"
+    if service_name.endswith("iep1a"):
+        return "iep1a"
+    if service_name.endswith("iep1b"):
+        return "iep1b"
+    return "unknown"
+
+
+def _merge_put_runpod_pods_s3(
+    region: str,
+    bucket: str,
+    *,
+    append_entries: list[dict[str, str]],
+    remove_pod_ids: frozenset[str],
+) -> None:
+    """Read S3 state, merge v2 append/remove, write back."""
+    import boto3  # noqa: PLC0415
+
+    from shared.runpod_pods_state import (  # noqa: PLC0415
+        json_dumps_state,
+        json_loads_state,
+        merge_append_and_remove,
+    )
+
+    key = os.environ.get("RUNPOD_PODS_STATE_KEY", "ops/runpod-pods.json")
+    s3 = boto3.client("s3", region_name=region)
+    existing: dict = {}
+    try:
+        obj = s3.get_object(Bucket=bucket, Key=key)
+        existing = json_loads_state(obj["Body"].read())
+    except Exception:
+        existing = {}
+    merged = merge_append_and_remove(
+        existing,
+        append=append_entries,
+        remove_pod_ids=remove_pod_ids,
+    )
+    s3.put_object(Bucket=bucket, Key=key, Body=json_dumps_state(merged))
+
+
 def _wait_runpod_iep_ready_or_replace(
     api_key: str,
     pod_id: str,
@@ -410,6 +453,7 @@ def _wait_runpod_iep_ready_or_replace(
     image: str,
     gpu_type_ids: list[str],
     cloud_types: list[str],
+    bookkeeping: dict[str, list | set] | None = None,
 ) -> str:
     """
     Poll until the pod is RUNNING and answers GET /health, or each
@@ -447,10 +491,23 @@ def _wait_runpod_iep_ready_or_replace(
             window + 1,
             max_windows,
         )
+        if bookkeeping is not None:
+            bookkeeping["terminated_ids"].add(pod_id)
         _terminate_single_runpod_pod(api_key, pod_id)
         pod_id = _create_runpod_pod_with_fallback(
             api_key, name, image, port, gpu_type_ids, cloud_types
         )
+        if bookkeeping is not None:
+            from shared.runpod_pods_state import iso_now_utc  # noqa: PLC0415
+
+            bookkeeping["append_entries"].append(
+                {
+                    "role": _runpod_role_short(name),
+                    "pod_id": pod_id,
+                    "created_at": iso_now_utc(),
+                    "source": "normal_scaler_replace",
+                }
+            )
         health_url = f"https://{pod_id}-{port}.proxy.runpod.net/health"
 
     raise RuntimeError(f"RunPod {name}: internal wait loop exited unexpectedly")
@@ -458,7 +515,6 @@ def _wait_runpod_iep_ready_or_replace(
 
 def _create_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
     """Create RunPod pods for iep0, iep1a, iep1b. Returns (iep0_url, iep1a_url, iep1b_url)."""
-    import boto3  # noqa: PLC0415
 
     gpu_type_ids = _runpod_gpu_type_candidates()
     cloud_types = _runpod_cloud_type_candidates()
@@ -475,14 +531,28 @@ def _create_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
     )
 
     pod_ids: dict[str, str] = {}
+    bk: dict[str, object] = {"terminated_ids": set(), "append_entries": []}
+    from shared.runpod_pods_state import iso_now_utc  # noqa: PLC0415
+
+    append_entries: list = bk["append_entries"]  # type: ignore[assignment]
+
     for name, image, port in _IEP_PODS:
-        pod_ids[name] = _create_runpod_pod_with_fallback(
+        pid = _create_runpod_pod_with_fallback(
             api_key,
             name,
             image,
             port,
             gpu_type_ids,
             cloud_types,
+        )
+        pod_ids[name] = pid
+        append_entries.append(
+            {
+                "role": _runpod_role_short(name),
+                "pod_id": pid,
+                "created_at": iso_now_utc(),
+                "source": "normal_scaler",
+            }
         )
 
     for name, image, port in _IEP_PODS:
@@ -494,29 +564,29 @@ def _create_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
             image,
             gpu_type_ids,
             cloud_types,
+            bookkeeping=bk,
         )
 
     iep0_url  = f"https://{pod_ids['libraryai-iep0']}-8006.proxy.runpod.net"
     iep1a_url = f"https://{pod_ids['libraryai-iep1a']}-8001.proxy.runpod.net"
     iep1b_url = f"https://{pod_ids['libraryai-iep1b']}-8002.proxy.runpod.net"
 
-    # Persist pod IDs so scale-down workflow can terminate them
+    # Persist pod IDs so scale-down workflow can terminate them (append-merge v2)
     try:
-        import json  # noqa: PLC0415
+        terminated_raw = bk["terminated_ids"]
+        append_entries_raw = bk["append_entries"]
+        assert isinstance(terminated_raw, set)
+        assert isinstance(append_entries_raw, list)
         bucket = os.environ.get("S3_BUCKET_NAME", "libraryai2")
-        s3 = boto3.client("s3", region_name=region)
-        s3.put_object(
-            Bucket=bucket,
-            Key="ops/runpod-pods.json",
-            Body=json.dumps({
-                "iep0":  pod_ids["libraryai-iep0"],
-                "iep1a": pod_ids["libraryai-iep1a"],
-                "iep1b": pod_ids["libraryai-iep1b"],
-            }).encode(),
+        _merge_put_runpod_pods_s3(
+            region,
+            bucket,
+            append_entries=append_entries_raw,
+            remove_pod_ids=frozenset(terminated_raw),
         )
-        logger.info("normal_scaler: RunPod pod IDs saved to s3://%s/ops/runpod-pods.json", bucket)
+        logger.info("normal_scaler: RunPod pod state merged to s3://%s/ops/runpod-pods.json", bucket)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("normal_scaler: could not save pod IDs to S3: %s", exc)
+        logger.warning("normal_scaler: could not merge RunPod pod state to S3: %s", exc)
 
     return iep0_url, iep1a_url, iep1b_url
 
@@ -1046,7 +1116,6 @@ def _runpod_gpu_type_candidates() -> list[str]:
 
 def _resume_existing_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
     """Resume known RunPod pods and return their stable proxy URLs."""
-    import boto3  # noqa: PLC0415
     import httpx  # noqa: PLC0415
 
     pods = {
@@ -1084,17 +1153,23 @@ def _resume_existing_runpod_pods(api_key: str, region: str) -> tuple[str, str, s
         logger.info("normal_scaler: RunPod pod resumed for %s id=%s status=%s", name, pod_id, status)
 
     try:
-        import json  # noqa: PLC0415
+        from shared.runpod_pods_state import iso_now_utc  # noqa: PLC0415
+
         bucket = os.environ.get("S3_BUCKET_NAME", "libraryai2")
-        s3 = boto3.client("s3", region_name=region)
-        s3.put_object(
-            Bucket=bucket,
-            Key="ops/runpod-pods.json",
-            Body=json.dumps({name: pod_id for name, (pod_id, _) in pods.items()}).encode(),
+        entries = [
+            {"role": "iep0", "pod_id": pods["iep0"][0], "created_at": iso_now_utc(), "source": "normal_scaler_existing"},
+            {"role": "iep1a", "pod_id": pods["iep1a"][0], "created_at": iso_now_utc(), "source": "normal_scaler_existing"},
+            {"role": "iep1b", "pod_id": pods["iep1b"][0], "created_at": iso_now_utc(), "source": "normal_scaler_existing"},
+        ]
+        _merge_put_runpod_pods_s3(
+            region,
+            bucket,
+            append_entries=entries,
+            remove_pod_ids=frozenset(),
         )
-        logger.info("normal_scaler: existing RunPod pod IDs saved to s3://%s/ops/runpod-pods.json", bucket)
+        logger.info("normal_scaler: existing RunPod pod state merged to s3://%s/ops/runpod-pods.json", bucket)
     except Exception as exc:  # noqa: BLE001
-        logger.warning("normal_scaler: could not save existing pod IDs to S3: %s", exc)
+        logger.warning("normal_scaler: could not merge existing RunPod pod state to S3: %s", exc)
 
     return (
         f"https://{pods['iep0'][0]}-8006.proxy.runpod.net",

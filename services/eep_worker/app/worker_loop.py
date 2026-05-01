@@ -1640,7 +1640,9 @@ async def _run_preprocessing(
                     # it cannot self-determine its orientation.  Apply the
                     # same rotation as the confident sibling so both halves
                     # are consistently oriented.
-                    _pages = _split_sem_result.pages
+                    # Guard: _split_sem_result is None when iep1e timed out or
+                    # failed entirely; skip rotation inheritance in that case.
+                    _pages = _split_sem_result.pages if _split_sem_result is not None else []
                     if len(_pages) == 2:
                         _p0, _p1 = _pages[0], _pages[1]
                         _confident_page = None
@@ -1725,7 +1727,8 @@ async def _run_preprocessing(
                     #   270° → x_post = y_pre            (top → left)
                     try:
                         _iep1e_by_sub = {
-                            _sp.sub_page_index: _sp for _sp in _split_sem_result.pages
+                            _sp.sub_page_index: _sp
+                            for _sp in (_split_sem_result.pages if _split_sem_result is not None else [])
                         }
                         _rot_p0 = _iep1e_by_sub.get(0)
                         _rot_p1 = _iep1e_by_sub.get(1)

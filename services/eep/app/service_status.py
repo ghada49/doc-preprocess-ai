@@ -69,6 +69,8 @@ def _read_runpod_pod_ids_from_s3() -> dict[str, str]:
     try:
         import boto3  # noqa: PLC0415
 
+        from shared.runpod_pods_state import latest_pod_id_per_role  # noqa: PLC0415
+
         response = boto3.client("s3", region_name=region).get_object(Bucket=bucket, Key=key)
         data = json.loads(response["Body"].read().decode("utf-8"))
     except Exception as exc:  # noqa: BLE001
@@ -77,11 +79,7 @@ def _read_runpod_pod_ids_from_s3() -> dict[str, str]:
 
     if not isinstance(data, Mapping):
         return {}
-    return {
-        service: str(data.get(service, "")).strip()
-        for service in _RUNPOD_PORTS
-        if str(data.get(service, "")).strip()
-    }
+    return latest_pod_id_per_role(data)
 
 
 def _runpod_targets() -> dict[str, str]:

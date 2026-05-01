@@ -202,12 +202,11 @@ jobs:
             ACTION_PAST="Terminated"
           fi
 
-          # Read pod IDs saved by scale-up
+          # Read pod IDs: terminate mode uses S3 (v1 + v2 list); existing mode uses repo vars (one id per role).
+          POD_JSON="{}"
           if [ "$ACTION" = "terminate" ]; then
             POD_JSON=$(aws s3 cp s3://libraryai2/ops/runpod-pods.json - 2>/dev/null || echo "{}")
-            IEP0_POD=$(echo  "$POD_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('iep0',''))"  2>/dev/null || true)
-            IEP1A_POD=$(echo "$POD_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('iep1a',''))" 2>/dev/null || true)
-            IEP1B_POD=$(echo "$POD_JSON" | python3 -c "import sys,json; print(json.load(sys.stdin).get('iep1b',''))" 2>/dev/null || true)
+            ALL_POD_IDS=$(echo "$POD_JSON" | python3 "${GITHUB_WORKSPACE}/scripts/runpod_s3_state.py" list-ids)
           fi
 
           terminate_pod() {
@@ -230,13 +229,25 @@ jobs:
             echo "$ACTION_PAST $NAME pod: $POD_ID"
           }
 
-          terminate_pod "$IEP0_POD"  "iep0"
-          terminate_pod "$IEP1A_POD" "iep1a"
-          terminate_pod "$IEP1B_POD" "iep1b"
+          if [ "$ACTION" = "terminate" ]; then
+            if [ -z "${ALL_POD_IDS//[$'\t\r\n']/}" ]; then
+              echo "No RunPod pod IDs in s3://libraryai2/ops/runpod-pods.json — nothing to terminate."
+            else
+              while IFS= read -r POD_ID; do
+                [ -z "$POD_ID" ] && continue
+                terminate_pod "$POD_ID" "runpod"
+              done <<< "$ALL_POD_IDS"
+            fi
+          else
+            terminate_pod "$IEP0_POD"  "iep0"
+            terminate_pod "$IEP1A_POD" "iep1a"
+            terminate_pod "$IEP1B_POD" "iep1b"
+          fi
 
           if [ "$ACTION" = "terminate" ]; then
-            # Clean up the pod IDs file
-            aws s3 rm s3://libraryai2/ops/runpod-pods.json 2>/dev/null || true
+            # Replace bookkeeping with empty v2 (safe clear; keeps schema for scale-up merge).
+            printf '%s\n' '{"version":2,"pods":[]}' | aws s3 cp - s3://libraryai2/ops/runpod-pods.json
+            echo "RunPod S3 bookkeeping cleared (version 2, empty pods array)."
           fi
           echo "RunPod pods handled with action=$ACTION."
 
