@@ -43,9 +43,9 @@ export function useArtifactJson<T>(
 
 /**
  * Fetch a browser-displayable PNG preview for any stored artifact URI.
- * Returns { blobUrl } — a blob: URL safe to use in <img src={...}>.
- * Blob URLs are automatically revoked when the URI changes or the
- * component using this hook unmounts (via the cleanup effect below).
+ * Returns { blobUrl } — a browser-safe URL for <img src={...}>. S3-backed
+ * previews normally use a cached presigned PNG URL; legacy streamed previews
+ * are converted into blob: URLs and revoked by the cleanup effect below.
  */
 export function useArtifactPreview(
   uri: string | null,
@@ -78,13 +78,15 @@ export function useArtifactPreview(
   // This avoids reusing revoked blob: URLs when the user switches between
   // sources and later returns to a previously viewed image.
   const blobUrl = useMemo(
-    () => (result.data?.blob ? URL.createObjectURL(result.data.blob) : null),
-    [result.data?.blob]
+    () =>
+      result.data?.url ??
+      (result.data?.blob ? URL.createObjectURL(result.data.blob) : null),
+    [result.data?.blob, result.data?.url]
   );
 
   useEffect(() => {
     return () => {
-      if (blobUrl) {
+      if (blobUrl?.startsWith("blob:")) {
         URL.revokeObjectURL(blobUrl);
       }
     };
@@ -99,6 +101,10 @@ export function useArtifactPreview(
             blobUrl,
             originalWidth: result.data.originalWidth,
             originalHeight: result.data.originalHeight,
+            previewWidth: result.data.previewWidth,
+            previewHeight: result.data.previewHeight,
+            scaleX: result.data.scaleX,
+            scaleY: result.data.scaleY,
           }
         : undefined,
   };

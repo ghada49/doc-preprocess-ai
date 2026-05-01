@@ -46,14 +46,16 @@ Exported:
 from __future__ import annotations
 
 import io
+import hashlib
+import json
 import logging
 import os
-from typing import Protocol, cast
+from typing import Literal, Protocol, cast
 from urllib.parse import urlparse
 
 import boto3
 from fastapi import APIRouter, Depends, HTTPException, status
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -147,7 +149,22 @@ class ArtifactPreviewRequest(BaseModel):
 
     uri: str
     page_index: int = 0
-    max_width: int | None = None
+    max_width: int | None = 1600
+    return_url: bool = False
+
+
+class ArtifactPreviewResponse(BaseModel):
+    preview_url: str
+    preview_uri: str
+    expires_in: int
+    width: int
+    height: int
+    source_width: int
+    source_height: int
+    scale_x: float
+    scale_y: float
+    cache_hit: bool
+    format: Literal["png"] = "png"
 
 
 # ---------------------------------------------------------------------------
@@ -173,6 +190,93 @@ def _content_type_hint(uri: str) -> str:
         if path.endswith(ext):
             return ct
     return _DEFAULT_CONTENT_TYPE
+
+
+def _normalize_preview_max_width(max_width: int | None) -> int | None:
+    if max_width is None:
+        return None
+    return max(1, min(int(max_width), 2400))
+
+
+def _preview_cache_uri(
+    source_uri: str,
+    source_identity: str,
+    page_index: int,
+    max_width: int | None,
+) -> str | None:
+    parsed = urlparse(source_uri)
+    if parsed.scheme != "s3":
+        return None
+    width_part = "original" if max_width is None else str(max_width)
+    digest_input = f"{source_uri}|{source_identity}".encode("utf-8")
+    digest = hashlib.sha256(digest_input).hexdigest()[:24]
+    return f"s3://{parsed.netloc}/previews/artifacts/{digest}/p{page_index}-w{width_part}.png"
+
+
+def _preview_metadata_uri(preview_uri: str) -> str:
+    return f"{preview_uri}.json"
+
+
+def _s3_object_exists(uri: str) -> bool:
+    bucket, key = _split_s3_uri(uri)
+    try:
+        s3 = _s3_client()
+        head_object = getattr(s3, "head_object")
+        head_object(Bucket=bucket, Key=key)
+        return True
+    except Exception:
+        return False
+
+
+def _s3_object_identity(uri: str) -> str:
+    bucket, key = _split_s3_uri(uri)
+    try:
+        s3 = _s3_client()
+        head_object = getattr(s3, "head_object")
+        response = head_object(Bucket=bucket, Key=key)
+    except Exception as exc:
+        logger.error("artifact_preview: source head failed uri=%s - %s", uri, exc)
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Storage service unavailable; could not inspect artifact.",
+        ) from exc
+
+    etag = str(response.get("ETag") or "").strip('"')
+    version_id = str(response.get("VersionId") or "")
+    last_modified = str(response.get("LastModified") or "")
+    content_length = str(response.get("ContentLength") or "")
+    return "|".join((etag, version_id, last_modified, content_length))
+
+
+def _split_s3_uri(uri: str) -> tuple[str, str]:
+    parsed = urlparse(uri)
+    if parsed.scheme != "s3":
+        raise ValueError(f"Unsupported URI scheme {parsed.scheme!r}; only s3:// is supported.")
+    return parsed.netloc, parsed.path.lstrip("/")
+
+
+def _put_s3_preview(uri: str, data: bytes, content_type: str) -> None:
+    bucket, key = _split_s3_uri(uri)
+    s3 = _s3_client()
+    put_object = getattr(s3, "put_object")
+    put_object(
+        Bucket=bucket,
+        Key=key,
+        Body=data,
+        ContentType=content_type,
+        CacheControl="private, max-age=31536000, immutable",
+    )
+
+
+def _presign_s3_uri(uri: str, expires_in: int) -> str:
+    bucket, key = _split_s3_uri(uri)
+    s3 = _s3_client()
+    read_url: str = s3.generate_presigned_url(
+        "get_object",
+        Params={"Bucket": bucket, "Key": key},
+        ExpiresIn=expires_in,
+    )
+    return rewrite_presigned_url_for_public_endpoint(read_url)
 
 
 def _uri_to_s3_key(uri: str, bucket: str) -> str:
@@ -371,7 +475,7 @@ def artifact_preview(
     body: ArtifactPreviewRequest,
     db: Session = Depends(get_session),
     user: CurrentUser = Depends(require_user),
-) -> StreamingResponse:
+) -> StreamingResponse | JSONResponse:
     """
     Download the artifact at *uri*, convert it to PNG in memory, and stream
     the PNG bytes back.  No files are written to disk or re-stored.
@@ -410,6 +514,51 @@ def artifact_preview(
     # ── Authorize ─────────────────────────────────────────────────────────────
     _assert_uri_access(db, uri, user)
 
+    max_width = _normalize_preview_max_width(body.max_width)
+    source_identity = (
+        _s3_object_identity(uri)
+        if body.return_url and _parsed_uri.scheme == "s3"
+        else None
+    )
+    cache_uri = (
+        _preview_cache_uri(uri, source_identity, body.page_index, max_width)
+        if source_identity
+        else None
+    )
+    metadata_uri = _preview_metadata_uri(cache_uri) if cache_uri else None
+
+    if cache_uri and metadata_uri and _s3_object_exists(cache_uri):
+        try:
+            metadata = json.loads(get_backend(metadata_uri).get_bytes(metadata_uri).decode("utf-8"))
+            preview_url = _presign_s3_uri(cache_uri, _READ_EXPIRES_IN)
+            logger.info(
+                "artifact_preview: cache_hit user=%s uri=%s preview_uri=%s",
+                user.user_id,
+                uri,
+                cache_uri,
+            )
+            return JSONResponse(
+                ArtifactPreviewResponse(
+                    preview_url=preview_url,
+                    preview_uri=cache_uri,
+                    expires_in=_READ_EXPIRES_IN,
+                    width=int(metadata["width"]),
+                    height=int(metadata["height"]),
+                    source_width=int(metadata["source_width"]),
+                    source_height=int(metadata["source_height"]),
+                    scale_x=float(metadata["scale_x"]),
+                    scale_y=float(metadata["scale_y"]),
+                    cache_hit=True,
+                ).model_dump()
+            )
+        except Exception as exc:
+            logger.warning(
+                "artifact_preview: cached preview metadata unavailable uri=%s preview_uri=%s - %s",
+                uri,
+                cache_uri,
+                exc,
+            )
+
     # ── Fetch raw bytes ────────────────────────────────────────────────────────
     try:
         raw_bytes: bytes = get_backend(uri).get_bytes(uri)
@@ -432,9 +581,11 @@ def artifact_preview(
         original_height = int(img.height)
         if img.mode not in ("RGB", "RGBA", "L"):
             img = img.convert("RGB")
-        if body.max_width and img.width > body.max_width:
-            ratio = body.max_width / img.width
-            img = img.resize((body.max_width, int(img.height * ratio)), Image.LANCZOS)
+        if max_width and img.width > max_width:
+            ratio = max_width / img.width
+            img = img.resize((max_width, int(img.height * ratio)), Image.LANCZOS)
+        preview_width = int(img.width)
+        preview_height = int(img.height)
         buf = io.BytesIO()
         img.save(buf, format="PNG", optimize=True)
         buf.seek(0)
@@ -445,13 +596,71 @@ def artifact_preview(
             detail="Could not decode the artifact as an image.",
         ) from exc
 
-    logger.info("artifact_preview: user=%s uri=%s", user.user_id, uri)
+    scale_x = preview_width / original_width if original_width > 0 else 1.0
+    scale_y = preview_height / original_height if original_height > 0 else 1.0
+    preview_bytes = buf.getvalue()
+
+    if cache_uri and metadata_uri:
+        try:
+            metadata = {
+                "width": preview_width,
+                "height": preview_height,
+                "source_width": original_width,
+                "source_height": original_height,
+                "scale_x": scale_x,
+                "scale_y": scale_y,
+                "source_uri": uri,
+                "source_identity": source_identity,
+                "page_index": body.page_index,
+                "max_width": max_width,
+                "format": "png",
+            }
+            _put_s3_preview(cache_uri, preview_bytes, "image/png")
+            _put_s3_preview(
+                metadata_uri,
+                json.dumps(metadata, separators=(",", ":")).encode("utf-8"),
+                "application/json",
+            )
+            preview_url = _presign_s3_uri(cache_uri, _READ_EXPIRES_IN)
+            logger.info(
+                "artifact_preview: cache_miss user=%s uri=%s preview_uri=%s",
+                user.user_id,
+                uri,
+                cache_uri,
+            )
+            return JSONResponse(
+                ArtifactPreviewResponse(
+                    preview_url=preview_url,
+                    preview_uri=cache_uri,
+                    expires_in=_READ_EXPIRES_IN,
+                    width=preview_width,
+                    height=preview_height,
+                    source_width=original_width,
+                    source_height=original_height,
+                    scale_x=scale_x,
+                    scale_y=scale_y,
+                    cache_hit=False,
+                ).model_dump()
+            )
+        except Exception as exc:
+            logger.warning(
+                "artifact_preview: cache write/presign failed uri=%s preview_uri=%s - %s; falling back to stream",
+                uri,
+                cache_uri,
+                exc,
+            )
+
+    logger.info("artifact_preview: stream user=%s uri=%s", user.user_id, uri)
     return StreamingResponse(
-        buf,
+        io.BytesIO(preview_bytes),
         media_type="image/png",
         headers={
             "Cache-Control": "private, max-age=300",
             "X-Original-Width": str(original_width),
             "X-Original-Height": str(original_height),
+            "X-Preview-Width": str(preview_width),
+            "X-Preview-Height": str(preview_height),
+            "X-Preview-Scale-X": str(scale_x),
+            "X-Preview-Scale-Y": str(scale_y),
         },
     )

@@ -249,7 +249,7 @@ export default function PtiffQaViewer({ jobId }: PtiffQaViewerProps) {
               containerClassName="h-[520px] w-full max-w-xl rounded shadow-sm border border-slate-200 bg-white"
               className="object-contain"
               fallbackText="No image available yet."
-              maxWidth={2400}
+              maxWidth={1600}
             />
 
             {isFetching && (
