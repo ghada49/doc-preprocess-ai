@@ -482,7 +482,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "(sum(up{job=~\"eep-worker|eep-recovery|shadow-worker|retraining-worker\"}) OR on() vector(0)) + (sum(max by (service) (service_target_up{service=~\"iep0|iep1a|iep1b|iep1d|iep1e|iep2a|iep2b\"})) OR on() vector(0))",
+                                           "expr":  "sum(libraryai_service_up{service=~\"eep-worker|eep-recovery|shadow-worker|retraining-worker|iep0|iep1a|iep1b|iep1d|iep1e|iep2a|iep2b\"}) OR on() vector(0)",
                                            "refId":  "A"
                                        }
                                    ],
@@ -712,7 +712,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "max(up{job=\"eep\"}) OR on() vector(0)",
+                                           "expr":  "max(libraryai_service_up{service=\"eep\"}) OR on() vector(0)",
                                            "legendFormat":  "eep",
                                            "refId":  "A"
                                        },
@@ -721,7 +721,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "max(up{job=\"eep-worker\"}) OR on() vector(0)",
+                                           "expr":  "max(libraryai_service_up{service=\"eep-worker\"}) OR on() vector(0)",
                                            "legendFormat":  "eep-worker",
                                            "refId":  "B"
                                        },
@@ -730,7 +730,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "max(up{job=\"eep-recovery\"}) OR on() vector(0)",
+                                           "expr":  "max(libraryai_service_up{service=\"eep-recovery\"}) OR on() vector(0)",
                                            "legendFormat":  "eep-recovery",
                                            "refId":  "C"
                                        },
@@ -739,7 +739,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "max(up{job=\"shadow-worker\"}) OR on() vector(0)",
+                                           "expr":  "max(libraryai_service_up{service=\"shadow-worker\"}) OR on() vector(0)",
                                            "legendFormat":  "shadow-worker",
                                            "refId":  "D"
                                        },
@@ -748,7 +748,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "max(up{job=\"retraining-worker\"}) OR on() vector(0)",
+                                           "expr":  "max(libraryai_service_up{service=\"retraining-worker\"}) OR on() vector(0)",
                                            "legendFormat":  "retraining-worker",
                                            "refId":  "E"
                                        },
@@ -757,7 +757,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "max(service_target_up{service=\"iep0\"}) OR on() vector(0)",
+                                           "expr":  "max(libraryai_service_up{service=\"iep0\"}) OR on() vector(0)",
                                            "legendFormat":  "iep0",
                                            "refId":  "F"
                                        },
@@ -766,7 +766,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "max(service_target_up{service=\"iep1a\"}) OR on() vector(0)",
+                                           "expr":  "max(libraryai_service_up{service=\"iep1a\"}) OR on() vector(0)",
                                            "legendFormat":  "iep1a",
                                            "refId":  "G"
                                        },
@@ -775,7 +775,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "max(service_target_up{service=\"iep1b\"}) OR on() vector(0)",
+                                           "expr":  "max(libraryai_service_up{service=\"iep1b\"}) OR on() vector(0)",
                                            "legendFormat":  "iep1b",
                                            "refId":  "H"
                                        },
@@ -784,7 +784,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "max(service_target_up{service=\"iep1d\"}) OR on() vector(0)",
+                                           "expr":  "max(libraryai_service_up{service=\"iep1d\"}) OR on() vector(0)",
                                            "legendFormat":  "iep1d",
                                            "refId":  "I"
                                        },
@@ -793,7 +793,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "max(service_target_up{service=\"iep1e\"}) OR on() vector(0)",
+                                           "expr":  "max(libraryai_service_up{service=\"iep1e\"}) OR on() vector(0)",
                                            "legendFormat":  "iep1e",
                                            "refId":  "J"
                                        },
@@ -802,7 +802,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "max(service_target_up{service=\"iep2a\"}) OR on() vector(0)",
+                                           "expr":  "max(libraryai_service_up{service=\"iep2a\"}) OR on() vector(0)",
                                            "legendFormat":  "iep2a",
                                            "refId":  "K"
                                        },
@@ -811,7 +811,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "max(service_target_up{service=\"iep2b\"}) OR on() vector(0)",
+                                           "expr":  "max(libraryai_service_up{service=\"iep2b\"}) OR on() vector(0)",
                                            "legendFormat":  "iep2b",
                                            "refId":  "L"
                                        }
