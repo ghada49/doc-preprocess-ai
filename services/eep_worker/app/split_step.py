@@ -313,6 +313,7 @@ async def run_split_normalization(
         image_loader=image_loader,
         page_index=0,
         gate_config=gate_config,
+        session=session,
     )
 
     if left_norm.route == "accept_now":
@@ -377,6 +378,7 @@ async def run_split_normalization(
         image_loader=image_loader,
         page_index=1,
         gate_config=gate_config,
+        session=session,
     )
 
     if right_norm.route == "accept_now":

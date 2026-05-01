@@ -23,6 +23,7 @@ from typing import Any, cast
 
 from sqlalchemy.orm import Session
 
+from monitoring.drift_observer import observe_and_check
 from services.eep.app.db.lineage import confirm_layout_artifact, update_lineage_completion
 from shared.metrics import EEP_CONSENSUS_ROUTE, EEP_LAYOUT_CONSENSUS_CONFIDENCE
 from services.eep.app.db.models import JobPage, PageLineage
@@ -62,6 +63,46 @@ class LayoutStepResult:
 
     adjudication: LayoutAdjudicationResult
     routing: LayoutRoutingDecision
+
+
+_LAYOUT_CLASS_METRICS = {
+    "text_block": "text_block",
+    "title": "title",
+    "table": "table",
+    "image": "image",
+    "caption": "caption",
+}
+
+
+def _observe_layout_detector_metrics(
+    prefix: str,
+    response: LayoutDetectResponse | None,
+    session: Session,
+) -> None:
+    if response is None:
+        return
+
+    observe_and_check(f"{prefix}.mean_page_confidence", response.layout_conf_summary.mean_conf, session)
+    observe_and_check(f"{prefix}.region_count", float(len(response.regions)), session)
+
+    region_count = len(response.regions)
+    for region_type, metric_suffix in _LAYOUT_CLASS_METRICS.items():
+        count = sum(1 for region in response.regions if region.type == region_type)
+        fraction = count / region_count if region_count > 0 else 0.0
+        observe_and_check(f"{prefix}.class_fraction.{metric_suffix}", fraction, session)
+
+
+def _observe_layout_drift_metrics(
+    adjudication: LayoutAdjudicationResult,
+    routing: LayoutRoutingDecision,
+    session: Session,
+) -> None:
+    _observe_layout_detector_metrics("iep2a", adjudication.iep2a_result, session)
+    _observe_layout_detector_metrics("iep2b", adjudication.iep2b_result, session)
+
+    _regions = routing.final_layout_result
+    _mean_conf = sum(r.confidence for r in _regions) / len(_regions) if _regions else 0.0
+    observe_and_check("eep.layout_consensus_confidence", _mean_conf, session)
 
 
 async def complete_layout_detection(
@@ -271,6 +312,7 @@ def _persist_completed_layout(
             f"Could not advance page_id={page.page_id!r} from 'layout_detection' "
             f"to {routing.next_state!r}"
         )
+    _observe_layout_drift_metrics(adjudication, routing, session)
 
     page_updates: dict[str, Any] = {
         "layout_consensus_result": adjudication.model_dump(mode="json"),

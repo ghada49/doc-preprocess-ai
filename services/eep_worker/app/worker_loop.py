@@ -1848,6 +1848,7 @@ async def _run_preprocessing(
             storage=output_backend,
             image_loader=output_loader,
             gate_config=gate_config,
+            session=session,
         )
     except Exception as exc:
         raise RetryableTaskError(f"normalization failed: {exc}") from exc

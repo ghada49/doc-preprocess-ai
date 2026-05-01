@@ -84,6 +84,7 @@ from services.eep_worker.app.normalization_step import (
     NormalizationOutcome,
     run_normalization_and_first_validation,
 )
+from monitoring.drift_observer import observe_and_check
 from services.eep.app.google.document_ai import run_google_cleanup
 from services.eep_worker.app.google_config import get_google_worker_state
 from shared.gpu.backend import BackendError, BackendErrorKind, GPUBackend
@@ -569,6 +570,7 @@ async def _run_google_third_pass(
         image_loader=image_loader,
         page_index=page_index,
         gate_config=gate_config,
+        session=session,
     )
 
     if third_norm.route == "accept_now":
@@ -756,6 +758,11 @@ async def run_rescue_flow(
         }
     )
     IEP1D_QUALITY_GATE_DECISIONS.labels(decision=_iep1d_decision).inc()
+    observe_and_check(
+        "iep1d.rectification_confidence",
+        rectify_response.rectification_confidence,
+        session,
+    )
     for _reason in _rejection_reasons:
         IEP1D_REJECTION_REASONS.labels(reason=_reason).inc()
 
@@ -925,6 +932,7 @@ async def run_rescue_flow(
         image_loader=image_loader,
         page_index=page_index,
         gate_config=gate_config,
+        session=session,
     )
 
     logger.info(
