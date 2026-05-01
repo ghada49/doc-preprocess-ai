@@ -787,7 +787,7 @@
       "type": "stat"
     }
   ],
-  "refresh": "30s",
+  "refresh": "5m",
   "schemaVersion": 38,
   "tags": [
     "libraryai",

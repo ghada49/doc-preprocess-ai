@@ -14,7 +14,7 @@
 # Build context: repository root.
 # Image pushed to: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/libraryai-grafana-ecs:latest
 
-FROM grafana/grafana:latest
+FROM grafana/grafana:10.4.1
 
 ENV GF_PATHS_PROVISIONING=/etc/grafana/provisioning
 ENV PROMETHEUS_URL=http://prometheus.libraryai.local:9090

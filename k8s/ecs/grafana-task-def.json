@@ -2,8 +2,8 @@
   "family": "libraryai-grafana",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
-  "cpu": "256",
-  "memory": "512",
+  "cpu": "512",
+  "memory": "1024",
   "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
   "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/libraryai-task-role",
   "containerDefinitions": [
@@ -36,8 +36,12 @@
           "value": "false"
         },
         {
+          "name": "GF_SERVER_DOMAIN",
+          "value": "libraryai-staging-alb-520535967.eu-central-1.elb.amazonaws.com"
+        },
+        {
           "name": "GF_SERVER_ROOT_URL",
-          "value": "%(protocol)s://%(domain)s/grafana/"
+          "value": "http://libraryai-staging-alb-520535967.eu-central-1.elb.amazonaws.com/grafana/"
         },
         {
           "name": "GF_SERVER_SERVE_FROM_SUB_PATH",

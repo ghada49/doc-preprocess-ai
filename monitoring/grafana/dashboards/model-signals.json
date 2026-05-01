@@ -481,7 +481,7 @@
       "type": "timeseries"
     }
   ],
-  "refresh": "30s",
+  "refresh": "5m",
   "schemaVersion": 38,
   "tags": ["libraryai"],
   "time": {"from": "now-1h", "to": "now"},
