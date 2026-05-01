@@ -48,6 +48,8 @@ IAM requirement:
   The EEP task role (libraryai-task-role) must have:
     autoscaling:SetDesiredCapacity on the GPU ASG
     ecs:UpdateService on all normal-processing services
+    ecs:DescribeTaskDefinition and ecs:RegisterTaskDefinition for eep-worker URL injection
+    iam:PassRole for ecsTaskExecutionRole and libraryai-task-role
   This mirrors the permissions already granted to the github-actions-deploy role.
 """
 
