@@ -467,6 +467,7 @@ def presign_artifact_read(
 
 @router.post(
     "/v1/artifacts/preview",
+    response_model=None,
     status_code=200,
     summary="Stream a stored artifact as a browser-displayable PNG",
     response_class=StreamingResponse,
