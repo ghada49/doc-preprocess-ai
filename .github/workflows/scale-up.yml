@@ -260,7 +260,7 @@ print(json.dumps([{'role': r, 'pod_id': p, 'created_at': now, 'source': f'github
             GPU_JSON=$(printf '%s\n' "${GPU_CANDIDATES[@]}" | python3 -c 'import json,sys; print(json.dumps([line.strip() for line in sys.stdin if line.strip()]))')
             for CLOUD_TYPE in "${CLOUD_CANDIDATES[@]}"; do
               echo "Creating $NAME on RunPod REST cloudType=$CLOUD_TYPE gpuTypeIds=$GPU_JSON" >&2
-              PAYLOAD=$(python3 -c 'import json,os,sys; name,image,port,cloud,gpu_json=sys.argv[1:6]; env={"PYTHONPATH":"/app","AWS_REGION":os.environ.get("AWS_REGION","eu-central-1"),"S3_REGION":os.environ.get("AWS_REGION","eu-central-1"),"S3_BUCKET_NAME":"libraryai2","HEALTH_PORT":port,"RUNPOD_TERMINATE_ON_IDLE":"true"}; env.update({"IEP0_MODEL_PATH":"/app/models/iep0/classifier.pt"} if name.endswith("iep0") else {"IEP1A_MODELS_DIR":"/app/models/iep1a"} if name.endswith("iep1a") else {"IEP1B_MODELS_DIR":"/app/models/iep1b"} if name.endswith("iep1b") else {}); payload={"name":name,"imageName":image,"computeType":"GPU","cloudType":cloud,"gpuCount":1,"gpuTypeIds":json.loads(gpu_json),"gpuTypePriority":"custom","interruptible":False,"containerDiskInGb":int(os.environ.get("RUNPOD_CONTAINER_DISK_GB","50") or "50"),"minVCPUPerGPU":int(os.environ.get("RUNPOD_MIN_VCPU_PER_GPU","2") or "2"),"minRAMPerGPU":int(os.environ.get("RUNPOD_MIN_RAM_PER_GPU","8") or "8"),"ports":[f"{port}/http"],"env":env}; print(json.dumps(payload))' "$NAME" "$IMAGE" "$PORT" "$CLOUD_TYPE" "$GPU_JSON")
+              PAYLOAD=$(python3 -c 'import json,os,sys; name,image,port,cloud,gpu_json=sys.argv[1:6]; env={"PYTHONPATH":"/app","AWS_REGION":os.environ.get("AWS_REGION","eu-central-1"),"S3_REGION":os.environ.get("AWS_REGION","eu-central-1"),"S3_BUCKET_NAME":"libraryai2","HEALTH_PORT":port,"RUNPOD_TERMINATE_ON_IDLE":"true"}; env.update({"IEP0_MODEL_PATH":"/app/models/iep0/classifier.pt"} if "iep0" in name else {"IEP1A_MODELS_DIR":"/app/models/iep1a"} if "iep1a" in name else {"IEP1B_MODELS_DIR":"/app/models/iep1b"} if "iep1b" in name else {}); payload={"name":name,"imageName":image,"computeType":"GPU","cloudType":cloud,"gpuCount":1,"gpuTypeIds":json.loads(gpu_json),"gpuTypePriority":"custom","interruptible":False,"containerDiskInGb":int(os.environ.get("RUNPOD_CONTAINER_DISK_GB","50") or "50"),"minVCPUPerGPU":int(os.environ.get("RUNPOD_MIN_VCPU_PER_GPU","2") or "2"),"minRAMPerGPU":int(os.environ.get("RUNPOD_MIN_RAM_PER_GPU","8") or "8"),"ports":[f"{port}/http"],"env":env}; print(json.dumps(payload))' "$NAME" "$IMAGE" "$PORT" "$CLOUD_TYPE" "$GPU_JSON")
               RESPONSE=$(curl -sS -X POST "https://rest.runpod.io/v1/pods" \
                 -H "Authorization: Bearer ${RUNPOD_API_KEY}" \
                 -H "Content-Type: application/json" \
@@ -268,11 +268,6 @@ print(json.dumps([{'role': r, 'pod_id': p, 'created_at': now, 'source': f'github
               POD_ID=$(echo "$RESPONSE" | python3 -c 'import json,sys; d=json.load(sys.stdin); pod_id=d.get("id") or d.get("data", {}).get("id"); print(pod_id or ""); sys.exit(0 if pod_id else 1)' 2>/dev/null || true)
               if [ -n "$POD_ID" ]; then
                 CREATED_PODS+=("$POD_ID")
-                case "$NAME" in
-                  libraryai-iep0) POD_CREATION_LOG+=("iep0|$POD_ID") ;;
-                  libraryai-iep1a) POD_CREATION_LOG+=("iep1a|$POD_ID") ;;
-                  libraryai-iep1b) POD_CREATION_LOG+=("iep1b|$POD_ID") ;;
-                esac
                 echo "$POD_ID"
                 return 0
               fi
@@ -285,19 +280,8 @@ print(json.dumps([{'role': r, 'pod_id': p, 'created_at': now, 'source': f'github
 
           RUNPOD_HEALTH_WAIT_SECONDS="${RUNPOD_HEALTH_WAIT_SECONDS:-600}"
           RUNPOD_HEALTH_POLL_SECONDS="${RUNPOD_HEALTH_POLL_SECONDS:-15}"
-          RUNPOD_POD_REPLACE_MAX="${RUNPOD_POD_REPLACE_MAX:-3}"
           MAX_HEALTH_ITER=$(( (RUNPOD_HEALTH_WAIT_SECONDS + RUNPOD_HEALTH_POLL_SECONDS - 1) / RUNPOD_HEALTH_POLL_SECONDS ))
           if [ "$MAX_HEALTH_ITER" -lt 1 ]; then MAX_HEALTH_ITER=1; fi
-
-          remove_pod_id_from_created_pods() {
-            local OLD_ID="$1"
-            local NEW_LIST=()
-            for id in "${CREATED_PODS[@]}"; do
-              [ "$id" = "$OLD_ID" ] && continue
-              NEW_LIST+=("$id")
-            done
-            CREATED_PODS=("${NEW_LIST[@]}")
-          }
 
           terminate_runpod_pod() {
             local TID="$1"
@@ -309,52 +293,83 @@ print(json.dumps([{'role': r, 'pod_id': p, 'created_at': now, 'source': f'github
             echo "Terminated RunPod pod: $TID" >&2
           }
 
-          # Poll until RUNNING + /health, or each RUNPOD_HEALTH_WAIT_SECONDS window elapses — then replace pod (mitigate stuck image fetch).
-          wait_for_pod_with_replace() {
-            declare -n POD_REF="$1"
-            local PORT="$2" NAME="$3" RP_NAME="$4" RP_IMAGE="$5"
-            local POD_ID="${POD_REF}"
-            local WIN REPLACE_ROUND
-            REPLACE_ROUND=1
-            while [ "$REPLACE_ROUND" -le "$RUNPOD_POD_REPLACE_MAX" ]; do
-              local URL="https://${POD_ID}-${PORT}.proxy.runpod.net/health"
-              echo "Waiting for $NAME at $URL (${RUNPOD_HEALTH_WAIT_SECONDS}s per window, replace ${REPLACE_ROUND}/${RUNPOD_POD_REPLACE_MAX}) ..."
-              for WIN in $(seq 1 "$MAX_HEALTH_ITER"); do
-                STATUS=$(curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
-                  -H "Content-Type: application/json" \
-                  -d "{\"query\":\"query { pod(input: {podId: \\\"${POD_ID}\\\"}) { desiredStatus runtime { uptimeInSeconds } } }\"}" \
-                  | python3 -c "import sys,json; d=json.load(sys.stdin); p=d['data']['pod']; print('RUNNING' if p.get('runtime') is not None else p.get('desiredStatus','UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
-                echo "  attempt $WIN/${MAX_HEALTH_ITER} — $NAME pod status=$STATUS"
-                if [ "$STATUS" = "RUNNING" ]; then
-                  if curl -sf --max-time 10 "$URL" > /dev/null 2>&1; then
-                    echo "$NAME is healthy (pod $POD_ID)."
-                    POD_REF="$POD_ID"
-                    return 0
-                  fi
-                fi
-                sleep "$RUNPOD_HEALTH_POLL_SECONDS"
-              done
-              if [ "$REPLACE_ROUND" -ge "$RUNPOD_POD_REPLACE_MAX" ]; then
-                echo "ERROR: $NAME pod $POD_ID did not become healthy after ${RUNPOD_POD_REPLACE_MAX} windows of ${RUNPOD_HEALTH_WAIT_SECONDS}s"
-                exit 1
-              fi
-              echo "::warning::$NAME pod $POD_ID not healthy within ${RUNPOD_HEALTH_WAIT_SECONDS}s — terminating and creating a replacement (${REPLACE_ROUND}/${RUNPOD_POD_REPLACE_MAX})"
-              TERMINATED_IDS+=("$POD_ID")
-              terminate_runpod_pod "$POD_ID"
-              remove_pod_id_from_created_pods "$POD_ID"
-              POD_ID=$(create_pod "$RP_NAME" "$RP_IMAGE" "$PORT")
-              REPLACE_ROUND=$((REPLACE_ROUND + 1))
-            done
-            exit 1
+          pod_status() {
+            # Returns RUNNING if the pod has an active runtime, else its desiredStatus.
+            local PID="$1"
+            curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+              -H "Content-Type: application/json" \
+              -d "{\"query\":\"query { pod(input: {podId: \\\"${PID}\\\"}) { desiredStatus runtime { uptimeInSeconds } } }\"}" \
+              | python3 -c "import sys,json; d=json.load(sys.stdin); p=d['data']['pod']; print('RUNNING' if p.get('runtime') is not None else p.get('desiredStatus','UNKNOWN'))" \
+              2>/dev/null || echo "UNKNOWN"
           }
 
-          IEP0_POD=$(create_pod  "libraryai-iep0"  "gma51/libraryai-iep0:latest"  "8006")
-          IEP1A_POD=$(create_pod "libraryai-iep1a" "gma51/libraryai-iep1a:latest" "8001")
-          IEP1B_POD=$(create_pod "libraryai-iep1b" "gma51/libraryai-iep1b:latest" "8002")
+          # Race two pods to /health.  The first to respond is kept; the other
+          # is terminated immediately.  Both pod IDs are already in CREATED_PODS
+          # so the ERR trap cleans up both if the whole step fails before this
+          # function returns.  On success the winner is removed from TERMINATED_IDS
+          # (it lives on) and the loser is added.
+          # Usage: race_pods_to_health POD_A POD_B PORT NAME
+          # Sets global WINNER_POD to the surviving pod ID.
+          race_pods_to_health() {
+            local POD_A="$1" POD_B="$2" PORT="$3" NAME="$4"
+            local ITER STATUS_A STATUS_B URL_A URL_B WINNER="" LOSER=""
+            URL_A="https://${POD_A}-${PORT}.proxy.runpod.net/health"
+            URL_B="https://${POD_B}-${PORT}.proxy.runpod.net/health"
+            echo "Racing $NAME pods to health: A=$POD_A  B=$POD_B  (${RUNPOD_HEALTH_WAIT_SECONDS}s limit)"
+            for ITER in $(seq 1 "$MAX_HEALTH_ITER"); do
+              # Check pod A
+              STATUS_A=$(pod_status "$POD_A")
+              echo "  iter $ITER — $NAME-A pod=$POD_A status=$STATUS_A"
+              if [ "$STATUS_A" = "RUNNING" ] && curl -sf --max-time 10 "$URL_A" > /dev/null 2>&1; then
+                WINNER="$POD_A"; LOSER="$POD_B"
+                break
+              fi
+              # Check pod B
+              STATUS_B=$(pod_status "$POD_B")
+              echo "  iter $ITER — $NAME-B pod=$POD_B status=$STATUS_B"
+              if [ "$STATUS_B" = "RUNNING" ] && curl -sf --max-time 10 "$URL_B" > /dev/null 2>&1; then
+                WINNER="$POD_B"; LOSER="$POD_A"
+                break
+              fi
+              sleep "$RUNPOD_HEALTH_POLL_SECONDS"
+            done
+            if [ -z "$WINNER" ]; then
+              echo "ERROR: Neither $NAME pod became healthy within ${RUNPOD_HEALTH_WAIT_SECONDS}s (A=$POD_A B=$POD_B)"
+              exit 1
+            fi
+            echo "$NAME winner: $WINNER — terminating loser: $LOSER"
+            TERMINATED_IDS+=("$LOSER")
+            terminate_runpod_pod "$LOSER"
+            # Remove loser from CREATED_PODS so the ERR cleanup doesn't double-terminate it.
+            local NEW_LIST=()
+            for id in "${CREATED_PODS[@]}"; do
+              [ "$id" = "$LOSER" ] && continue
+              NEW_LIST+=("$id")
+            done
+            CREATED_PODS=("${NEW_LIST[@]}")
+            echo "$NAME is healthy (winner pod $WINNER)."
+            WINNER_POD="$WINNER"
+          }
 
-          wait_for_pod_with_replace IEP0_POD  "8006" "iep0"  "libraryai-iep0"  "gma51/libraryai-iep0:latest"
-          wait_for_pod_with_replace IEP1A_POD "8001" "iep1a" "libraryai-iep1a" "gma51/libraryai-iep1a:latest"
-          wait_for_pod_with_replace IEP1B_POD "8002" "iep1b" "libraryai-iep1b" "gma51/libraryai-iep1b:latest"
+          # Create 2 pods per GPU service in parallel (fire-and-forget; creation is fast).
+          IEP0_POD_A=$(create_pod  "libraryai-iep0-a"  "gma51/libraryai-iep0:latest"  "8006")
+          IEP0_POD_B=$(create_pod  "libraryai-iep0-b"  "gma51/libraryai-iep0:latest"  "8006")
+          IEP1A_POD_A=$(create_pod "libraryai-iep1a-a" "gma51/libraryai-iep1a:latest" "8001")
+          IEP1A_POD_B=$(create_pod "libraryai-iep1a-b" "gma51/libraryai-iep1a:latest" "8001")
+          IEP1B_POD_A=$(create_pod "libraryai-iep1b-a" "gma51/libraryai-iep1b:latest" "8002")
+          IEP1B_POD_B=$(create_pod "libraryai-iep1b-b" "gma51/libraryai-iep1b:latest" "8002")
+
+          race_pods_to_health "$IEP0_POD_A"  "$IEP0_POD_B"  "8006" "iep0"
+          IEP0_POD="$WINNER_POD"
+          POD_CREATION_LOG+=("iep0|$IEP0_POD")
+
+          race_pods_to_health "$IEP1A_POD_A" "$IEP1A_POD_B" "8001" "iep1a"
+          IEP1A_POD="$WINNER_POD"
+          POD_CREATION_LOG+=("iep1a|$IEP1A_POD")
+
+          race_pods_to_health "$IEP1B_POD_A" "$IEP1B_POD_B" "8002" "iep1b"
+          IEP1B_POD="$WINNER_POD"
+          POD_CREATION_LOG+=("iep1b|$IEP1B_POD")
 
           echo "All RunPod GPU pods passed health checks."
 
