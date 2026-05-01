@@ -1,358 +1,649 @@
 {
-  "annotations": {
-    "list": [
-      {
-        "builtIn": 1,
-        "datasource": {"type": "grafana", "uid": "-- Grafana --"},
-        "enable": true,
-        "hide": true,
-        "iconColor": "rgba(0, 211, 255, 1)",
-        "name": "Annotations & Alerts",
-        "type": "dashboard"
-      }
-    ]
-  },
-  "editable": true,
-  "fiscalYearStartMonth": 0,
-  "graphTooltip": 1,
-  "id": null,
-  "links": [],
-  "panels": [
-    {
-      "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
-      "id": 1,
-      "title": "EEP Gate Summary",
-      "type": "row"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "thresholds"},
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {"color": "red", "value": null},
-              {"color": "yellow", "value": 0.40},
-              {"color": "green", "value": 0.60}
-            ]
-          },
-          "unit": "percentunit",
-          "min": 0,
-          "max": 1
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 5, "w": 6, "x": 0, "y": 1},
-      "id": 2,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
-        "textMode": "auto"
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "eep_auto_accept_rate",
-          "legendFormat": "auto-accept rate",
-          "refId": "A"
-        }
-      ],
-      "title": "Auto-Accept Rate",
-      "type": "stat"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "thresholds"},
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {"color": "red", "value": null},
-              {"color": "yellow", "value": 0.70},
-              {"color": "green", "value": 0.80}
-            ]
-          },
-          "unit": "percentunit",
-          "min": 0,
-          "max": 1
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 5, "w": 6, "x": 6, "y": 1},
-      "id": 3,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
-        "textMode": "auto"
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "eep_structural_agreement_rate",
-          "legendFormat": "structural agreement",
-          "refId": "A"
-        }
-      ],
-      "title": "Structural Agreement Rate",
-      "type": "stat"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "thresholds"},
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {"color": "red", "value": null},
-              {"color": "yellow", "value": 0.70},
-              {"color": "green", "value": 0.80}
-            ]
-          },
-          "unit": "percentunit",
-          "min": 0,
-          "max": 1
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 5, "w": 6, "x": 12, "y": 1},
-      "id": 4,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
-        "textMode": "auto"
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "eep_layout_consensus_confidence",
-          "legendFormat": "layout consensus",
-          "refId": "A"
-        }
-      ],
-      "title": "Layout Consensus Confidence",
-      "type": "stat"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {
-        "defaults": {
-          "color": {"mode": "thresholds"},
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {"color": "green", "value": null},
-              {"color": "yellow", "value": 0.15},
-              {"color": "red", "value": 0.25}
-            ]
-          },
-          "unit": "percentunit",
-          "min": 0,
-          "max": 1
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 5, "w": 6, "x": 18, "y": 1},
-      "id": 5,
-      "options": {
-        "colorMode": "background",
-        "graphMode": "area",
-        "justifyMode": "auto",
-        "orientation": "auto",
-        "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
-        "textMode": "auto"
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "rate(iep1d_rectification_triggered_total[1h]) / rate(eep_requests_total[1h])",
-          "legendFormat": "rectification rate",
-          "refId": "A"
-        }
-      ],
-      "title": "IEP1D Rectification Rate (1h)",
-      "type": "stat"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 6},
-      "id": 6,
-      "title": "Geometry Selection Routes",
-      "type": "row"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {
-        "defaults": {
-          "custom": {"fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 1, "showPoints": "never"},
-          "unit": "percentunit",
-          "max": 1,
-          "min": 0
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 7},
-      "id": 7,
-      "options": {
-        "legend": {"calcs": ["mean", "last"], "displayMode": "table", "placement": "bottom"},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "sum by (route) (rate(eep_geometry_selection_route_total[5m])) / sum(rate(eep_geometry_selection_route_total[5m]))",
-          "legendFormat": "{{route}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Geometry Selection Route Distribution",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {
-        "defaults": {
-          "custom": {"fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 1, "showPoints": "never"},
-          "unit": "percentunit",
-          "max": 1,
-          "min": 0
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 7},
-      "id": 8,
-      "options": {
-        "legend": {"calcs": ["mean", "last"], "displayMode": "table", "placement": "bottom"},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "sum by (route) (rate(eep_artifact_validation_route_total[5m])) / sum(rate(eep_artifact_validation_route_total[5m]))",
-          "legendFormat": "{{route}}",
-          "refId": "A"
-        }
-      ],
-      "title": "Artifact Validation Route Distribution",
-      "type": "timeseries"
-    },
-    {
-      "collapsed": false,
-      "gridPos": {"h": 1, "w": 24, "x": 0, "y": 15},
-      "id": 9,
-      "title": "Gate Rate Trends",
-      "type": "row"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {
-        "defaults": {
-          "custom": {"fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 1, "showPoints": "never"},
-          "unit": "percentunit",
-          "max": 1,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {"color": "red", "value": null},
-              {"color": "yellow", "value": 0.40},
-              {"color": "green", "value": 0.60}
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
-      "id": 10,
-      "options": {
-        "legend": {"calcs": ["mean", "last", "min"], "displayMode": "table", "placement": "bottom"},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "eep_auto_accept_rate",
-          "legendFormat": "auto-accept rate",
-          "refId": "A"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "eep_structural_agreement_rate",
-          "legendFormat": "structural agreement rate",
-          "refId": "B"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "eep_layout_consensus_confidence",
-          "legendFormat": "layout consensus confidence",
-          "refId": "C"
-        }
-      ],
-      "title": "EEP Gate Rates Over Time",
-      "type": "timeseries"
-    },
-    {
-      "datasource": {"type": "prometheus", "uid": "prometheus"},
-      "fieldConfig": {
-        "defaults": {
-          "custom": {"fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 1, "showPoints": "never"},
-          "unit": "percentunit",
-          "max": 1,
-          "min": 0,
-          "thresholds": {
-            "mode": "absolute",
-            "steps": [
-              {"color": "green", "value": null},
-              {"color": "yellow", "value": 0.15},
-              {"color": "red", "value": 0.25}
-            ]
-          }
-        },
-        "overrides": []
-      },
-      "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
-      "id": 11,
-      "options": {
-        "legend": {"calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom"},
-        "tooltip": {"mode": "multi", "sort": "desc"}
-      },
-      "targets": [
-        {
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "rate(iep1d_rectification_triggered_total[1h]) / rate(eep_requests_total[1h])",
-          "legendFormat": "rectification fallback rate (1h)",
-          "refId": "A"
-        },
-        {
-          "datasource": {"type": "prometheus", "uid": "prometheus"},
-          "expr": "rate(iep1d_rectification_triggered_total[30m]) / rate(eep_requests_total[30m])",
-          "legendFormat": "rectification fallback rate (30m)",
-          "refId": "B"
-        }
-      ],
-      "title": "IEP1D Rectification Fallback Rate",
-      "type": "timeseries"
-    }
-  ],
-  "refresh": "30s",
-  "schemaVersion": 38,
-  "tags": ["libraryai"],
-  "time": {"from": "now-1h", "to": "now"},
-  "timepicker": {},
-  "timezone": "browser",
-  "title": "LibraryAI — Gate Decisions",
-  "uid": "libraryai-gates",
-  "version": 1
+    "annotations":  {
+                        "list":  [
+                                     {
+                                         "builtIn":  1,
+                                         "datasource":  {
+                                                            "type":  "grafana",
+                                                            "uid":  "-- Grafana --"
+                                                        },
+                                         "enable":  true,
+                                         "hide":  true,
+                                         "iconColor":  "rgba(0, 211, 255, 1)",
+                                         "name":  "Annotations \u0026 Alerts",
+                                         "type":  "dashboard"
+                                     }
+                                 ]
+                    },
+    "editable":  true,
+    "fiscalYearStartMonth":  0,
+    "graphTooltip":  1,
+    "id":  null,
+    "links":  [
+
+              ],
+    "panels":  [
+                   {
+                       "collapsed":  false,
+                       "gridPos":  {
+                                       "h":  1,
+                                       "w":  24,
+                                       "x":  0,
+                                       "y":  0
+                                   },
+                       "id":  1,
+                       "title":  "EEP Gate Summary",
+                       "type":  "row"
+                   },
+                   {
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "prometheus"
+                                      },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "color":  {
+                                                                          "mode":  "thresholds"
+                                                                      },
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "yellow",
+                                                                                                 "value":  0.40
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "green",
+                                                                                                 "value":  0.60
+                                                                                             }
+                                                                                         ]
+                                                                           },
+                                                            "unit":  "percentunit",
+                                                            "min":  0,
+                                                            "max":  1
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "gridPos":  {
+                                       "h":  5,
+                                       "w":  6,
+                                       "x":  0,
+                                       "y":  1
+                                   },
+                       "id":  2,
+                       "options":  {
+                                       "colorMode":  "value",
+                                       "graphMode":  "none",
+                                       "justifyMode":  "auto",
+                                       "orientation":  "auto",
+                                       "reduceOptions":  {
+                                                             "calcs":  [
+                                                                           "lastNotNull"
+                                                                       ],
+                                                             "fields":  "",
+                                                             "values":  false
+                                                         },
+                                       "textMode":  "auto",
+                                       "noValue":  "Waiting for data"
+                                   },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "prometheus"
+                                                          },
+                                           "expr":  "eep_auto_accept_rate",
+                                           "legendFormat":  "auto-accept rate",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "title":  "Auto-Accept Rate",
+                       "type":  "stat"
+                   },
+                   {
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "prometheus"
+                                      },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "color":  {
+                                                                          "mode":  "thresholds"
+                                                                      },
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "yellow",
+                                                                                                 "value":  0.70
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "green",
+                                                                                                 "value":  0.80
+                                                                                             }
+                                                                                         ]
+                                                                           },
+                                                            "unit":  "percentunit",
+                                                            "min":  0,
+                                                            "max":  1
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "gridPos":  {
+                                       "h":  5,
+                                       "w":  6,
+                                       "x":  6,
+                                       "y":  1
+                                   },
+                       "id":  3,
+                       "options":  {
+                                       "colorMode":  "value",
+                                       "graphMode":  "none",
+                                       "justifyMode":  "auto",
+                                       "orientation":  "auto",
+                                       "reduceOptions":  {
+                                                             "calcs":  [
+                                                                           "lastNotNull"
+                                                                       ],
+                                                             "fields":  "",
+                                                             "values":  false
+                                                         },
+                                       "textMode":  "auto",
+                                       "noValue":  "Waiting for data"
+                                   },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "prometheus"
+                                                          },
+                                           "expr":  "eep_structural_agreement_rate",
+                                           "legendFormat":  "structural agreement",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "title":  "Structural Agreement Rate",
+                       "type":  "stat"
+                   },
+                   {
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "prometheus"
+                                      },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "color":  {
+                                                                          "mode":  "thresholds"
+                                                                      },
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "yellow",
+                                                                                                 "value":  0.70
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "green",
+                                                                                                 "value":  0.80
+                                                                                             }
+                                                                                         ]
+                                                                           },
+                                                            "unit":  "percentunit",
+                                                            "min":  0,
+                                                            "max":  1
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "gridPos":  {
+                                       "h":  5,
+                                       "w":  6,
+                                       "x":  12,
+                                       "y":  1
+                                   },
+                       "id":  4,
+                       "options":  {
+                                       "colorMode":  "value",
+                                       "graphMode":  "none",
+                                       "justifyMode":  "auto",
+                                       "orientation":  "auto",
+                                       "reduceOptions":  {
+                                                             "calcs":  [
+                                                                           "lastNotNull"
+                                                                       ],
+                                                             "fields":  "",
+                                                             "values":  false
+                                                         },
+                                       "textMode":  "auto",
+                                       "noValue":  "Waiting for data"
+                                   },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "prometheus"
+                                                          },
+                                           "expr":  "eep_layout_consensus_confidence",
+                                           "legendFormat":  "layout consensus",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "title":  "Layout Consensus Confidence",
+                       "type":  "stat"
+                   },
+                   {
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "prometheus"
+                                      },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "color":  {
+                                                                          "mode":  "thresholds"
+                                                                      },
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "green",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "yellow",
+                                                                                                 "value":  0.15
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  0.25
+                                                                                             }
+                                                                                         ]
+                                                                           },
+                                                            "unit":  "percentunit",
+                                                            "min":  0,
+                                                            "max":  1
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "gridPos":  {
+                                       "h":  5,
+                                       "w":  6,
+                                       "x":  18,
+                                       "y":  1
+                                   },
+                       "id":  5,
+                       "options":  {
+                                       "colorMode":  "value",
+                                       "graphMode":  "none",
+                                       "justifyMode":  "auto",
+                                       "orientation":  "auto",
+                                       "reduceOptions":  {
+                                                             "calcs":  [
+                                                                           "lastNotNull"
+                                                                       ],
+                                                             "fields":  "",
+                                                             "values":  false
+                                                         },
+                                       "textMode":  "auto",
+                                       "noValue":  "Waiting for data"
+                                   },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "prometheus"
+                                                          },
+                                           "expr":  "rate(iep1d_rectification_triggered_total[1h]) / rate(eep_requests_total[1h])",
+                                           "legendFormat":  "rectification rate",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "title":  "IEP1D Rectification Rate (1h)",
+                       "type":  "stat"
+                   },
+                   {
+                       "collapsed":  false,
+                       "gridPos":  {
+                                       "h":  1,
+                                       "w":  24,
+                                       "x":  0,
+                                       "y":  6
+                                   },
+                       "id":  6,
+                       "title":  "Geometry Selection Routes",
+                       "type":  "row"
+                   },
+                   {
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "prometheus"
+                                      },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "custom":  {
+                                                                           "fillOpacity":  10,
+                                                                           "lineInterpolation":  "linear",
+                                                                           "lineWidth":  1,
+                                                                           "showPoints":  "never"
+                                                                       },
+                                                            "unit":  "percentunit",
+                                                            "max":  1,
+                                                            "min":  0
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "gridPos":  {
+                                       "h":  8,
+                                       "w":  12,
+                                       "x":  0,
+                                       "y":  7
+                                   },
+                       "id":  7,
+                       "options":  {
+                                       "legend":  {
+                                                      "calcs":  [
+                                                                    "mean",
+                                                                    "last"
+                                                                ],
+                                                      "displayMode":  "table",
+                                                      "placement":  "bottom"
+                                                  },
+                                       "tooltip":  {
+                                                       "mode":  "multi",
+                                                       "sort":  "desc"
+                                                   }
+                                   },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "prometheus"
+                                                          },
+                                           "expr":  "sum by (route) (rate(eep_geometry_selection_route_total[5m])) / sum(rate(eep_geometry_selection_route_total[5m]))",
+                                           "legendFormat":  "{{route}}",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "title":  "Geometry Selection Route Distribution",
+                       "type":  "timeseries"
+                   },
+                   {
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "prometheus"
+                                      },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "custom":  {
+                                                                           "fillOpacity":  10,
+                                                                           "lineInterpolation":  "linear",
+                                                                           "lineWidth":  1,
+                                                                           "showPoints":  "never"
+                                                                       },
+                                                            "unit":  "percentunit",
+                                                            "max":  1,
+                                                            "min":  0
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "gridPos":  {
+                                       "h":  8,
+                                       "w":  12,
+                                       "x":  12,
+                                       "y":  7
+                                   },
+                       "id":  8,
+                       "options":  {
+                                       "legend":  {
+                                                      "calcs":  [
+                                                                    "mean",
+                                                                    "last"
+                                                                ],
+                                                      "displayMode":  "table",
+                                                      "placement":  "bottom"
+                                                  },
+                                       "tooltip":  {
+                                                       "mode":  "multi",
+                                                       "sort":  "desc"
+                                                   }
+                                   },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "prometheus"
+                                                          },
+                                           "expr":  "sum by (route) (rate(eep_artifact_validation_route_total[5m])) / sum(rate(eep_artifact_validation_route_total[5m]))",
+                                           "legendFormat":  "{{route}}",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "title":  "Artifact Validation Route Distribution",
+                       "type":  "timeseries"
+                   },
+                   {
+                       "collapsed":  false,
+                       "gridPos":  {
+                                       "h":  1,
+                                       "w":  24,
+                                       "x":  0,
+                                       "y":  15
+                                   },
+                       "id":  9,
+                       "title":  "Gate Rate Trends",
+                       "type":  "row"
+                   },
+                   {
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "prometheus"
+                                      },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "custom":  {
+                                                                           "fillOpacity":  10,
+                                                                           "lineInterpolation":  "linear",
+                                                                           "lineWidth":  1,
+                                                                           "showPoints":  "never"
+                                                                       },
+                                                            "unit":  "percentunit",
+                                                            "max":  1,
+                                                            "min":  0,
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "yellow",
+                                                                                                 "value":  0.40
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "green",
+                                                                                                 "value":  0.60
+                                                                                             }
+                                                                                         ]
+                                                                           }
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "gridPos":  {
+                                       "h":  8,
+                                       "w":  12,
+                                       "x":  0,
+                                       "y":  16
+                                   },
+                       "id":  10,
+                       "options":  {
+                                       "legend":  {
+                                                      "calcs":  [
+                                                                    "mean",
+                                                                    "last",
+                                                                    "min"
+                                                                ],
+                                                      "displayMode":  "table",
+                                                      "placement":  "bottom"
+                                                  },
+                                       "tooltip":  {
+                                                       "mode":  "multi",
+                                                       "sort":  "desc"
+                                                   }
+                                   },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "prometheus"
+                                                          },
+                                           "expr":  "eep_auto_accept_rate",
+                                           "legendFormat":  "auto-accept rate",
+                                           "refId":  "A"
+                                       },
+                                       {
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "prometheus"
+                                                          },
+                                           "expr":  "eep_structural_agreement_rate",
+                                           "legendFormat":  "structural agreement rate",
+                                           "refId":  "B"
+                                       },
+                                       {
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "prometheus"
+                                                          },
+                                           "expr":  "eep_layout_consensus_confidence",
+                                           "legendFormat":  "layout consensus confidence",
+                                           "refId":  "C"
+                                       }
+                                   ],
+                       "title":  "EEP Gate Rates Over Time",
+                       "type":  "timeseries"
+                   },
+                   {
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "prometheus"
+                                      },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "custom":  {
+                                                                           "fillOpacity":  10,
+                                                                           "lineInterpolation":  "linear",
+                                                                           "lineWidth":  1,
+                                                                           "showPoints":  "never"
+                                                                       },
+                                                            "unit":  "percentunit",
+                                                            "max":  1,
+                                                            "min":  0,
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "green",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "yellow",
+                                                                                                 "value":  0.15
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  0.25
+                                                                                             }
+                                                                                         ]
+                                                                           }
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "gridPos":  {
+                                       "h":  8,
+                                       "w":  12,
+                                       "x":  12,
+                                       "y":  16
+                                   },
+                       "id":  11,
+                       "options":  {
+                                       "legend":  {
+                                                      "calcs":  [
+                                                                    "mean",
+                                                                    "max"
+                                                                ],
+                                                      "displayMode":  "table",
+                                                      "placement":  "bottom"
+                                                  },
+                                       "tooltip":  {
+                                                       "mode":  "multi",
+                                                       "sort":  "desc"
+                                                   }
+                                   },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "prometheus"
+                                                          },
+                                           "expr":  "rate(iep1d_rectification_triggered_total[1h]) / rate(eep_requests_total[1h])",
+                                           "legendFormat":  "rectification fallback rate (1h)",
+                                           "refId":  "A"
+                                       },
+                                       {
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "prometheus"
+                                                          },
+                                           "expr":  "rate(iep1d_rectification_triggered_total[30m]) / rate(eep_requests_total[30m])",
+                                           "legendFormat":  "rectification fallback rate (30m)",
+                                           "refId":  "B"
+                                       }
+                                   ],
+                       "title":  "IEP1D Rectification Fallback Rate",
+                       "type":  "timeseries"
+                   }
+               ],
+    "refresh":  "5m",
+    "schemaVersion":  38,
+    "tags":  [
+                 "libraryai"
+             ],
+    "time":  {
+                 "from":  "now-1h",
+                 "to":  "now"
+             },
+    "timepicker":  {
+
+                   },
+    "timezone":  "browser",
+    "title":  "LibraryAI â€” Gate Decisions",
+    "uid":  "libraryai-gates",
+    "version":  1
 }
