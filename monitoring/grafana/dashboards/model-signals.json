@@ -1264,6 +1264,10 @@
                                                                                "mode":  "absolute",
                                                                                "steps":  [
                                                                                              {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
                                                                                                  "color":  "green",
                                                                                                  "value":  0
                                                                                              },

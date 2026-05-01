@@ -75,7 +75,7 @@ scrape_configs:
 
   - job_name: iep2a
     static_configs:
-      - targets: ["iep2a:8004"]
+      - targets: ["iep2a-v2:8004"]
 
   - job_name: iep2b
     static_configs:

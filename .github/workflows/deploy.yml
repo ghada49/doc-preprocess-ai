@@ -475,6 +475,10 @@ jobs:
             local svc=$1
             case "$svc" in
               eep)      echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"eep","clientAliases":[{"port":8000,"dnsName":"eep"}]}]}' ;;
+              eep-worker) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"eep-worker","clientAliases":[{"port":9100,"dnsName":"eep-worker"}]}]}' ;;
+              eep-recovery) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"eep-recovery","clientAliases":[{"port":9101,"dnsName":"eep-recovery"}]}]}' ;;
+              shadow-worker) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"shadow-worker","clientAliases":[{"port":9102,"dnsName":"shadow-worker"}]}]}' ;;
+              retraining-worker) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"retraining-worker","clientAliases":[{"port":9104,"dnsName":"retraining-worker"}]}]}' ;;
               iep0)     echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep0","clientAliases":[{"port":8006,"dnsName":"iep0"}]}]}' ;;
               iep1a)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1a","clientAliases":[{"port":8001,"dnsName":"iep1a"}]}]}' ;;
               iep1b)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1b","clientAliases":[{"port":8002,"dnsName":"iep1b"}]}]}' ;;
@@ -883,6 +887,10 @@ jobs:
             local svc=$1
             case "$svc" in
               eep)      echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"eep","clientAliases":[{"port":8000,"dnsName":"eep"}]}]}' ;;
+              eep-worker) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"eep-worker","clientAliases":[{"port":9100,"dnsName":"eep-worker"}]}]}' ;;
+              eep-recovery) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"eep-recovery","clientAliases":[{"port":9101,"dnsName":"eep-recovery"}]}]}' ;;
+              shadow-worker) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"shadow-worker","clientAliases":[{"port":9102,"dnsName":"shadow-worker"}]}]}' ;;
+              retraining-worker) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"retraining-worker","clientAliases":[{"port":9104,"dnsName":"retraining-worker"}]}]}' ;;
               iep0)     echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep0","clientAliases":[{"port":8006,"dnsName":"iep0"}]}]}' ;;
               iep1a)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1a","clientAliases":[{"port":8001,"dnsName":"iep1a"}]}]}' ;;
               iep1b)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1b","clientAliases":[{"port":8002,"dnsName":"iep1b"}]}]}' ;;

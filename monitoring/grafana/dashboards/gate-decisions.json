@@ -101,7 +101,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "eep_auto_accept_rate",
+                                           "expr":  "avg(eep_auto_accept_rate)",
                                            "legendFormat":  "auto-accept rate",
                                            "refId":  "A"
                                        }
@@ -175,7 +175,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "eep_structural_agreement_rate",
+                                           "expr":  "avg(eep_structural_agreement_rate)",
                                            "legendFormat":  "structural agreement",
                                            "refId":  "A"
                                        }
@@ -249,7 +249,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "eep_layout_consensus_confidence",
+                                           "expr":  "avg(eep_layout_consensus_confidence)",
                                            "legendFormat":  "layout consensus",
                                            "refId":  "A"
                                        }
@@ -271,8 +271,12 @@
                                                                                "mode":  "absolute",
                                                                                "steps":  [
                                                                                              {
-                                                                                                 "color":  "green",
+                                                                                                 "color":  "red",
                                                                                                  "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "green",
+                                                                                                 "value":  0
                                                                                              },
                                                                                              {
                                                                                                  "color":  "yellow",
@@ -323,7 +327,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "rate(iep1d_rectification_triggered_total[1h]) / rate(eep_requests_total[1h])",
+                                           "expr":  "sum(rate(iep1d_rectification_triggered_total[1h])) / sum(rate(eep_requests_total[1h]))",
                                            "legendFormat":  "rectification rate",
                                            "refId":  "A"
                                        }
@@ -533,7 +537,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "eep_auto_accept_rate",
+                                           "expr":  "avg(eep_auto_accept_rate)",
                                            "legendFormat":  "auto-accept rate",
                                            "refId":  "A"
                                        },
@@ -542,7 +546,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "eep_structural_agreement_rate",
+                                           "expr":  "avg(eep_structural_agreement_rate)",
                                            "legendFormat":  "structural agreement rate",
                                            "refId":  "B"
                                        },
@@ -551,7 +555,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "eep_layout_consensus_confidence",
+                                           "expr":  "avg(eep_layout_consensus_confidence)",
                                            "legendFormat":  "layout consensus confidence",
                                            "refId":  "C"
                                        }
@@ -624,7 +628,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "rate(iep1d_rectification_triggered_total[1h]) / rate(eep_requests_total[1h])",
+                                           "expr":  "sum(rate(iep1d_rectification_triggered_total[1h])) / sum(rate(eep_requests_total[1h]))",
                                            "legendFormat":  "rectification fallback rate (1h)",
                                            "refId":  "A"
                                        },
@@ -633,7 +637,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "rate(iep1d_rectification_triggered_total[30m]) / rate(eep_requests_total[30m])",
+                                           "expr":  "sum(rate(iep1d_rectification_triggered_total[30m])) / sum(rate(eep_requests_total[30m]))",
                                            "legendFormat":  "rectification fallback rate (30m)",
                                            "refId":  "B"
                                        }
