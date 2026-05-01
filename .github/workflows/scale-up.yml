@@ -263,7 +263,7 @@ jobs:
             | sed "s|IEP1A_URL_VALUE|${IEP1A_URL}|g" \
             | sed "s|IEP1B_URL_VALUE|${IEP1B_URL}|g" \
             | sed "s|IEP1E_URL_VALUE|http://iep1e:8007|g" \
-            | sed "s|IEP2A_URL_VALUE|http://iep2a:8004|g" \
+            | sed "s|IEP2A_URL_VALUE|http://iep2a-v2:8004|g" \
             | sed "s|IEP2B_URL_VALUE|http://iep2b:8005|g")
           REVISION=$(aws ecs register-task-definition \
             --cli-input-json "$TASK_DEF" \
@@ -272,23 +272,23 @@ jobs:
           echo "Registered eep-worker task def: $REVISION"
 
       # ── Step 4: Start CPU inference services ─────────────────────────────
-      - name: Start CPU IEP services (iep1e, iep2a, iep2b)
+      - name: Start CPU IEP services (iep1e, iep2a-v2, iep2b)
         run: |
-          for SVC in iep1e iep2a iep2b; do
+          for SVC in libraryai-iep1e libraryai-iep2a-v2 libraryai-iep2b; do
             aws ecs update-service \
               --cluster "$ECS_CLUSTER" \
-              --service "libraryai-${SVC}" \
+              --service "$SVC" \
               --desired-count 1 \
               --force-new-deployment \
               --no-cli-pager
-            echo "Started libraryai-${SVC}"
+            echo "Started $SVC"
           done
 
       - name: Wait for CPU IEP services to become healthy
         run: |
           aws ecs wait services-stable \
             --cluster "$ECS_CLUSTER" \
-            --services libraryai-iep1e libraryai-iep2a libraryai-iep2b
+            --services libraryai-iep1e libraryai-iep2a-v2 libraryai-iep2b
           echo "All CPU IEP services healthy."
 
       # ── Step 5: Start processing workers ─────────────────────────────────
