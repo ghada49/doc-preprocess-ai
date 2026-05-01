@@ -53,18 +53,6 @@ scrape_configs:
       - targets: ["retraining-worker:9104"]
 
   # ── IEP services ──────────────────────────────────────────────────────────
-  - job_name: iep0
-    static_configs:
-      - targets: ["iep0:8006"]
-
-  - job_name: iep1a
-    static_configs:
-      - targets: ["iep1a:8001"]
-
-  - job_name: iep1b
-    static_configs:
-      - targets: ["iep1b:8002"]
-
   - job_name: iep1d
     static_configs:
       - targets: ["iep1d:8003"]

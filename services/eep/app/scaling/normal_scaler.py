@@ -86,6 +86,75 @@ _WORKER_SERVICES: list[str] = [
     "libraryai-shadow-worker",
 ]
 
+_SERVICE_CONNECT_CONFIGS: dict[str, dict] = {
+    "libraryai-iep1e": {
+        "enabled": True,
+        "namespace": "libraryai.local",
+        "services": [
+            {
+                "portName": "http",
+                "discoveryName": "iep1e",
+                "clientAliases": [{"port": 8007, "dnsName": "iep1e"}],
+            }
+        ],
+    },
+    "libraryai-iep2a-v2": {
+        "enabled": True,
+        "namespace": "libraryai.local",
+        "services": [
+            {
+                "portName": "http",
+                "discoveryName": "iep2a-v2",
+                "clientAliases": [{"port": 8004, "dnsName": "iep2a-v2"}],
+            }
+        ],
+    },
+    "libraryai-iep2b": {
+        "enabled": True,
+        "namespace": "libraryai.local",
+        "services": [
+            {
+                "portName": "http",
+                "discoveryName": "iep2b",
+                "clientAliases": [{"port": 8005, "dnsName": "iep2b"}],
+            }
+        ],
+    },
+    "libraryai-eep-worker": {
+        "enabled": True,
+        "namespace": "libraryai.local",
+        "services": [
+            {
+                "portName": "health",
+                "discoveryName": "eep-worker",
+                "clientAliases": [{"port": 9100, "dnsName": "eep-worker"}],
+            }
+        ],
+    },
+    "libraryai-eep-recovery": {
+        "enabled": True,
+        "namespace": "libraryai.local",
+        "services": [
+            {
+                "portName": "health",
+                "discoveryName": "eep-recovery",
+                "clientAliases": [{"port": 9101, "dnsName": "eep-recovery"}],
+            }
+        ],
+    },
+    "libraryai-shadow-worker": {
+        "enabled": True,
+        "namespace": "libraryai.local",
+        "services": [
+            {
+                "portName": "health",
+                "discoveryName": "shadow-worker",
+                "clientAliases": [{"port": 9102, "dnsName": "shadow-worker"}],
+            }
+        ],
+    },
+}
+
 # All services that normal scale-up touches (for testing/documentation).
 NORMAL_SCALE_UP_SERVICES: list[str] = _GPU_SERVICES + _CPU_IEP_SERVICES + _WORKER_SERVICES
 
@@ -917,6 +986,9 @@ def _update_service(
     kwargs: dict = {"cluster": cluster, "service": service, "desiredCount": desired}
     if task_def_arn:
         kwargs["taskDefinition"] = task_def_arn
+    service_connect_config = _SERVICE_CONNECT_CONFIGS.get(service)
+    if service_connect_config is not None:
+        kwargs["serviceConnectConfiguration"] = service_connect_config
     if force_new:
         kwargs["forceNewDeployment"] = True
     try:

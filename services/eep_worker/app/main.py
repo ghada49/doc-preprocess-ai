@@ -15,15 +15,18 @@ import logging
 import os
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from urllib.parse import urlsplit, urlunsplit
 
+import httpx
 from fastapi import FastAPI
 
 from monitoring.drift_observer import export_baselines_for_process
 from services.eep.app.redis_client import get_redis
 from services.eep_worker.app.google_config import get_google_worker_state, initialize_google
 from services.eep_worker.app.watchdog import TaskWatchdog, WatchdogConfig
-from services.eep_worker.app.worker_loop import build_worker_config, run_worker_loop
+from services.eep_worker.app.worker_loop import WorkerConfig, build_worker_config, run_worker_loop
 from shared.logging_config import setup_logging
+from shared.metrics import SERVICE_TARGET_UP
 from shared.middleware import configure_observability
 
 setup_logging(service_name="eep_worker")
@@ -55,6 +58,40 @@ def _build_watchdog() -> TaskWatchdog:
 watchdog: TaskWatchdog = _build_watchdog()
 
 
+def _health_url(endpoint: str) -> str:
+    parsed = urlsplit(endpoint)
+    return urlunsplit((parsed.scheme, parsed.netloc, "/health", "", ""))
+
+
+def _configured_targets(worker_config: WorkerConfig) -> dict[str, str]:
+    return {
+        "iep0": _health_url(worker_config.iep0_endpoint),
+        "iep1a": _health_url(worker_config.iep1a_endpoint),
+        "iep1b": _health_url(worker_config.iep1b_endpoint),
+        "iep1d": _health_url(worker_config.iep1d_endpoint),
+        "iep1e": _health_url(worker_config.iep1e_endpoint),
+        "iep2a": _health_url(worker_config.iep2a_endpoint),
+        "iep2b": _health_url(worker_config.iep2b_endpoint),
+    }
+
+
+async def _target_health_loop(worker_config: WorkerConfig) -> None:
+    targets = _configured_targets(worker_config)
+    interval_seconds = max(5.0, _env_float("TARGET_HEALTH_CHECK_INTERVAL_SECONDS", 15.0))
+    timeout_seconds = max(1.0, _env_float("TARGET_HEALTH_CHECK_TIMEOUT_SECONDS", 5.0))
+    logger.info("eep_worker: target health loop started targets=%s", sorted(targets))
+
+    async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
+        while True:
+            for service, url in targets.items():
+                try:
+                    response = await client.get(url)
+                    SERVICE_TARGET_UP.labels(service=service).set(1 if response.is_success else 0)
+                except httpx.RequestError:
+                    SERVICE_TARGET_UP.labels(service=service).set(0)
+            await asyncio.sleep(interval_seconds)
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Start the worker runtime loop and Google config."""
@@ -75,15 +112,17 @@ async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
             watchdog=watchdog,
         )
     )
+    target_health_bg = asyncio.create_task(_target_health_loop(worker_config))
     logger.info("eep_worker: worker runtime loop started as %s", worker_config.worker_id)
     try:
         yield
     finally:
-        worker_bg.cancel()
-        try:
-            await worker_bg
-        except asyncio.CancelledError:
-            pass
+        for task in (worker_bg, target_health_bg):
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         await worker_config.backend.close()
         logger.info("eep_worker: worker runtime loop stopped")
 

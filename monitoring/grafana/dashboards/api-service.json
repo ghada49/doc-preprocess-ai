@@ -108,7 +108,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "up",
+                                           "expr":  "up{job=~\"eep|eep-worker|eep-recovery|shadow-worker|retraining-worker|prometheus\"} OR on(job) label_replace(max by (service) (service_target_up), \"job\", \"$1\", \"service\", \"(.*)\")",
                                            "legendFormat":  "{{job}}",
                                            "refId":  "A"
                                        }
