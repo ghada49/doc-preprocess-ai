@@ -18,6 +18,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
+from monitoring.drift_observer import export_baselines_for_process
 from services.eep.app.redis_client import get_redis
 from services.eep_worker.app.google_config import get_google_worker_state, initialize_google
 from services.eep_worker.app.watchdog import TaskWatchdog, WatchdogConfig
@@ -58,6 +59,7 @@ watchdog: TaskWatchdog = _build_watchdog()
 async def _lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """Start the worker runtime loop and Google config."""
     initialize_google()
+    export_baselines_for_process()
     logger.info(
         "eep_worker: Google Document AI availability: %s",
         "ENABLED" if get_google_worker_state().enabled else "DISABLED",

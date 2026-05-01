@@ -72,7 +72,7 @@ from shared.metrics import (
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["observe_and_check", "get_detector"]
+__all__ = ["observe_and_check", "export_baselines_for_process", "get_detector"]
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -237,6 +237,20 @@ def observe_and_check(
             metric,
             value,
         )
+
+
+def export_baselines_for_process(detector: DriftDetector | None = None) -> None:
+    """
+    Export static baseline gauges without creating any window observations.
+
+    This lets Grafana show configured baselines while the worker is idle. It
+    intentionally does not set drift_window_* gauges, because those must reflect
+    real processed pages only.
+    """
+    try:
+        _export_baselines_once(detector if detector is not None else get_detector())
+    except Exception:
+        logger.exception("drift_observer: baseline gauge export failed — suppressed")
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────

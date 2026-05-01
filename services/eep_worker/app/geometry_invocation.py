@@ -366,8 +366,9 @@ async def _invoke_one(
 def _observe_geometry_metrics(
     iep1a: GeometryResponse | None,
     iep1b: GeometryResponse | None,
-    route_decision: str,
     session: Session,
+    selection_result: GeometrySelectionResult | None = None,
+    route_decision: str | None = None,
 ) -> None:
     """
     Feed geometry and selection-gate metrics into the drift detector.
@@ -381,7 +382,8 @@ def _observe_geometry_metrics(
       iep1a.geometry_confidence, iep1a.tta_structural_agreement_rate,
       iep1a.tta_prediction_variance, iep1a.split_detection_rate  (if IEP1A succeeded)
       iep1b.*  (same four fields, if IEP1B succeeded)
-      eep.geometry_selection_route.accepted_fraction  (binary: 1.0 = accepted)
+      eep.structural_agreement_rate  (binary: 1.0 when both models agree)
+      all eep.geometry_selection_route.* fractions (binary one-vs-rest)
     """
     if iep1a is not None:
         observe_and_check("iep1a.geometry_confidence", iep1a.geometry_confidence, session)
@@ -397,11 +399,46 @@ def _observe_geometry_metrics(
         )
         observe_and_check("iep1b.tta_prediction_variance", iep1b.tta_prediction_variance, session)
         observe_and_check("iep1b.split_detection_rate", float(iep1b.split_required), session)
-    observe_and_check(
-        "eep.geometry_selection_route.accepted_fraction",
-        1.0 if route_decision == "accepted" else 0.0,
-        session,
+    if iep1a is not None and iep1b is not None:
+        structurally_agreed = (
+            iep1a.page_count == iep1b.page_count
+            and iep1a.split_required == iep1b.split_required
+        )
+        observe_and_check("eep.structural_agreement_rate", float(structurally_agreed), session)
+
+    route_decision = route_decision or (
+        selection_result.route_decision if selection_result is not None else "unknown"
     )
+    route_flags = {
+        "accepted_fraction": route_decision == "accepted",
+        "review_fraction": route_decision in {"pending_human_correction", "review"},
+        "structural_disagreement_fraction": (
+            selection_result.structural_agreement is False
+            if selection_result is not None
+            else route_decision == "structural_disagreement"
+        ),
+        "sanity_failed_fraction": (
+            selection_result.review_reason == "geometry_sanity_failed"
+            if selection_result is not None
+            else route_decision == "geometry_sanity_failed"
+        ),
+        "split_confidence_low_fraction": (
+            selection_result.review_reason == "split_confidence_low"
+            if selection_result is not None
+            else route_decision == "split_confidence_low"
+        ),
+        "tta_variance_high_fraction": (
+            selection_result.review_reason == "tta_variance_high"
+            if selection_result is not None
+            else route_decision == "tta_variance_high"
+        ),
+    }
+    for suffix, active in route_flags.items():
+        observe_and_check(
+            f"eep.geometry_selection_route.{suffix}",
+            1.0 if active else 0.0,
+            session,
+        )
     EEP_GEOMETRY_SELECTION_ROUTE.labels(route=route_decision).inc()
 
 
@@ -530,7 +567,7 @@ async def invoke_geometry_services(
     _observe_geometry_metrics(
         iep1a=outcome_a.response,
         iep1b=outcome_b.response,
-        route_decision=selection_result.route_decision,
+        selection_result=selection_result,
         session=session,
     )
 
