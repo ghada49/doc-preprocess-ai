@@ -131,7 +131,7 @@ class TestScaleUpServiceList(unittest.TestCase):
     # ECS services started by update_service.  iep0/iep1a/iep1b are RunPod — excluded.
     EXPECTED_STARTED = {
         "libraryai-iep1e",
-        "libraryai-iep2a",
+        "libraryai-iep2a-v2",
         "libraryai-iep2b",
         "libraryai-eep-worker",
         "libraryai-eep-recovery",
@@ -263,6 +263,14 @@ class TestScaleUpServiceList(unittest.TestCase):
                     normal_scaler._do_scale_up()
 
         mock_create_pods.assert_called_once_with("test-key", "us-east-1")
+        registered_env = mock_ecs.register_task_definition.call_args.kwargs[
+            "containerDefinitions"
+        ][0]["environment"]
+        env_by_name = {entry["name"]: entry["value"] for entry in registered_env}
+        self.assertEqual(env_by_name["IEP0_URL"], "https://pod1-8006.proxy.runpod.net")
+        self.assertEqual(env_by_name["IEP1A_URL"], "https://pod2-8001.proxy.runpod.net")
+        self.assertEqual(env_by_name["IEP1B_URL"], "https://pod3-8002.proxy.runpod.net")
+        self.assertEqual(env_by_name["IEP2A_URL"], "http://iep2a-v2:8004")
 
     def test_runpod_pods_skipped_when_no_api_key(self):
         """When RUNPOD_API_KEY is absent, _create_runpod_pods is not called."""
@@ -601,7 +609,7 @@ class TestNormalScaleUpServicesConstant(unittest.TestCase):
             "libraryai-iep1a",
             "libraryai-iep1b",
             "libraryai-iep1e",
-            "libraryai-iep2a",
+            "libraryai-iep2a-v2",
             "libraryai-iep2b",
             "libraryai-eep-worker",
             "libraryai-eep-recovery",

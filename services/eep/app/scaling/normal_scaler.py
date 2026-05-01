@@ -19,7 +19,7 @@ PROCESSING_START_MODE (env var):
 Services started by normal scale-up (spec §5):
   GPU ASG → GPU_ASG_DESIRED instances
   libraryai-iep0, iep1a, iep1b        (GPU inference)
-  libraryai-iep1e, iep2a, iep2b       (CPU inference)
+  libraryai-iep1e, iep2a-v2, iep2b    (CPU inference)
   libraryai-eep-worker, eep-recovery, shadow-worker
 
 Services intentionally NOT started (spec §6):
@@ -75,7 +75,7 @@ _GPU_SERVICES: list[str] = [
 ]
 _CPU_IEP_SERVICES: list[str] = [
     "libraryai-iep1e",
-    "libraryai-iep2a",
+    "libraryai-iep2a-v2",
     "libraryai-iep2b",
 ]
 _WORKER_SERVICES: list[str] = [
@@ -770,12 +770,27 @@ def _register_eep_worker_with_runpod_urls(
     task_def: dict = {k: v for k, v in resp["taskDefinition"].items()
                       if k not in _TASK_DEF_READONLY_FIELDS}
 
-    url_overrides = {"IEP0_URL": iep0_url, "IEP1A_URL": iep1a_url, "IEP1B_URL": iep1b_url}
+    iep2a_url = os.environ.get("IEP2A_URL", "http://iep2a-v2:8004").strip()
+    if not iep2a_url:
+        iep2a_url = "http://iep2a-v2:8004"
+
+    url_overrides = {
+        "IEP0_URL": iep0_url,
+        "IEP1A_URL": iep1a_url,
+        "IEP1B_URL": iep1b_url,
+        "IEP2A_URL": iep2a_url,
+    }
     for container in task_def.get("containerDefinitions", []):
-        container["environment"] = [
-            {"name": e["name"], "value": url_overrides.get(e["name"], e["value"])}
-            for e in container.get("environment", [])
-        ]
+        env = []
+        seen: set[str] = set()
+        for entry in container.get("environment", []):
+            name = entry["name"]
+            seen.add(name)
+            env.append({"name": name, "value": url_overrides.get(name, entry["value"])})
+        for name, value in url_overrides.items():
+            if name not in seen:
+                env.append({"name": name, "value": value})
+        container["environment"] = env
 
     new_rev = ecs_client.register_task_definition(**task_def)
     arn: str = new_rev["taskDefinition"]["taskDefinitionArn"]

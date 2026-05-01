@@ -480,11 +480,19 @@ jobs:
               iep1b)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1b","clientAliases":[{"port":8002,"dnsName":"iep1b"}]}]}' ;;
               iep1d)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1d","clientAliases":[{"port":8003,"dnsName":"iep1d"}]}]}' ;;
               iep1e)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1e","clientAliases":[{"port":8007,"dnsName":"iep1e"}]}]}' ;;
-              iep2a)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2a","clientAliases":[{"port":8004,"dnsName":"iep2a"}]}]}' ;;
+              iep2a)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2a-v2","clientAliases":[{"port":8004,"dnsName":"iep2a-v2"}]}]}' ;;
               iep2b)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2b","clientAliases":[{"port":8005,"dnsName":"iep2b"}]}]}' ;;
               frontend) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"frontend","clientAliases":[{"port":3000,"dnsName":"frontend"}]}]}' ;;
               mlflow)   echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"mlflow","clientAliases":[{"port":5000,"dnsName":"mlflow.libraryai.local"}]}]}' ;;
               *)        echo '{"enabled":true,"namespace":"libraryai.local"}' ;;
+            esac
+          }
+
+          ecs_service_name() {
+            local svc=$1
+            case "$svc" in
+              iep2a) echo "libraryai-iep2a-v2" ;;
+              *)     echo "libraryai-${svc}" ;;
             esac
           }
 
@@ -518,7 +526,7 @@ jobs:
               | sed "s|IEP1A_URL_VALUE|${{ vars.IEP1A_URL || 'http://iep1a:8001' }}|g" \
               | sed "s|IEP1B_URL_VALUE|${{ vars.IEP1B_URL || 'http://iep1b:8002' }}|g" \
               | sed "s|IEP1E_URL_VALUE|${{ vars.IEP1E_URL || 'http://iep1e:8007' }}|g" \
-              | sed "s|IEP2A_URL_VALUE|${{ vars.IEP2A_URL || 'http://iep2a:8004' }}|g" \
+              | sed "s|IEP2A_URL_VALUE|${{ vars.IEP2A_URL || 'http://iep2a-v2:8004' }}|g" \
               | sed "s|IEP2B_URL_VALUE|${{ vars.IEP2B_URL || 'http://iep2b:8005' }}|g" \
               | sed "s|RUNPOD_POD_MODE_VALUE|${{ vars.RUNPOD_POD_MODE || 'create' }}|g" \
               | sed "s|RUNPOD_IEP0_POD_ID_VALUE|${{ vars.RUNPOD_IEP0_POD_ID || '' }}|g" \
@@ -538,10 +546,11 @@ jobs:
               --cli-input-json "$TASK_DEF" \
               --query 'taskDefinition.taskDefinitionArn' --output text)
             echo "Registered $REVISION"
+            ECS_SERVICE=$(ecs_service_name "$SVC")
 
             if aws ecs describe-services \
                 --cluster "$CLUSTER" \
-                --services "libraryai-${SVC}" \
+                --services "$ECS_SERVICE" \
                 --query 'services[0].status' --output text 2>/dev/null \
                 | grep -qE "ACTIVE|DRAINING"; then
               SC=$(sc_config "$SVC")
@@ -553,15 +562,15 @@ jobs:
               esac
               aws ecs update-service \
                 --cluster "$CLUSTER" \
-                --service "libraryai-${SVC}" \
+                --service "$ECS_SERVICE" \
                 "${DESIRED_ARGS[@]}" \
                 --task-definition "$REVISION" \
                 --service-connect-configuration "$SC" \
                 --force-new-deployment \
                 --no-cli-pager
-              echo "Updated staging service libraryai-${SVC}"
+              echo "Updated staging service $ECS_SERVICE"
             else
-              echo "libraryai-${SVC} not yet created in staging — skipping update"
+              echo "$ECS_SERVICE not yet created in staging — skipping update"
             fi
           done
 
@@ -571,20 +580,28 @@ jobs:
           # Deploy only refreshes task definitions for off-by-default processing
           # services. Immediate processing scale-up is owned by normal_scaler.py,
           # which injects live RunPod URLs before starting eep-worker.
+          ecs_service_name() {
+            local svc=$1
+            case "$svc" in
+              iep2a) echo "libraryai-iep2a-v2" ;;
+              *)     echo "libraryai-${svc}" ;;
+            esac
+          }
           for SVC in eep-worker eep-recovery shadow-worker retraining-worker dataset-builder iep0 iep1a iep1b iep1d iep1e iep2a iep2b; do
+            ECS_SERVICE=$(ecs_service_name "$SVC")
             if aws ecs describe-services \
                 --cluster "$CLUSTER" \
-                --services "libraryai-${SVC}" \
+                --services "$ECS_SERVICE" \
                 --query 'services[0].status' --output text 2>/dev/null \
                 | grep -qE "ACTIVE|DRAINING"; then
               aws ecs update-service \
                 --cluster "$CLUSTER" \
-                --service "libraryai-${SVC}" \
+                --service "$ECS_SERVICE" \
                 --desired-count 0 \
                 --no-cli-pager
-              echo "libraryai-${SVC} desired -> 0"
+              echo "$ECS_SERVICE desired -> 0"
             else
-              echo "libraryai-${SVC} not present in staging — skipping"
+              echo "$ECS_SERVICE not present in staging — skipping"
             fi
           done
 
@@ -757,18 +774,26 @@ jobs:
         run: |
           echo "E2E tests failed — stopping processing workers in staging."
           echo "libraryai-eep is NOT touched: the API must remain reachable for diagnostics."
+          ecs_service_name() {
+            local svc=$1
+            case "$svc" in
+              iep2a) echo "libraryai-iep2a-v2" ;;
+              *)     echo "libraryai-${svc}" ;;
+            esac
+          }
           for SVC in eep-worker eep-recovery shadow-worker iep0 iep1a iep1b iep1d iep1e iep2a iep2b; do
+            ECS_SERVICE=$(ecs_service_name "$SVC")
             DESIRED=$(aws ecs describe-services \
               --cluster "$CLUSTER" \
-              --services "libraryai-${SVC}" \
+              --services "$ECS_SERVICE" \
               --query 'services[0].desiredCount' --output text 2>/dev/null || echo "0")
             if [ "$DESIRED" != "0" ] && [ "$DESIRED" != "None" ]; then
               aws ecs update-service \
                 --cluster "$CLUSTER" \
-                --service "libraryai-${SVC}" \
+                --service "$ECS_SERVICE" \
                 --desired-count 0 \
                 --no-cli-pager || true
-              echo "libraryai-${SVC} → 0"
+              echo "$ECS_SERVICE → 0"
             fi
           done
           echo "Rollback complete. EEP API still running. Investigate staging before re-promoting."

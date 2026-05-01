@@ -113,7 +113,7 @@ jobs:
               --service "libraryai-${SVC}" \
               --desired-count 0 \
               --no-cli-pager
-            echo "libraryai-${SVC} desired → 0"
+            echo "$SVC desired → 0"
           done
           aws ecs wait services-stable \
             --cluster "$ECS_CLUSTER" \
@@ -157,19 +157,19 @@ jobs:
       # ── Step 6: Stop CPU IEP services ────────────────────────────────────
       # NOTE: libraryai-iep1d is a CPU/Fargate service (on-demand rescue path).
       # It is always reset to 0 here as a safety cleanup even if desired-count is already 0.
-      - name: Stop CPU IEP services (iep1d, iep1e, iep2a, iep2b)
+      - name: Stop CPU IEP services (iep1d, iep1e, iep2a-v2, iep2b)
         run: |
-          for SVC in iep1d iep1e iep2a iep2b; do
+          for SVC in libraryai-iep1d libraryai-iep1e libraryai-iep2a-v2 libraryai-iep2b; do
             aws ecs update-service \
               --cluster "$ECS_CLUSTER" \
-              --service "libraryai-${SVC}" \
+              --service "$SVC" \
               --desired-count 0 \
               --no-cli-pager
             echo "libraryai-${SVC} desired → 0"
           done
           aws ecs wait services-stable \
             --cluster "$ECS_CLUSTER" \
-            --services libraryai-iep1d libraryai-iep1e libraryai-iep2a libraryai-iep2b
+            --services libraryai-iep1d libraryai-iep1e libraryai-iep2a-v2 libraryai-iep2b
           echo "CPU IEP services stopped."
 
       # ── Step 7: Terminate RunPod GPU pods (iep0, iep1a, iep1b) ──────────
