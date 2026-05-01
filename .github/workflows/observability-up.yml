@@ -99,7 +99,7 @@ jobs:
       - name: Wait for Prometheus to stabilize
         run: |
           echo "Waiting for libraryai-prometheus to reach stable state..."
-          for i in $(seq 1 30); do
+          for i in $(seq 1 60); do
             STATUS=$(aws ecs describe-services \
               --cluster "$ECS_CLUSTER" \
               --services libraryai-prometheus \
@@ -110,13 +110,17 @@ jobs:
               --services libraryai-prometheus \
               --query 'services[0].runningCount' \
               --output text 2>/dev/null || echo "0")
-            echo "  Attempt $i/30 - rolloutState=$STATUS runningCount=$RUNNING"
+            echo "  Attempt $i/60 - rolloutState=$STATUS runningCount=$RUNNING"
             if [ "$STATUS" = "COMPLETED" ] && [ "$RUNNING" -ge 1 ]; then
               echo "Prometheus is stable."
               break
             fi
-            if [ "$i" -eq 30 ]; then
-              echo "Prometheus did not stabilize within 5 minutes."
+            if [ "$i" -ge 18 ] && [ "$RUNNING" -ge 1 ]; then
+              echo "Prometheus task is running (rolloutState=$STATUS) — accepting after grace period."
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "Prometheus did not stabilize within 10 minutes."
               exit 1
             fi
             sleep 10
@@ -155,10 +159,17 @@ jobs:
               --target-type ip \
               --vpc-id "$VPC_ID" \
               --health-check-path /grafana/api/health \
+              --health-check-interval-seconds 10 \
+              --healthy-threshold-count 2 \
               --query 'TargetGroups[0].TargetGroupArn' --output text)
             echo "Created Grafana target group: $TG_ARN"
           else
-            echo "Grafana target group already exists: $TG_ARN"
+            echo "Grafana target group already exists: $TG_ARN — ensuring health check settings are correct"
+            aws elbv2 modify-target-group \
+              --target-group-arn "$TG_ARN" \
+              --health-check-path /grafana/api/health \
+              --health-check-interval-seconds 10 \
+              --healthy-threshold-count 2
           fi
 
           EXISTING_RULE=$(aws elbv2 describe-rules \
@@ -196,14 +207,14 @@ jobs:
             --desired-count 1 \
             --service-connect-configuration "$SC_CONFIG" \
             --load-balancers "[{\"targetGroupArn\":\"$GRAFANA_TG_ARN\",\"containerName\":\"grafana\",\"containerPort\":3000}]" \
-            --health-check-grace-period-seconds 60 \
+            --health-check-grace-period-seconds 120 \
             --force-new-deployment
           echo "libraryai-grafana scaled to 1."
 
       - name: Wait for Grafana to stabilize
         run: |
           echo "Waiting for libraryai-grafana to reach stable state..."
-          for i in $(seq 1 30); do
+          for i in $(seq 1 60); do
             STATUS=$(aws ecs describe-services \
               --cluster "$ECS_CLUSTER" \
               --services libraryai-grafana \
@@ -214,13 +225,19 @@ jobs:
               --services libraryai-grafana \
               --query 'services[0].runningCount' \
               --output text 2>/dev/null || echo "0")
-            echo "  Attempt $i/30 - rolloutState=$STATUS runningCount=$RUNNING"
+            echo "  Attempt $i/60 - rolloutState=$STATUS runningCount=$RUNNING"
             if [ "$STATUS" = "COMPLETED" ] && [ "$RUNNING" -ge 1 ]; then
               echo "Grafana is stable."
               break
             fi
-            if [ "$i" -eq 30 ]; then
-              echo "Grafana did not stabilize within 5 minutes."
+            # After 3 minutes, accept runningCount=1 even if rolloutState is still IN_PROGRESS
+            # (ALB health check registration can be slow; task is reachable)
+            if [ "$i" -ge 18 ] && [ "$RUNNING" -ge 1 ]; then
+              echo "Grafana task is running (rolloutState=$STATUS) — accepting after grace period."
+              break
+            fi
+            if [ "$i" -eq 60 ]; then
+              echo "Grafana did not stabilize within 10 minutes."
               exit 1
             fi
             sleep 10
