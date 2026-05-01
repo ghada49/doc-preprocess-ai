@@ -308,6 +308,87 @@ class TestScaleUpServiceList(unittest.TestCase):
 
         mock_ecs.update_service.assert_not_called()
 
+    def test_existing_worker_service_suppresses_duplicate_runpod_create(self):
+        """A second scale-up while workers are active must not create another RunPod set."""
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        env = {
+            "ECS_CLUSTER": "test-cluster",
+            "WORKER_DESIRED_COUNT": "2",
+            "AWS_REGION": "us-east-1",
+            "RUNPOD_API_KEY": "test-key",
+        }
+        mock_ecs = MagicMock()
+        mock_ecs.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "libraryai-eep-worker",
+                    "desiredCount": 2,
+                    "runningCount": 2,
+                    "pendingCount": 0,
+                }
+            ]
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            with patch("boto3.client", return_value=mock_ecs):
+                with patch.object(normal_scaler, "_create_runpod_pods") as mock_create_pods:
+                    normal_scaler._do_scale_up()
+
+        mock_create_pods.assert_not_called()
+        mock_ecs.update_service.assert_not_called()
+
+    def test_aws_startup_failure_terminates_created_runpod_pods(self):
+        """If AWS startup fails after pod creation, the created RunPod pods are terminated."""
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+
+        env = {
+            "ECS_CLUSTER": "test-cluster",
+            "WORKER_DESIRED_COUNT": "2",
+            "AWS_REGION": "us-east-1",
+            "RUNPOD_API_KEY": "test-key",
+        }
+        mock_ecs = MagicMock()
+        mock_ecs.describe_services.return_value = {
+            "services": [
+                {
+                    "serviceName": "libraryai-eep-worker",
+                    "desiredCount": 0,
+                    "runningCount": 0,
+                    "pendingCount": 0,
+                }
+            ]
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            with patch("boto3.client", return_value=mock_ecs):
+                with patch.object(
+                    normal_scaler,
+                    "_create_runpod_pods",
+                    return_value=(
+                        "https://pod1-8006.proxy.runpod.net",
+                        "https://pod2-8001.proxy.runpod.net",
+                        "https://pod3-8002.proxy.runpod.net",
+                    ),
+                ):
+                    with patch.object(
+                        normal_scaler,
+                        "_register_eep_worker_with_runpod_urls",
+                        side_effect=RuntimeError("iam:PassRole denied"),
+                    ):
+                        with patch.object(normal_scaler, "_cleanup_created_runpod_pods") as mock_cleanup:
+                            normal_scaler._do_scale_up()
+
+        mock_cleanup.assert_called_once_with(
+            "test-key",
+            ["pod1", "pod2", "pod3"],
+            "AWS startup failure",
+        )
+
     def test_runpod_gpu_candidates_normalize_aliases_and_fallbacks(self):
         import importlib
         from services.eep.app.scaling import normal_scaler

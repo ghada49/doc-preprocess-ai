@@ -26,8 +26,27 @@ jobs:
           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
           aws-region: ${{ vars.AWS_REGION }}
 
+      - name: Check whether processing is already active
+        id: processing-active
+        run: |
+          set -euo pipefail
+          COUNTS=$(aws ecs describe-services \
+            --cluster "$ECS_CLUSTER" \
+            --services libraryai-eep-worker \
+            --query 'services[0].[desiredCount,runningCount,pendingCount]' \
+            --output text)
+          read -r DESIRED RUNNING PENDING <<< "$COUNTS"
+          echo "libraryai-eep-worker desired=$DESIRED running=$RUNNING pending=$PENDING"
+          if [ "${DESIRED:-0}" -gt 0 ] || [ "${RUNNING:-0}" -gt 0 ] || [ "${PENDING:-0}" -gt 0 ]; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+            echo "Processing is already active; skipping scale-up to avoid duplicate RunPod pods."
+          else
+            echo "active=false" >> "$GITHUB_OUTPUT"
+          fi
+
       # ── Step 1: Create RunPod GPU pods (iep0, iep1a, iep1b) ─────────────
       - name: Create RunPod GPU pods
+        if: steps.processing-active.outputs.active != 'true'
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           RUNPOD_POD_MODE: ${{ vars.RUNPOD_POD_MODE || 'create' }}
@@ -164,10 +183,28 @@ jobs:
             echo "IEP0_URL=https://${IEP0_POD}-8006.proxy.runpod.net"   >> "$GITHUB_ENV"
             echo "IEP1A_URL=https://${IEP1A_POD}-8001.proxy.runpod.net" >> "$GITHUB_ENV"
             echo "IEP1B_URL=https://${IEP1B_POD}-8002.proxy.runpod.net" >> "$GITHUB_ENV"
+            echo "RUNPOD_CREATED_BY_THIS_RUN=false" >> "$GITHUB_ENV"
             echo "{\"iep0\":\"$IEP0_POD\",\"iep1a\":\"$IEP1A_POD\",\"iep1b\":\"$IEP1B_POD\"}" \
               | aws s3 cp - s3://libraryai2/ops/runpod-pods.json
             exit 0
           fi
+
+          CREATED_PODS=()
+          cleanup_created_pods_on_error() {
+            if [ "${#CREATED_PODS[@]}" -eq 0 ]; then
+              return 0
+            fi
+            echo "::warning::Scale-up failed during RunPod creation; terminating newly-created pods: ${CREATED_PODS[*]}"
+            for POD_ID in "${CREATED_PODS[@]}"; do
+              [ -z "$POD_ID" ] && continue
+              curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "{\"query\":\"mutation { podTerminate(input: {podId: \\\"${POD_ID}\\\"}) }\"}" \
+                > /dev/null || true
+              echo "Terminated newly-created RunPod pod: $POD_ID"
+            done
+          }
+          trap cleanup_created_pods_on_error ERR
 
           create_pod() {
             local NAME="$1" IMAGE="$2" PORT="$3"
@@ -182,6 +219,7 @@ jobs:
                 -d "$PAYLOAD")
               POD_ID=$(echo "$RESPONSE" | python3 -c 'import json,sys; d=json.load(sys.stdin); pod_id=d.get("id") or d.get("data", {}).get("id"); print(pod_id or ""); sys.exit(0 if pod_id else 1)' 2>/dev/null || true)
               if [ -n "$POD_ID" ]; then
+                CREATED_PODS+=("$POD_ID")
                 echo "$POD_ID"
                 return 0
               fi
@@ -193,8 +231,11 @@ jobs:
           }
 
           IEP0_POD=$(create_pod  "libraryai-iep0"  "gma51/libraryai-iep0:latest"  "8006")
+          CREATED_PODS+=("$IEP0_POD")
           IEP1A_POD=$(create_pod "libraryai-iep1a" "gma51/libraryai-iep1a:latest" "8001")
+          CREATED_PODS+=("$IEP1A_POD")
           IEP1B_POD=$(create_pod "libraryai-iep1b" "gma51/libraryai-iep1b:latest" "8002")
+          CREATED_PODS+=("$IEP1B_POD")
 
           echo "IEP0_POD_ID=$IEP0_POD"   >> "$GITHUB_ENV"
           echo "IEP1A_POD_ID=$IEP1A_POD" >> "$GITHUB_ENV"
@@ -203,6 +244,7 @@ jobs:
           echo "IEP0_URL=https://${IEP0_POD}-8006.proxy.runpod.net"   >> "$GITHUB_ENV"
           echo "IEP1A_URL=https://${IEP1A_POD}-8001.proxy.runpod.net" >> "$GITHUB_ENV"
           echo "IEP1B_URL=https://${IEP1B_POD}-8002.proxy.runpod.net" >> "$GITHUB_ENV"
+          echo "RUNPOD_CREATED_BY_THIS_RUN=true" >> "$GITHUB_ENV"
 
           echo "Created RunPod pods:"
           echo "  iep0:  $IEP0_POD  → https://${IEP0_POD}-8006.proxy.runpod.net"
@@ -213,9 +255,11 @@ jobs:
           echo "{\"iep0\":\"$IEP0_POD\",\"iep1a\":\"$IEP1A_POD\",\"iep1b\":\"$IEP1B_POD\"}" \
             | aws s3 cp - s3://libraryai2/ops/runpod-pods.json
           echo "Pod IDs saved to s3://libraryai2/ops/runpod-pods.json"
+          trap - ERR
 
       # ── Step 2: Wait for RunPod pods to respond to health checks ─────────
       - name: Wait for RunPod pods to be ready
+        if: steps.processing-active.outputs.active != 'true'
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
         run: |
@@ -252,6 +296,7 @@ jobs:
 
       # ── Step 3: Register eep-worker task def with RunPod IEP URLs ────────
       - name: Update eep-worker task definition with RunPod IEP URLs
+        if: steps.processing-active.outputs.active != 'true'
         run: |
           CLUSTER="$ECS_CLUSTER"
           TASK_DEF=$(cat k8s/ecs/eep-worker-task-def.json \
@@ -273,6 +318,7 @@ jobs:
 
       # ── Step 4: Start CPU inference services ─────────────────────────────
       - name: Start CPU IEP services (iep1e, iep2a-v2, iep2b)
+        if: steps.processing-active.outputs.active != 'true'
         run: |
           for SVC in libraryai-iep1e libraryai-iep2a-v2 libraryai-iep2b; do
             aws ecs update-service \
@@ -285,6 +331,7 @@ jobs:
           done
 
       - name: Wait for CPU IEP services to become healthy
+        if: steps.processing-active.outputs.active != 'true'
         run: |
           aws ecs wait services-stable \
             --cluster "$ECS_CLUSTER" \
@@ -294,6 +341,7 @@ jobs:
       # ── Step 5: Start processing workers ─────────────────────────────────
       # NOTE: libraryai-eep is always-on and is NOT managed by this workflow.
       - name: Start workers
+        if: steps.processing-active.outputs.active != 'true'
         run: |
           DESIRED=${{ vars.WORKER_DESIRED_COUNT || '2' }}
           # eep-worker gets the new task def with RunPod IEP URLs
@@ -317,6 +365,7 @@ jobs:
 
       # NOTE: libraryai-iep1d is a rescue-path service — NOT started here.
       - name: Wait for workers to become healthy
+        if: steps.processing-active.outputs.active != 'true'
         run: |
           aws ecs wait services-stable \
             --cluster "$ECS_CLUSTER" \
@@ -327,3 +376,42 @@ jobs:
           echo "  iep0:  ${IEP0_URL}"
           echo "  iep1a: ${IEP1A_URL}"
           echo "  iep1b: ${IEP1B_URL}"
+
+      - name: Cleanup failed scale-up resources
+        if: ${{ failure() && steps.processing-active.outputs.active != 'true' }}
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          echo "Scale-up failed; rolling back AWS services touched by this workflow."
+          for SVC in libraryai-eep-worker libraryai-iep1e libraryai-iep2a-v2 libraryai-iep2b libraryai-eep-recovery libraryai-shadow-worker; do
+            aws ecs update-service \
+              --cluster "$ECS_CLUSTER" \
+              --service "$SVC" \
+              --desired-count 0 \
+              --no-cli-pager >/dev/null 2>&1 || true
+            echo "Set $SVC desired=0"
+          done
+
+          if [ "${RUNPOD_CREATED_BY_THIS_RUN:-false}" != "true" ]; then
+            echo "No newly-created RunPod pods recorded for this run; skipping RunPod cleanup."
+            exit 0
+          fi
+
+          echo "Terminating RunPod pods created by this failed scale-up."
+          for ITEM in "iep0:${IEP0_POD_ID:-}" "iep1a:${IEP1A_POD_ID:-}" "iep1b:${IEP1B_POD_ID:-}"; do
+            NAME="${ITEM%%:*}"
+            POD_ID="${ITEM#*:}"
+            if [ -z "$POD_ID" ]; then
+              echo "No pod id recorded for $NAME"
+              continue
+            fi
+            curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+              -H "Content-Type: application/json" \
+              -d "{\"query\":\"mutation { podTerminate(input: {podId: \\\"${POD_ID}\\\"}) }\"}" \
+              > /dev/null || true
+            echo "Terminated $NAME RunPod pod: $POD_ID"
+          done
+
+          aws s3 rm s3://libraryai2/ops/runpod-pods.json 2>/dev/null || true
