@@ -23,6 +23,7 @@
         { "name": "HEALTH_PORT",              "value": "9101" },
         { "name": "GOOGLE_ENABLED",              "value": "GOOGLE_ENABLED_VALUE" },
         { "name": "GOOGLE_PROJECT_ID",           "value": "GOOGLE_PROJECT_ID_VALUE" },
+        { "name": "GOOGLE_LOCATION",             "value": "GOOGLE_LOCATION_VALUE" },
         { "name": "GOOGLE_PROCESSOR_ID_LAYOUT",  "value": "GOOGLE_PROCESSOR_ID_LAYOUT_VALUE" },
         { "name": "S3_BUCKET_NAME",           "value": "libraryai2" },
         { "name": "WORKER_TASK_TIMEOUT_SECONDS", "value": "900" },

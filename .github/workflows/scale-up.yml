@@ -53,10 +53,10 @@ jobs:
           RUNPOD_IEP0_POD_ID: ${{ vars.RUNPOD_IEP0_POD_ID || '' }}
           RUNPOD_IEP1A_POD_ID: ${{ vars.RUNPOD_IEP1A_POD_ID || '' }}
           RUNPOD_IEP1B_POD_ID: ${{ vars.RUNPOD_IEP1B_POD_ID || '' }}
-          RUNPOD_GPU_TYPE_ID: ${{ vars.RUNPOD_GPU_TYPE_ID || 'NVIDIA RTX A5000' }}
+          RUNPOD_GPU_TYPE_ID: ${{ vars.RUNPOD_GPU_TYPE_ID || '' }}
           RUNPOD_GPU_TYPES: ${{ vars.RUNPOD_GPU_TYPES || 'NVIDIA RTX 4000 Ada Generation,NVIDIA RTX A4000,NVIDIA RTX 2000 Ada Generation,NVIDIA RTX A5000,NVIDIA RTX A4500,NVIDIA L4,NVIDIA A40,NVIDIA RTX A6000' }}
-          RUNPOD_CLOUD_TYPE: ${{ vars.RUNPOD_CLOUD_TYPE || 'COMMUNITY' }}
-          RUNPOD_CLOUD_TYPES: ${{ vars.RUNPOD_CLOUD_TYPES || 'COMMUNITY,SECURE' }}
+          RUNPOD_CLOUD_TYPE: ${{ vars.RUNPOD_CLOUD_TYPE || 'SECURE' }}
+          RUNPOD_CLOUD_TYPES: ${{ vars.RUNPOD_CLOUD_TYPES || 'SECURE,COMMUNITY' }}
           RUNPOD_CONTAINER_DISK_GB: ${{ vars.RUNPOD_CONTAINER_DISK_GB || '50' }}
           RUNPOD_MIN_VCPU_PER_GPU: ${{ vars.RUNPOD_MIN_VCPU_PER_GPU || '2' }}
           RUNPOD_MIN_RAM_PER_GPU: ${{ vars.RUNPOD_MIN_RAM_PER_GPU || '8' }}
@@ -212,7 +212,7 @@ jobs:
             GPU_JSON=$(printf '%s\n' "${GPU_CANDIDATES[@]}" | python3 -c 'import json,sys; print(json.dumps([line.strip() for line in sys.stdin if line.strip()]))')
             for CLOUD_TYPE in "${CLOUD_CANDIDATES[@]}"; do
               echo "Creating $NAME on RunPod REST cloudType=$CLOUD_TYPE gpuTypeIds=$GPU_JSON" >&2
-              PAYLOAD=$(python3 -c 'import json,os,sys; name,image,port,cloud,gpu_json=sys.argv[1:6]; env={"PYTHONPATH":"/app","AWS_REGION":os.environ.get("AWS_REGION","eu-central-1"),"S3_REGION":os.environ.get("AWS_REGION","eu-central-1"),"S3_BUCKET_NAME":"libraryai2","HEALTH_PORT":port,"RUNPOD_TERMINATE_ON_IDLE":"true"}; env.update({"IEP0_MODEL_PATH":"/app/models/iep0/classifier.pt"} if name.endswith("iep0") else {"IEP1A_MODELS_DIR":"/app/models/iep1a"} if name.endswith("iep1a") else {"IEP1B_MODELS_DIR":"/app/models/iep1b"} if name.endswith("iep1b") else {}); payload={"name":name,"imageName":image,"computeType":"GPU","cloudType":cloud,"gpuCount":1,"gpuTypeIds":json.loads(gpu_json),"gpuTypePriority":"availability","interruptible":False,"containerDiskInGb":int(os.environ.get("RUNPOD_CONTAINER_DISK_GB","50") or "50"),"minVCPUPerGPU":int(os.environ.get("RUNPOD_MIN_VCPU_PER_GPU","2") or "2"),"minRAMPerGPU":int(os.environ.get("RUNPOD_MIN_RAM_PER_GPU","8") or "8"),"ports":[f"{port}/http"],"env":env}; print(json.dumps(payload))' "$NAME" "$IMAGE" "$PORT" "$CLOUD_TYPE" "$GPU_JSON")
+              PAYLOAD=$(python3 -c 'import json,os,sys; name,image,port,cloud,gpu_json=sys.argv[1:6]; env={"PYTHONPATH":"/app","AWS_REGION":os.environ.get("AWS_REGION","eu-central-1"),"S3_REGION":os.environ.get("AWS_REGION","eu-central-1"),"S3_BUCKET_NAME":"libraryai2","HEALTH_PORT":port,"RUNPOD_TERMINATE_ON_IDLE":"true"}; env.update({"IEP0_MODEL_PATH":"/app/models/iep0/classifier.pt"} if name.endswith("iep0") else {"IEP1A_MODELS_DIR":"/app/models/iep1a"} if name.endswith("iep1a") else {"IEP1B_MODELS_DIR":"/app/models/iep1b"} if name.endswith("iep1b") else {}); payload={"name":name,"imageName":image,"computeType":"GPU","cloudType":cloud,"gpuCount":1,"gpuTypeIds":json.loads(gpu_json),"gpuTypePriority":"custom","interruptible":False,"containerDiskInGb":int(os.environ.get("RUNPOD_CONTAINER_DISK_GB","50") or "50"),"minVCPUPerGPU":int(os.environ.get("RUNPOD_MIN_VCPU_PER_GPU","2") or "2"),"minRAMPerGPU":int(os.environ.get("RUNPOD_MIN_RAM_PER_GPU","8") or "8"),"ports":[f"{port}/http"],"env":env}; print(json.dumps(payload))' "$NAME" "$IMAGE" "$PORT" "$CLOUD_TYPE" "$GPU_JSON")
               RESPONSE=$(curl -sS -X POST "https://rest.runpod.io/v1/pods" \
                 -H "Authorization: Bearer ${RUNPOD_API_KEY}" \
                 -H "Content-Type: application/json" \
@@ -269,13 +269,13 @@ jobs:
             local POD_ID="$1" PORT="$2" NAME="$3"
             local URL="https://${POD_ID}-${PORT}.proxy.runpod.net/health"
             echo "Waiting for $NAME to become ready at $URL ..."
-            for i in $(seq 1 40); do
+            for i in $(seq 1 120); do
               # Check RunPod pod status via API
               STATUS=$(curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
                 -H "Content-Type: application/json" \
                 -d "{\"query\":\"query { pod(input: {podId: \\\"${POD_ID}\\\"}) { desiredStatus runtime { uptimeInSeconds } } }\"}" \
                 | python3 -c "import sys,json; d=json.load(sys.stdin); p=d['data']['pod']; print('RUNNING' if p.get('runtime') is not None else p.get('desiredStatus','UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
-              echo "  attempt $i/40 — $NAME pod status=$STATUS"
+              echo "  attempt $i/120 — $NAME pod status=$STATUS"
               if [ "$STATUS" = "RUNNING" ]; then
                 # Pod is up — check service health endpoint
                 if curl -sf --max-time 10 "$URL" > /dev/null 2>&1; then
@@ -285,7 +285,7 @@ jobs:
               fi
               sleep 15
             done
-            echo "ERROR: $NAME pod did not become healthy within 10 minutes"
+            echo "ERROR: $NAME pod did not become healthy within 30 minutes"
             exit 1
           }
 

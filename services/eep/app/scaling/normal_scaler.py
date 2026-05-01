@@ -508,7 +508,7 @@ def _create_runpod_pod_rest(
     gpu_type_ids: list[str],
     cloud_type: str,
 ) -> str:
-    """Create one RunPod pod through the REST API using GPU availability priority."""
+    """Create one RunPod pod through the REST API using the configured GPU order."""
     import httpx  # noqa: PLC0415
 
     payload = {
@@ -518,7 +518,7 @@ def _create_runpod_pod_rest(
         "cloudType": cloud_type,
         "gpuCount": 1,
         "gpuTypeIds": gpu_type_ids,
-        "gpuTypePriority": "availability",
+        "gpuTypePriority": "custom",
         "interruptible": False,
         "containerDiskInGb": int(os.environ.get("RUNPOD_CONTAINER_DISK_GB", "50")),
         "minVCPUPerGPU": int(os.environ.get("RUNPOD_MIN_VCPU_PER_GPU", "2")),
@@ -655,20 +655,20 @@ def _create_runpod_pod_set(
 
 
 def _normalize_runpod_cloud_type(value: str) -> str:
-    cloud_type = (value or "COMMUNITY").strip().upper()
+    cloud_type = (value or "SECURE").strip().upper()
     if cloud_type == "SECURITY":
         return "SECURE"
     if cloud_type not in {"COMMUNITY", "SECURE"}:
         logger.warning(
-            "normal_scaler: invalid RUNPOD_CLOUD_TYPE=%s, defaulting to COMMUNITY",
+            "normal_scaler: invalid RUNPOD_CLOUD_TYPE=%s, defaulting to SECURE",
             cloud_type,
         )
-        return "COMMUNITY"
+        return "SECURE"
     return cloud_type
 
 
 def _runpod_cloud_type_candidates() -> list[str]:
-    primary = _normalize_runpod_cloud_type(os.environ.get("RUNPOD_CLOUD_TYPE", "COMMUNITY"))
+    primary = _normalize_runpod_cloud_type(os.environ.get("RUNPOD_CLOUD_TYPE", "SECURE"))
     raw = os.environ.get("RUNPOD_CLOUD_TYPES", "").strip()
     values = [primary]
     if raw:

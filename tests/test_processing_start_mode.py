@@ -419,8 +419,8 @@ class TestScaleUpServiceList(unittest.TestCase):
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
-        with patch.dict(os.environ, {"RUNPOD_CLOUD_TYPE": "COMMUNITY"}, clear=False):
-            self.assertEqual(normal_scaler._runpod_cloud_type_candidates(), ["COMMUNITY", "SECURE"])
+        with patch.dict(os.environ, {"RUNPOD_CLOUD_TYPE": "", "RUNPOD_CLOUD_TYPES": ""}, clear=False):
+            self.assertEqual(normal_scaler._runpod_cloud_type_candidates(), ["SECURE", "COMMUNITY"])
 
     def test_runpod_pod_mode_invalid_defaults_to_create(self):
         import importlib
@@ -580,7 +580,7 @@ class TestCreateRunPodPodWithFallback(unittest.TestCase):
         payload = kwargs["json"]
         self.assertEqual(kwargs["headers"]["Authorization"], "Bearer test-key")
         self.assertEqual(payload["gpuTypeIds"], ["NVIDIA RTX A5000", "NVIDIA GeForce RTX 4090"])
-        self.assertEqual(payload["gpuTypePriority"], "availability")
+        self.assertEqual(payload["gpuTypePriority"], "custom")
         self.assertEqual(payload["ports"], ["8001/http"])
         self.assertEqual(payload["env"]["IEP1A_MODELS_DIR"], "/app/models/iep1a")
 
