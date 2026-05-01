@@ -382,6 +382,28 @@ jobs:
           cache-from: type=registry,ref=${{ env.ECR_REGISTRY }}/libraryai-${{ matrix.service }}:latest
           cache-to: type=inline
 
+      # When no source files changed we skip the docker build, but downstream
+      # jobs (migrate-staging, deploy-staging) still reference :github.sha.
+      # Re-tag :latest → :github.sha in ECR so that tag always exists.
+      # This is a manifest-only operation — no layers are transferred.
+      - name: Re-tag :latest as :${{ github.sha }} (skipped-build only)
+        if: steps.changed.outputs.skip == 'true'
+        run: |
+          REPO="libraryai-${{ matrix.service }}"
+          MANIFEST=$(aws ecr batch-get-image \
+            --repository-name "$REPO" \
+            --image-ids imageTag=latest \
+            --query 'images[0].imageManifest' --output text)
+          if [ -z "$MANIFEST" ] || [ "$MANIFEST" = "None" ]; then
+            echo "::error::No :latest image found for $REPO — cannot re-tag. The image must be pushed at least once before skip logic applies."
+            exit 1
+          fi
+          aws ecr put-image \
+            --repository-name "$REPO" \
+            --image-tag "${{ github.sha }}" \
+            --image-manifest "$MANIFEST" || true  # tolerate "already exists" error
+          echo "$REPO :latest re-tagged as :${{ github.sha }}"
+
       - name: Push to Docker Hub (gma51)
         if: steps.changed.outputs.skip != 'true' && matrix.push_dockerhub == true
         run: |
@@ -441,7 +463,18 @@ jobs:
             --tasks ${{ steps.run-migration.outputs.task_arn }} \
             --query 'tasks[0].containers[0].exitCode' --output text)
           if [ "$EXIT" != "0" ]; then
+            # Fetch full diagnostics so the real failure reason is visible in logs.
+            STOPPED_REASON=$(aws ecs describe-tasks \
+              --cluster "$CLUSTER" \
+              --tasks ${{ steps.run-migration.outputs.task_arn }} \
+              --query 'tasks[0].stoppedReason' --output text 2>/dev/null || echo "unknown")
+            CONTAINER_REASON=$(aws ecs describe-tasks \
+              --cluster "$CLUSTER" \
+              --tasks ${{ steps.run-migration.outputs.task_arn }} \
+              --query 'tasks[0].containers[0].reason' --output text 2>/dev/null || echo "unknown")
             echo "Staging migration exited with code $EXIT — aborting"
+            echo "  stoppedReason:   $STOPPED_REASON"
+            echo "  containerReason: $CONTAINER_REASON"
             exit 1
           fi
           echo "Staging migration succeeded (exit 0)"

@@ -217,18 +217,7 @@ jobs:
             echo "IEP1B_URL=https://${IEP1B_POD}-8002.proxy.runpod.net" >> "$GITHUB_ENV"
             echo "RUNPOD_CREATED_BY_THIS_RUN=false" >> "$GITHUB_ENV"
             EXIST=$(aws s3 cp s3://libraryai2/ops/runpod-pods.json - 2>/dev/null || echo '{}')
-            APPEND_JSON=$(IEP0_POD="$IEP0_POD" IEP1A_POD="$IEP1A_POD" IEP1B_POD="$IEP1B_POD" python3 -c "
-import json, os
-from datetime import datetime, timezone
-now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-run = os.environ.get('GITHUB_RUN_ID', 'manual')
-pods = [
-    ('iep0', os.environ['IEP0_POD']),
-    ('iep1a', os.environ['IEP1A_POD']),
-    ('iep1b', os.environ['IEP1B_POD']),
-]
-print(json.dumps([{'role': r, 'pod_id': p, 'created_at': now, 'source': f'github_actions_existing:{run}'} for r, p in pods]))
-")
+            APPEND_JSON=$(IEP0_POD="$IEP0_POD" IEP1A_POD="$IEP1A_POD" IEP1B_POD="$IEP1B_POD" python3 -c "import json,os; from datetime import datetime,timezone; now=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'); run=os.environ.get('GITHUB_RUN_ID','manual'); pods=[('iep0',os.environ['IEP0_POD']),('iep1a',os.environ['IEP1A_POD']),('iep1b',os.environ['IEP1B_POD'])]; print(json.dumps([{'role':r,'pod_id':p,'created_at':now,'source':f'github_actions_existing:{run}'} for r,p in pods]))")
             export APPEND_JSON
             export REMOVE_IDS=""
             echo "$EXIST" | python3 "${GITHUB_WORKSPACE}/scripts/runpod_s3_state.py" merge | aws s3 cp - s3://libraryai2/ops/runpod-pods.json
@@ -390,20 +379,7 @@ print(json.dumps([{'role': r, 'pod_id': p, 'created_at': now, 'source': f'github
           # Merge into S3 (v2) — append all pod creations (including health-check replacements);
           # remove pod IDs that were terminated during replace.
           EXIST=$(aws s3 cp s3://libraryai2/ops/runpod-pods.json - 2>/dev/null || echo '{}')
-          APPEND_JSON=$(printf '%s\n' "${POD_CREATION_LOG[@]}" | python3 -c "
-import json, sys, os
-from datetime import datetime, timezone
-now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
-run = os.environ.get('GITHUB_RUN_ID', 'manual')
-out = []
-for line in sys.stdin:
-    line = line.strip()
-    if not line or '|' not in line:
-        continue
-    role, pid = line.split('|', 1)
-    out.append({'role': role, 'pod_id': pid, 'created_at': now, 'source': f'github_actions:{run}'})
-print(json.dumps(out))
-")
+          APPEND_JSON=$(printf '%s\n' "${POD_CREATION_LOG[@]}" | python3 -c "import json,sys,os; from datetime import datetime,timezone; now=datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'); run=os.environ.get('GITHUB_RUN_ID','manual'); lines=[l.strip() for l in sys.stdin if '|' in l.strip()]; out=[{'role':r,'pod_id':p,'created_at':now,'source':f'github_actions:{run}'} for l in lines for r,p in [l.split('|',1)]]; print(json.dumps(out))")
           export APPEND_JSON
           REMOVE_MERGED="$(IFS=,; echo "${TERMINATED_IDS[*]}")"
           export REMOVE_IDS="$REMOVE_MERGED"
