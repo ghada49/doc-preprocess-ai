@@ -88,7 +88,7 @@
                                    },
                        "id":  2,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "vertical",
@@ -100,7 +100,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "value_and_name",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -108,7 +108,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "up",
+                                           "expr":  "up{job=~\"eep|eep-worker|eep-recovery|shadow-worker|retraining-worker|prometheus\"} OR on(job) label_replace(max by (service) (service_target_up), \"job\", \"$1\", \"service\", \"(.*)\")",
                                            "legendFormat":  "{{job}}",
                                            "refId":  "A"
                                        }
@@ -332,7 +332,7 @@
 
                    },
     "timezone":  "browser",
-    "title":  "LibraryAI â€” API Service Health",
+    "title":  "LibraryAI - API Service Health",
     "uid":  "libraryai-api",
     "version":  1
 }

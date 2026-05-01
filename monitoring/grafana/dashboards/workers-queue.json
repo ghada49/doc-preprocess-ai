@@ -243,7 +243,7 @@
                                            "refId":  "A"
                                        }
                                    ],
-                       "title":  "Shadow Queue Backlog Delta (enqueued âˆ’ processed per 5m)",
+                       "title":  "Shadow Queue Backlog Delta (enqueued - processed per 5m)",
                        "type":  "timeseries"
                    },
                    {
@@ -598,7 +598,7 @@
 
                    },
     "timezone":  "browser",
-    "title":  "LibraryAI â€” Workers \u0026 Queue",
+    "title":  "LibraryAI - Workers \u0026 Queue",
     "uid":  "libraryai-workers",
     "version":  1
 }

@@ -356,11 +356,21 @@ jobs:
       - name: Start CPU IEP services (iep1d, iep1e, iep2a-v2, iep2b)
         if: steps.processing-active.outputs.active != 'true'
         run: |
+          sc_config() {
+            case "$1" in
+              libraryai-iep1d) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1d","clientAliases":[{"port":8003,"dnsName":"iep1d"}]}]}' ;;
+              libraryai-iep1e) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1e","clientAliases":[{"port":8007,"dnsName":"iep1e"}]}]}' ;;
+              libraryai-iep2a-v2) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2a-v2","clientAliases":[{"port":8004,"dnsName":"iep2a-v2"}]}]}' ;;
+              libraryai-iep2b) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2b","clientAliases":[{"port":8005,"dnsName":"iep2b"}]}]}' ;;
+            esac
+          }
           for SVC in libraryai-iep1d libraryai-iep1e libraryai-iep2a-v2 libraryai-iep2b; do
+            SC_CONFIG=$(sc_config "$SVC")
             aws ecs update-service \
               --cluster "$ECS_CLUSTER" \
               --service "$SVC" \
               --desired-count 1 \
+              --service-connect-configuration "$SC_CONFIG" \
               --force-new-deployment \
               --no-cli-pager
             echo "Started $SVC"
@@ -380,12 +390,16 @@ jobs:
         if: steps.processing-active.outputs.active != 'true'
         run: |
           DESIRED=${{ vars.WORKER_DESIRED_COUNT || '2' }}
+          EEP_WORKER_SC='{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"eep-worker","clientAliases":[{"port":9100,"dnsName":"eep-worker"}]}]}'
+          EEP_RECOVERY_SC='{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"eep-recovery","clientAliases":[{"port":9101,"dnsName":"eep-recovery"}]}]}'
+          SHADOW_WORKER_SC='{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"shadow-worker","clientAliases":[{"port":9102,"dnsName":"shadow-worker"}]}]}'
           # eep-worker gets the new task def with RunPod IEP URLs
           aws ecs update-service \
             --cluster "$ECS_CLUSTER" \
             --service libraryai-eep-worker \
             --task-definition "$EEP_WORKER_TASK_DEF" \
             --desired-count "$DESIRED" \
+            --service-connect-configuration "$EEP_WORKER_SC" \
             --force-new-deployment \
             --no-cli-pager
           echo "Started libraryai-eep-worker desired=$DESIRED (RunPod URLs injected)"
@@ -395,6 +409,8 @@ jobs:
             --cluster "$ECS_CLUSTER" \
             --service libraryai-eep-recovery \
             --desired-count 1 \
+            --service-connect-configuration "$EEP_RECOVERY_SC" \
+            --force-new-deployment \
             --no-cli-pager
           echo "Started libraryai-eep-recovery desired=1"
 
@@ -402,6 +418,8 @@ jobs:
             --cluster "$ECS_CLUSTER" \
             --service libraryai-shadow-worker \
             --desired-count "$DESIRED" \
+            --service-connect-configuration "$SHADOW_WORKER_SC" \
+            --force-new-deployment \
             --no-cli-pager
           echo "Started libraryai-shadow-worker desired=$DESIRED"
 

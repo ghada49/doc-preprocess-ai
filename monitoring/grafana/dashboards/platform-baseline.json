@@ -88,7 +88,7 @@
                                    },
                        "id":  2,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "horizontal",
@@ -100,7 +100,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "auto",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -169,7 +169,7 @@
                                    },
                        "id":  3,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "horizontal",
@@ -181,7 +181,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "auto",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -250,7 +250,7 @@
                                    },
                        "id":  4,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "horizontal",
@@ -262,7 +262,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "value",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -305,7 +305,10 @@
                                                                                              }
                                                                                          ]
                                                                            },
-                                                            "unit":  "none"
+                                                            "unit":  "none",
+                                                            "mappings":  [
+
+                                                                         ]
                                                         },
                                            "overrides":  [
 
@@ -319,7 +322,7 @@
                                    },
                        "id":  5,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "horizontal",
@@ -331,7 +334,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "value",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -366,7 +369,10 @@
                                                                                              }
                                                                                          ]
                                                                            },
-                                                            "unit":  "none"
+                                                            "unit":  "none",
+                                                            "mappings":  [
+
+                                                                         ]
                                                         },
                                            "overrides":  [
 
@@ -380,7 +386,7 @@
                                    },
                        "id":  6,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "horizontal",
@@ -392,7 +398,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "value",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -456,7 +462,7 @@
                                    },
                        "id":  7,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "horizontal",
@@ -468,7 +474,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "value",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -476,7 +482,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "sum(up{job=~\"eep-worker|eep-recovery|shadow-worker|retraining-worker|iep0|iep1a|iep1b|iep1d|iep1e|iep2a|iep2b\"}) OR on() vector(0)",
+                                           "expr":  "(sum(up{job=~\"eep-worker|eep-recovery|shadow-worker|retraining-worker\"}) OR on() vector(0)) + (sum(max by (service) (service_target_up{service=~\"iep0|iep1a|iep1b|iep1d|iep1e|iep2a|iep2b\"})) OR on() vector(0))",
                                            "refId":  "A"
                                        }
                                    ],
@@ -686,7 +692,7 @@
                                    },
                        "id":  12,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "vertical",
@@ -698,7 +704,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "value_and_name",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -751,7 +757,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "max(up{job=\"iep0\"}) OR on() vector(0)",
+                                           "expr":  "max(service_target_up{service=\"iep0\"}) OR on() vector(0)",
                                            "legendFormat":  "iep0",
                                            "refId":  "F"
                                        },
@@ -760,7 +766,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "max(up{job=\"iep1a\"}) OR on() vector(0)",
+                                           "expr":  "max(service_target_up{service=\"iep1a\"}) OR on() vector(0)",
                                            "legendFormat":  "iep1a",
                                            "refId":  "G"
                                        },
@@ -769,7 +775,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "max(up{job=\"iep1b\"}) OR on() vector(0)",
+                                           "expr":  "max(service_target_up{service=\"iep1b\"}) OR on() vector(0)",
                                            "legendFormat":  "iep1b",
                                            "refId":  "H"
                                        },
@@ -778,7 +784,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "max(up{job=\"iep1d\"}) OR on() vector(0)",
+                                           "expr":  "max(service_target_up{service=\"iep1d\"}) OR on() vector(0)",
                                            "legendFormat":  "iep1d",
                                            "refId":  "I"
                                        },
@@ -787,7 +793,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "max(up{job=\"iep1e\"}) OR on() vector(0)",
+                                           "expr":  "max(service_target_up{service=\"iep1e\"}) OR on() vector(0)",
                                            "legendFormat":  "iep1e",
                                            "refId":  "J"
                                        },
@@ -796,7 +802,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "max(up{job=\"iep2a\"}) OR on() vector(0)",
+                                           "expr":  "max(service_target_up{service=\"iep2a\"}) OR on() vector(0)",
                                            "legendFormat":  "iep2a",
                                            "refId":  "K"
                                        },
@@ -805,7 +811,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "max(up{job=\"iep2b\"}) OR on() vector(0)",
+                                           "expr":  "max(service_target_up{service=\"iep2b\"}) OR on() vector(0)",
                                            "legendFormat":  "iep2b",
                                            "refId":  "L"
                                        }
