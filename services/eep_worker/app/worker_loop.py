@@ -1578,7 +1578,16 @@ async def _run_preprocessing(
                 (time.monotonic() - split_started_at) * 1000.0,
             )
         except Exception as exc:
-            raise RetryableTaskError(f"split normalization failed: {exc}") from exc
+            logger.exception(
+                "worker_loop: split normalization crashed job=%s page=%d "
+                "exc_type=%s",
+                job.job_id,
+                page.page_number,
+                type(exc).__name__,
+            )
+            raise RetryableTaskError(
+                f"split normalization failed: {type(exc).__name__}: {exc}"
+            ) from exc
 
         # ── IEP1E — semantic normalization for split children ────────────────
         # Resolve orientation + reading order for both crops (best-effort).

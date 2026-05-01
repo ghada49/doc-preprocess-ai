@@ -28,20 +28,48 @@ jobs:
 
       - name: Check whether processing is already active
         id: processing-active
+        # Mirrors services/eep/app/scaling/normal_scaler.py:_normal_processing_already_active.
+        # The cluster is "active" only when every ECS-managed normal-processing
+        # service has BOTH desired>=1 AND running>=1.  Checking eep-worker
+        # alone (the previous behaviour) silently skipped scale-up whenever an
+        # operator brought a CPU IEP or worker singleton to 0 individually,
+        # leaving the cluster half-up and unable to make progress.
+        # GPU IEPs (iep0/1a/1b) are NOT consulted here — their ECS placeholders
+        # always sit at desired=0 by design; the real GPU work runs on RunPod.
         run: |
           set -euo pipefail
-          COUNTS=$(aws ecs describe-services \
-            --cluster "$ECS_CLUSTER" \
-            --services libraryai-eep-worker \
-            --query 'services[0].[desiredCount,runningCount,pendingCount]' \
-            --output text)
-          read -r DESIRED RUNNING PENDING <<< "$COUNTS"
-          echo "libraryai-eep-worker desired=$DESIRED running=$RUNNING pending=$PENDING"
-          if [ "${DESIRED:-0}" -gt 0 ] || [ "${RUNNING:-0}" -gt 0 ] || [ "${PENDING:-0}" -gt 0 ]; then
+          ACTIVE_CHECK_SERVICES=(
+            libraryai-iep1d
+            libraryai-iep1e
+            libraryai-iep2a-v2
+            libraryai-iep2b
+            libraryai-eep-worker
+            libraryai-eep-recovery
+            libraryai-shadow-worker
+          )
+          ALL_ACTIVE=true
+          for SVC in "${ACTIVE_CHECK_SERVICES[@]}"; do
+            COUNTS=$(aws ecs describe-services \
+              --cluster "$ECS_CLUSTER" \
+              --services "$SVC" \
+              --query 'services[0].[desiredCount,runningCount]' \
+              --output text 2>/dev/null || echo "0 0")
+            read -r DESIRED RUNNING <<< "$COUNTS"
+            DESIRED="${DESIRED:-0}"; RUNNING="${RUNNING:-0}"
+            # describe-services returns "None None" when the service was deleted
+            if [ "$DESIRED" = "None" ]; then DESIRED=0; fi
+            if [ "$RUNNING" = "None" ]; then RUNNING=0; fi
+            echo "$SVC desired=$DESIRED running=$RUNNING"
+            if [ "$DESIRED" -lt 1 ] || [ "$RUNNING" -lt 1 ]; then
+              ALL_ACTIVE=false
+            fi
+          done
+          if [ "$ALL_ACTIVE" = "true" ]; then
             echo "active=true" >> "$GITHUB_OUTPUT"
-            echo "Processing is already active; skipping scale-up to avoid duplicate RunPod pods."
+            echo "All normal-processing services already active; skipping scale-up to avoid duplicate RunPod pods."
           else
             echo "active=false" >> "$GITHUB_OUTPUT"
+            echo "At least one normal-processing service is below desired/running >= 1; proceeding with scale-up."
           fi
 
       # ── Step 1: Create RunPod GPU pods (iep0, iep1a, iep1b) ─────────────
@@ -317,10 +345,18 @@ jobs:
           echo "Registered eep-worker task def: $REVISION"
 
       # ── Step 4: Start CPU inference services ─────────────────────────────
-      - name: Start CPU IEP services (iep1e, iep2a-v2, iep2b)
+      # iep1d is the rectification rescue path (CPU/Fargate).  It used to be
+      # left at desired=0 and started on-demand by services/eep_worker/app/
+      # iep1d_scaler.py, but its cold-start latency routinely exceeded the
+      # worker's IEP1D_READY_TIMEOUT_SECONDS, sending the first wave of pages
+      # that need rescue straight to pending_human_correction.  Pre-warming
+      # iep1d here costs one extra Fargate task during the processing window
+      # (~$0.02/hour) and eliminates that race.  The on-demand scaler still
+      # exists as a defence-in-depth fallback (idempotent when desired=1).
+      - name: Start CPU IEP services (iep1d, iep1e, iep2a-v2, iep2b)
         if: steps.processing-active.outputs.active != 'true'
         run: |
-          for SVC in libraryai-iep1e libraryai-iep2a-v2 libraryai-iep2b; do
+          for SVC in libraryai-iep1d libraryai-iep1e libraryai-iep2a-v2 libraryai-iep2b; do
             aws ecs update-service \
               --cluster "$ECS_CLUSTER" \
               --service "$SVC" \
@@ -335,7 +371,7 @@ jobs:
         run: |
           aws ecs wait services-stable \
             --cluster "$ECS_CLUSTER" \
-            --services libraryai-iep1e libraryai-iep2a-v2 libraryai-iep2b
+            --services libraryai-iep1d libraryai-iep1e libraryai-iep2a-v2 libraryai-iep2b
           echo "All CPU IEP services healthy."
 
       # ── Step 5: Start processing workers ─────────────────────────────────
@@ -369,7 +405,6 @@ jobs:
             --no-cli-pager
           echo "Started libraryai-shadow-worker desired=$DESIRED"
 
-      # NOTE: libraryai-iep1d is a rescue-path service — NOT started here.
       - name: Wait for workers to become healthy
         if: steps.processing-active.outputs.active != 'true'
         run: |
@@ -391,7 +426,7 @@ jobs:
           set -euo pipefail
 
           echo "Scale-up failed; rolling back AWS services touched by this workflow."
-          for SVC in libraryai-eep-worker libraryai-iep1e libraryai-iep2a-v2 libraryai-iep2b libraryai-eep-recovery libraryai-shadow-worker; do
+          for SVC in libraryai-eep-worker libraryai-iep1d libraryai-iep1e libraryai-iep2a-v2 libraryai-iep2b libraryai-eep-recovery libraryai-shadow-worker; do
             aws ecs update-service \
               --cluster "$ECS_CLUSTER" \
               --service "$SVC" \

@@ -18,12 +18,23 @@ PROCESSING_START_MODE (env var):
 
 Services started by normal scale-up (spec §5):
   GPU ASG → GPU_ASG_DESIRED instances
-  libraryai-iep0, iep1a, iep1b        (GPU inference)
-  libraryai-iep1e, iep2a-v2, iep2b    (CPU inference)
+  libraryai-iep0, iep1a, iep1b           (GPU inference)
+  libraryai-iep1d                         (CPU/Fargate rescue path — pre-warmed)
+  libraryai-iep1e, iep2a-v2, iep2b       (CPU inference)
   libraryai-eep-worker, eep-recovery, shadow-worker
 
+iep1d note:
+  iep1d (rectification rescue path) was historically left at desired=0 and
+  scaled on demand by ``services/eep_worker/app/iep1d_scaler.py``.  In
+  practice the cold-start latency from desired=0 (Fargate task pull + model
+  load) routinely exceeds the worker's IEP1D_READY_TIMEOUT_SECONDS, causing
+  the first wave of pages that need rescue to be routed to
+  ``pending_human_correction`` while iep1d is still warming up.  We now
+  pre-warm iep1d alongside iep1e/iep2a/iep2b — the on-demand scaler still
+  exists as a defence-in-depth fallback (its update_service call is
+  idempotent when desired=1 already).
+
 Services intentionally NOT started (spec §6):
-  libraryai-iep1d          — CPU/Fargate, on-demand rescue only (iep1d_scaler.py)
   libraryai-retraining-worker, dataset-builder  — offline/batch only
   libraryai-prometheus, grafana                 — on-demand observability only
   artifact cleanup                              — separate maintenance workflow
@@ -69,13 +80,14 @@ _SCALE_LOCK_KEY = "libraryai:normal_scale:lock"
 _SCALE_LOCK_TTL_S = int(os.environ.get("NORMAL_SCALE_LOCK_TTL_SECONDS", "600"))
 
 # Normal-processing services — must match spec §5 exactly.
-# Do NOT add iep1d, retraining-worker, dataset-builder, prometheus, or grafana here.
+# Do NOT add retraining-worker, dataset-builder, prometheus, or grafana here.
 _GPU_SERVICES: list[str] = [
     "libraryai-iep0",
     "libraryai-iep1a",
     "libraryai-iep1b",
 ]
 _CPU_IEP_SERVICES: list[str] = [
+    "libraryai-iep1d",
     "libraryai-iep1e",
     "libraryai-iep2a-v2",
     "libraryai-iep2b",
@@ -92,7 +104,6 @@ NORMAL_SCALE_UP_SERVICES: list[str] = _GPU_SERVICES + _CPU_IEP_SERVICES + _WORKE
 # Services that must NEVER be started by normal scale-up.
 _EXCLUDED_SERVICES: frozenset[str] = frozenset(
     {
-        "libraryai-iep1d",
         "libraryai-retraining-worker",
         "libraryai-dataset-builder",
         "libraryai-prometheus",
@@ -169,10 +180,10 @@ def _do_scale_up() -> None:
     Starts (in order):
       1. RunPod GPU pods (iep0, iep1a, iep1b) — if RUNPOD_API_KEY is set
       2. eep-worker — with RunPod IEP URLs injected into a new task def revision
-      3. CPU IEP services (iep1e, iep2a, iep2b) → 1
+      3. CPU IEP services (iep1d, iep1e, iep2a, iep2b) → 1 each
       4. Remaining worker services (eep-recovery, shadow-worker) → WORKER_DESIRED_COUNT
 
-    Does NOT start iep1d, retraining-worker, dataset-builder, prometheus, grafana.
+    Does NOT start retraining-worker, dataset-builder, prometheus, grafana.
 
     Individual failures are logged but do not abort remaining calls.
     """
@@ -377,32 +388,81 @@ def _rollback_aws_services(ecs_client, cluster: str) -> None:
         _update_service(ecs_client, cluster, service, 0)
 
 
+# Services whose state is consulted by the active-check.  GPU IEPs (iep0/1a/1b)
+# are deliberately excluded: their ECS placeholders always sit at desired=0;
+# the real GPU work runs on RunPod pods created by ``_create_runpod_pods``.
+_ACTIVE_CHECK_SERVICES: list[str] = _CPU_IEP_SERVICES + _WORKER_SERVICES
+
+
 def _normal_processing_already_active(ecs_client, cluster: str) -> bool:
-    """Return True when normal processing is already scaled up."""
+    """
+    Return True only when *every* ECS-managed normal-processing service is
+    currently up.  Returns False (i.e. allow scale-up) on any unknown / failed
+    state so a partial cluster can self-heal on the next trigger.
+
+    Why every service?  Previously this checked only ``libraryai-eep-worker``
+    and skipped scale-up whenever that one service had ``desired > 0``.  When
+    an operator (or the scheduled scale-down path) brings any of the CPU IEPs
+    or worker singletons to 0 individually — or terminates the RunPod pods
+    out-of-band — the cluster ends up half-up and unable to make progress, but
+    the trigger silently returns "already active" because eep-worker is still
+    running with stale env-baked IEP URLs.
+
+    The fix: a service counts as "active" only if both ``desired >= 1`` and
+    ``running >= 1``.  If any of the services in ``_ACTIVE_CHECK_SERVICES`` is
+    below that bar we return False so ``_do_scale_up`` proceeds to (re)create
+    RunPod pods, register a fresh eep-worker task definition with the new IEP
+    URLs, and force-redeploy every affected service.
+
+    GPU IEPs (iep0/iep1a/iep1b) intentionally aren't checked here: their ECS
+    services are placeholders at desired=0 by design.  The freshness of their
+    RunPod backing is captured indirectly — every full scale-up registers a
+    new eep-worker task def with the new RunPod URLs, so refreshing any of the
+    other services is sufficient to also refresh the GPU URLs.
+    """
+    if not _ACTIVE_CHECK_SERVICES:
+        return False
+
     try:
         resp = ecs_client.describe_services(
             cluster=cluster,
-            services=["libraryai-eep-worker"],
+            services=_ACTIVE_CHECK_SERVICES,
         )
     except Exception as exc:  # noqa: BLE001
-        logger.warning("normal_scaler: could not check existing worker service state: %s", exc)
+        logger.warning(
+            "normal_scaler: could not describe normal-processing services: %s — "
+            "treating as not-active and proceeding with scale-up",
+            exc,
+        )
         return False
 
-    services = resp.get("services") or []
-    for service in services:
-        desired = int(service.get("desiredCount") or 0)
-        running = int(service.get("runningCount") or 0)
-        pending = int(service.get("pendingCount") or 0)
-        if desired > 0 or running > 0 or pending > 0:
-            logger.info(
-                "normal_scaler: libraryai-eep-worker already active "
-                "desired=%d running=%d pending=%d",
-                desired,
-                running,
-                pending,
-            )
-            return True
-    return False
+    services_by_name: dict[str, dict] = {
+        svc.get("serviceName", ""): svc for svc in resp.get("services") or []
+    }
+    inactive: list[str] = []
+    for name in _ACTIVE_CHECK_SERVICES:
+        svc = services_by_name.get(name)
+        if svc is None:
+            inactive.append(f"{name}=missing")
+            continue
+        desired = int(svc.get("desiredCount") or 0)
+        running = int(svc.get("runningCount") or 0)
+        if desired < 1 or running < 1:
+            inactive.append(f"{name}(desired={desired},running={running})")
+
+    if inactive:
+        logger.info(
+            "normal_scaler: scale-up needed — %d service(s) below active threshold: %s",
+            len(inactive),
+            ", ".join(inactive),
+        )
+        return False
+
+    logger.info(
+        "normal_scaler: all %d normal-processing services already active — skipping scale-up",
+        len(_ACTIVE_CHECK_SERVICES),
+    )
+    return True
 
 
 def _create_runpod_pod_with_fallback_gpu_only_unused(

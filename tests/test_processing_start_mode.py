@@ -129,7 +129,12 @@ class TestScaleUpServiceList(unittest.TestCase):
     """
 
     # ECS services started by update_service.  iep0/iep1a/iep1b are RunPod — excluded.
+    # iep1d is now pre-warmed alongside the other CPU IEPs (was previously
+    # left at desired=0 and started on-demand, but its cold-start exceeded
+    # the worker's IEP1D_READY_TIMEOUT_SECONDS for the first wave of pages
+    # that needed rescue).  See normal_scaler.py module docstring.
     EXPECTED_STARTED = {
+        "libraryai-iep1d",
         "libraryai-iep1e",
         "libraryai-iep2a-v2",
         "libraryai-iep2b",
@@ -139,7 +144,6 @@ class TestScaleUpServiceList(unittest.TestCase):
     }
 
     MUST_NOT_START = {
-        "libraryai-iep1d",
         "libraryai-retraining-worker",
         "libraryai-dataset-builder",
         "libraryai-prometheus",
@@ -199,10 +203,15 @@ class TestScaleUpServiceList(unittest.TestCase):
         overlap = started & self.MUST_NOT_START
         self.assertEqual(overlap, set(), f"Excluded services were started: {overlap}")
 
-    def test_iep1d_specifically_excluded(self):
+    def test_iep1d_pre_warmed(self):
+        """
+        iep1d is now pre-warmed during normal scale-up so its Fargate cold
+        start (4–6 min) doesn't race the worker's IEP1D /ready timeout for
+        pages that need rescue.  See normal_scaler.py module docstring.
+        """
         mock_ecs = self._run_do_scale_up()
         started = {c.kwargs["service"] for c in mock_ecs.update_service.call_args_list}
-        self.assertNotIn("libraryai-iep1d", started)
+        self.assertIn("libraryai-iep1d", started)
 
     def test_retraining_dataset_builder_excluded(self):
         mock_ecs = self._run_do_scale_up()
@@ -308,8 +317,14 @@ class TestScaleUpServiceList(unittest.TestCase):
 
         mock_ecs.update_service.assert_not_called()
 
-    def test_existing_worker_service_suppresses_duplicate_runpod_create(self):
-        """A second scale-up while workers are active must not create another RunPod set."""
+    def test_fully_active_cluster_suppresses_duplicate_runpod_create(self):
+        """When *every* normal-processing service is up, scale-up is a no-op.
+
+        The active-check guards against duplicate RunPod pod creation when an
+        immediate-mode trigger fires while the cluster is already healthy.
+        It returns True only if all services in _ACTIVE_CHECK_SERVICES report
+        desired>=1 AND running>=1.
+        """
         import importlib
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
@@ -324,11 +339,12 @@ class TestScaleUpServiceList(unittest.TestCase):
         mock_ecs.describe_services.return_value = {
             "services": [
                 {
-                    "serviceName": "libraryai-eep-worker",
-                    "desiredCount": 2,
-                    "runningCount": 2,
+                    "serviceName": svc,
+                    "desiredCount": 1,
+                    "runningCount": 1,
                     "pendingCount": 0,
                 }
+                for svc in normal_scaler._ACTIVE_CHECK_SERVICES
             ]
         }
 
@@ -430,18 +446,34 @@ class TestScaleUpServiceList(unittest.TestCase):
         self.assertEqual(normal_scaler._normalize_runpod_pod_mode("_create_runpod_pods"), "create")
 
     def test_worker_desired_count_used(self):
+        """WORKER_DESIRED_COUNT applies to eep-worker and shadow-worker only.
+
+        eep-recovery is intentionally pinned to 1 in _do_scale_up because it
+        mutates Redis queues and must run as a singleton (see normal_scaler:
+        "eep-recovery mutates Redis queues and must run as a singleton").
+        """
         mock_ecs = self._run_do_scale_up({"WORKER_DESIRED_COUNT": "3"})
 
-        worker_calls = [
+        scaled_calls = [
             c for c in mock_ecs.update_service.call_args_list
             if c.kwargs["service"] in {
                 "libraryai-eep-worker",
-                "libraryai-eep-recovery",
                 "libraryai-shadow-worker",
             }
         ]
-        for c in worker_calls:
+        self.assertEqual(len(scaled_calls), 2, "eep-worker + shadow-worker must both scale")
+        for c in scaled_calls:
             self.assertEqual(c.kwargs["desiredCount"], 3)
+
+        recovery_calls = [
+            c for c in mock_ecs.update_service.call_args_list
+            if c.kwargs["service"] == "libraryai-eep-recovery"
+        ]
+        self.assertEqual(len(recovery_calls), 1)
+        self.assertEqual(
+            recovery_calls[0].kwargs["desiredCount"], 1,
+            "eep-recovery must remain a singleton regardless of WORKER_DESIRED_COUNT",
+        )
 
 
 # ── RunPod pod-with-fallback unit tests ───────────────────────────────────────
@@ -585,6 +617,226 @@ class TestCreateRunPodPodWithFallback(unittest.TestCase):
         self.assertEqual(payload["env"]["IEP1A_MODELS_DIR"], "/app/models/iep1a")
 
 
+# ── _normal_processing_already_active: full-cluster active check ──────────────
+
+
+class TestNormalProcessingAlreadyActive(unittest.TestCase):
+    """
+    The active-check skips the scale-up only when *every* ECS-managed
+    normal-processing service is fully up.
+
+    The previous implementation checked only ``libraryai-eep-worker`` and
+    silently skipped scale-up whenever that one service was running, even when
+    a CPU IEP or worker singleton had been brought to 0 individually.  This
+    suite locks in the multi-service behaviour.
+    """
+
+    def setUp(self):
+        import importlib
+        from services.eep.app.scaling import normal_scaler
+        importlib.reload(normal_scaler)
+        self.normal_scaler = normal_scaler
+
+    def _all_active_response(self):
+        return {
+            "services": [
+                {
+                    "serviceName": svc,
+                    "desiredCount": 1,
+                    "runningCount": 1,
+                    "pendingCount": 0,
+                }
+                for svc in self.normal_scaler._ACTIVE_CHECK_SERVICES
+            ]
+        }
+
+    def _response_with_overrides(self, overrides: dict[str, dict]):
+        services = []
+        for svc in self.normal_scaler._ACTIVE_CHECK_SERVICES:
+            row = {
+                "serviceName": svc,
+                "desiredCount": 1,
+                "runningCount": 1,
+                "pendingCount": 0,
+            }
+            row.update(overrides.get(svc, {}))
+            services.append(row)
+        return {"services": services}
+
+    def test_returns_true_when_all_services_fully_active(self):
+        mock_ecs = MagicMock()
+        mock_ecs.describe_services.return_value = self._all_active_response()
+        result = self.normal_scaler._normal_processing_already_active(mock_ecs, "test-cluster")
+        self.assertTrue(result)
+
+    def test_returns_false_when_eep_worker_at_zero(self):
+        mock_ecs = MagicMock()
+        mock_ecs.describe_services.return_value = self._response_with_overrides(
+            {"libraryai-eep-worker": {"desiredCount": 0, "runningCount": 0}}
+        )
+        result = self.normal_scaler._normal_processing_already_active(mock_ecs, "test-cluster")
+        self.assertFalse(result)
+
+    def test_returns_false_when_iep1d_at_zero(self):
+        """iep1d is now pre-warmed, so a partial cluster where iep1d is at 0
+        must trigger a fresh scale-up (otherwise the rescue-path race is back)."""
+        mock_ecs = MagicMock()
+        mock_ecs.describe_services.return_value = self._response_with_overrides(
+            {"libraryai-iep1d": {"desiredCount": 0, "runningCount": 0}}
+        )
+        result = self.normal_scaler._normal_processing_already_active(mock_ecs, "test-cluster")
+        self.assertFalse(result)
+
+    def test_returns_false_when_iep1e_at_zero(self):
+        """The bug we just lived through: eep-worker up but a CPU IEP scaled down."""
+        mock_ecs = MagicMock()
+        mock_ecs.describe_services.return_value = self._response_with_overrides(
+            {"libraryai-iep1e": {"desiredCount": 0, "runningCount": 0}}
+        )
+        result = self.normal_scaler._normal_processing_already_active(mock_ecs, "test-cluster")
+        self.assertFalse(result)
+
+    def test_returns_false_when_iep2a_at_zero(self):
+        mock_ecs = MagicMock()
+        mock_ecs.describe_services.return_value = self._response_with_overrides(
+            {"libraryai-iep2a-v2": {"desiredCount": 0, "runningCount": 0}}
+        )
+        result = self.normal_scaler._normal_processing_already_active(mock_ecs, "test-cluster")
+        self.assertFalse(result)
+
+    def test_returns_false_when_iep2b_at_zero(self):
+        mock_ecs = MagicMock()
+        mock_ecs.describe_services.return_value = self._response_with_overrides(
+            {"libraryai-iep2b": {"desiredCount": 0, "runningCount": 0}}
+        )
+        result = self.normal_scaler._normal_processing_already_active(mock_ecs, "test-cluster")
+        self.assertFalse(result)
+
+    def test_returns_false_when_eep_recovery_at_zero(self):
+        mock_ecs = MagicMock()
+        mock_ecs.describe_services.return_value = self._response_with_overrides(
+            {"libraryai-eep-recovery": {"desiredCount": 0, "runningCount": 0}}
+        )
+        result = self.normal_scaler._normal_processing_already_active(mock_ecs, "test-cluster")
+        self.assertFalse(result)
+
+    def test_returns_false_when_shadow_worker_at_zero(self):
+        mock_ecs = MagicMock()
+        mock_ecs.describe_services.return_value = self._response_with_overrides(
+            {"libraryai-shadow-worker": {"desiredCount": 0, "runningCount": 0}}
+        )
+        result = self.normal_scaler._normal_processing_already_active(mock_ecs, "test-cluster")
+        self.assertFalse(result)
+
+    def test_returns_false_when_desired_one_but_running_zero(self):
+        """Half-deployed state (e.g. ECS deployment in progress, task crashing
+        loop) is treated as inactive so scale-up can refresh the task def and
+        force a clean redeploy."""
+        mock_ecs = MagicMock()
+        mock_ecs.describe_services.return_value = self._response_with_overrides(
+            {"libraryai-eep-worker": {"desiredCount": 1, "runningCount": 0}}
+        )
+        result = self.normal_scaler._normal_processing_already_active(mock_ecs, "test-cluster")
+        self.assertFalse(result)
+
+    def test_returns_false_when_a_service_is_missing_from_response(self):
+        """ECS sometimes drops services from describe_services if they were
+        deleted; treat that as inactive, not as an implicit pass."""
+        mock_ecs = MagicMock()
+        partial = self._response_with_overrides({})
+        partial["services"] = [
+            s for s in partial["services"] if s["serviceName"] != "libraryai-iep2b"
+        ]
+        mock_ecs.describe_services.return_value = partial
+        result = self.normal_scaler._normal_processing_already_active(mock_ecs, "test-cluster")
+        self.assertFalse(result)
+
+    def test_returns_false_when_describe_services_raises(self):
+        """Any boto error must NOT be silently treated as a pass — that would
+        permanently block scale-up if the API was transiently unreachable."""
+        mock_ecs = MagicMock()
+        mock_ecs.describe_services.side_effect = RuntimeError("AWS unreachable")
+        result = self.normal_scaler._normal_processing_already_active(mock_ecs, "test-cluster")
+        self.assertFalse(result)
+
+    def test_active_check_does_not_consult_gpu_iep_services(self):
+        """GPU IEPs are RunPod-backed; their ECS placeholders sit at desired=0
+        by design and must NOT be probed by the active-check."""
+        mock_ecs = MagicMock()
+        mock_ecs.describe_services.return_value = self._all_active_response()
+        self.normal_scaler._normal_processing_already_active(mock_ecs, "test-cluster")
+        called_services = mock_ecs.describe_services.call_args.kwargs["services"]
+        for gpu_svc in ("libraryai-iep0", "libraryai-iep1a", "libraryai-iep1b"):
+            self.assertNotIn(gpu_svc, called_services)
+
+    def test_active_check_consults_all_cpu_ieps_and_workers(self):
+        mock_ecs = MagicMock()
+        mock_ecs.describe_services.return_value = self._all_active_response()
+        self.normal_scaler._normal_processing_already_active(mock_ecs, "test-cluster")
+        called_services = set(mock_ecs.describe_services.call_args.kwargs["services"])
+        expected = {
+            "libraryai-iep1d",
+            "libraryai-iep1e",
+            "libraryai-iep2a-v2",
+            "libraryai-iep2b",
+            "libraryai-eep-worker",
+            "libraryai-eep-recovery",
+            "libraryai-shadow-worker",
+        }
+        self.assertEqual(called_services, expected)
+
+    def test_partial_active_triggers_full_scale_up(self):
+        """End-to-end: when only eep-worker is up, _do_scale_up must proceed
+        through RunPod creation, not exit early like the old single-service
+        check would have."""
+        env = {
+            "ECS_CLUSTER": "test-cluster",
+            "WORKER_DESIRED_COUNT": "2",
+            "AWS_REGION": "us-east-1",
+            "RUNPOD_API_KEY": "test-key",
+        }
+        mock_ecs = MagicMock()
+        mock_ecs.describe_services.return_value = self._response_with_overrides(
+            {
+                "libraryai-iep1e": {"desiredCount": 0, "runningCount": 0},
+                "libraryai-iep2a-v2": {"desiredCount": 0, "runningCount": 0},
+                "libraryai-iep2b": {"desiredCount": 0, "runningCount": 0},
+                "libraryai-eep-recovery": {"desiredCount": 0, "runningCount": 0},
+                "libraryai-shadow-worker": {"desiredCount": 0, "runningCount": 0},
+            }
+        )
+        mock_ecs.describe_task_definition.return_value = {
+            "taskDefinition": {
+                "family": "libraryai-eep-worker",
+                "containerDefinitions": [{"name": "eep-worker", "environment": []}],
+            }
+        }
+        mock_ecs.register_task_definition.return_value = {
+            "taskDefinition": {
+                "taskDefinitionArn": "arn:aws:ecs:us-east-1:123:task-definition/libraryai-eep-worker:99"
+            }
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            with patch("boto3.client", return_value=mock_ecs):
+                with patch.object(
+                    self.normal_scaler,
+                    "_create_runpod_pods",
+                    return_value=(
+                        "https://pod1-8006.proxy.runpod.net",
+                        "https://pod2-8001.proxy.runpod.net",
+                        "https://pod3-8002.proxy.runpod.net",
+                    ),
+                ) as mock_create_pods:
+                    self.normal_scaler._do_scale_up()
+
+        mock_create_pods.assert_called_once()
+        started = {c.kwargs["service"] for c in mock_ecs.update_service.call_args_list}
+        self.assertIn("libraryai-eep-worker", started)
+        self.assertIn("libraryai-iep1e", started)
+        self.assertIn("libraryai-eep-recovery", started)
+
+
 # ── 3: drain ignores human-review states ──────────────────────────────────────
 
 class TestDrainIgnoresHumanReviewStates(unittest.TestCase):
@@ -689,6 +941,7 @@ class TestNormalScaleUpServicesConstant(unittest.TestCase):
             "libraryai-iep0",
             "libraryai-iep1a",
             "libraryai-iep1b",
+            "libraryai-iep1d",
             "libraryai-iep1e",
             "libraryai-iep2a-v2",
             "libraryai-iep2b",
@@ -701,7 +954,6 @@ class TestNormalScaleUpServicesConstant(unittest.TestCase):
     def test_excluded_services_not_in_constant(self):
         from services.eep.app.scaling.normal_scaler import NORMAL_SCALE_UP_SERVICES
         excluded = {
-            "libraryai-iep1d",
             "libraryai-retraining-worker",
             "libraryai-dataset-builder",
             "libraryai-prometheus",
@@ -869,29 +1121,41 @@ class TestCorrectionScaleUpTrigger(unittest.TestCase):
         mock_scale.assert_not_called()
 
 
-# ── IEP1D exclusion from normal scale-up (spec §7) ────────────────────────────
+# ── IEP1D pre-warm invariant ──────────────────────────────────────────────────
 
-class TestIep1dExclusionInvariant(unittest.TestCase):
+class TestIep1dPreWarmInvariant(unittest.TestCase):
     """
-    IEP1D must never appear in normal scale-up service lists.
-    Scale-down.yml (manual/scheduled) resets iep1d to 0 as safety cleanup —
-    this is correct and expected. But normal scale-up must never start it.
+    IEP1D is pre-warmed by normal scale-up to avoid its 4–6 min Fargate
+    cold-start exceeding the worker's IEP1D /ready timeout for the first
+    wave of pages that need rescue.  Scale-down.yml resets iep1d back to 0
+    as part of normal teardown.
+
+    The on-demand iep1d_scaler (services/eep_worker/app/iep1d_scaler.py)
+    still exists as a defence-in-depth fallback — its update_service call
+    is idempotent when iep1d is already at desired=1.
     """
 
-    def test_iep1d_not_in_normal_scale_up_services(self):
+    def test_iep1d_in_normal_scale_up_services(self):
         from services.eep.app.scaling.normal_scaler import NORMAL_SCALE_UP_SERVICES
-        self.assertNotIn("libraryai-iep1d", NORMAL_SCALE_UP_SERVICES)
+        self.assertIn("libraryai-iep1d", NORMAL_SCALE_UP_SERVICES)
 
-    def test_iep1d_in_excluded_set(self):
+    def test_iep1d_not_in_excluded_set(self):
         from services.eep.app.scaling.normal_scaler import _EXCLUDED_SERVICES
-        self.assertIn("libraryai-iep1d", _EXCLUDED_SERVICES)
+        self.assertNotIn("libraryai-iep1d", _EXCLUDED_SERVICES)
 
-    def test_scale_up_assert_guard_rejects_iep1d(self):
-        """_update_service raises AssertionError if called with an excluded service."""
+    def test_iep1d_in_active_check_services(self):
+        """iep1d must be in the active-check list so partial scale-down
+        (iep1d at 0 while everything else is up) forces a fresh scale-up."""
+        from services.eep.app.scaling.normal_scaler import _ACTIVE_CHECK_SERVICES
+        self.assertIn("libraryai-iep1d", _ACTIVE_CHECK_SERVICES)
+
+    def test_scale_up_assert_guard_allows_iep1d(self):
+        """_update_service must accept iep1d as a normal scale-up service."""
         from services.eep.app.scaling.normal_scaler import _update_service
         mock_ecs = MagicMock()
-        with self.assertRaises(AssertionError):
-            _update_service(mock_ecs, "test-cluster", "libraryai-iep1d", 1)
+        result = _update_service(mock_ecs, "test-cluster", "libraryai-iep1d", 1)
+        self.assertTrue(result)
+        mock_ecs.update_service.assert_called_once()
 
     def test_scale_up_assert_guard_rejects_retraining(self):
         from services.eep.app.scaling.normal_scaler import _update_service

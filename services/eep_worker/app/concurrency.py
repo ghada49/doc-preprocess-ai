@@ -14,23 +14,44 @@ Implements the slot model from spec Section 8.1:
 The semaphore is shared across all worker processes on the same Redis instance,
 bounding total in-flight pages system-wide at max_concurrent_pages.
 
+Self-healing
+------------
+``initialize_semaphore`` is the single startup entry point and is also safe to
+call periodically.  It reconciles the slot counter against the canonical
+in-flight signal — the length of ``QUEUE_PAGE_TASKS_PROCESSING`` — and restores
+slots that have leaked due to worker crashes between ``acquire_slot`` and
+``release_slot``.
+
+The reconciliation is *conservative*: the counter is **only ever raised** to the
+expected value (``max_slots − LLEN(processing)``), never lowered.  This
+guarantees we cannot over-allocate slots while other workers are mid-claim, but
+will always recover from the slot-leak failure mode that previously required a
+manual ``SET libraryai:worker_slots <max>`` to unstick the cluster.
+
 Exported:
     SEMAPHORE_KEY           — Redis key constant "libraryai:worker_slots"
     WorkerConcurrencyConfig — config dataclass (mirrors libraryai-policy)
-    initialize_semaphore    — set semaphore to max_slots (NX; safe to call on
-                               restart without clobbering in-flight counts)
+    initialize_semaphore    — startup reconcile against the processing list
+    reconcile_semaphore     — same logic, returns a structured report (testing
+                              and periodic self-heal callers)
     acquire_slot            — async; DECR + backoff loop
     release_slot            — sync; INCR
     WorkerSlotContext       — async context manager; wraps acquire/release in
-                               try/finally as required by spec
+                              try/finally as required by spec
 """
 
 from __future__ import annotations
 
 import asyncio
 import dataclasses
+import logging
+from typing import NamedTuple
 
 import redis as redis_lib
+
+from shared.schemas.queue import QUEUE_PAGE_TASKS_PROCESSING
+
+logger = logging.getLogger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
 
@@ -59,20 +80,115 @@ class WorkerConcurrencyConfig:
 # ── Semaphore primitives ───────────────────────────────────────────────────────
 
 
-def initialize_semaphore(r: redis_lib.Redis, max_slots: int) -> None:
+class ReconcileResult(NamedTuple):
     """
-    Initialize the Redis semaphore to *max_slots* **only if the key does not
-    already exist** (SET NX semantics).
+    Result of a semaphore reconciliation pass.
 
-    This must be called once at worker startup.  Using NX ensures that a
-    worker restart does not reset the counter while other workers still hold
-    in-flight slots, which would violate the system-wide bound.
+    Attributes:
+        healed:    True iff the counter was below the expected value and was
+                   raised by this call.  False means the counter was already
+                   consistent with the in-flight signal (no write was issued).
+        slots:     Final value of ``libraryai:worker_slots`` after the call.
+        in_flight: Number of tasks observed in ``QUEUE_PAGE_TASKS_PROCESSING``
+                   (the signal we reconciled against).
+    """
+
+    healed: bool
+    slots: int
+    in_flight: int
+
+
+def reconcile_semaphore(
+    r: redis_lib.Redis,
+    max_slots: int,
+    *,
+    processing_key: str = QUEUE_PAGE_TASKS_PROCESSING,
+) -> ReconcileResult:
+    """
+    Reconcile the slot counter against the in-flight processing list.
+
+    Computes ``expected = max(0, max_slots − LLEN(processing_key))``.  If the
+    current counter is missing or strictly less than ``expected`` the counter
+    is overwritten with ``expected``.  Otherwise no write occurs.
+
+    This is the recovery path for the slot-leak failure mode that arises when
+    a worker crashes (or is forcibly terminated) between ``acquire_slot`` and
+    ``release_slot``: the orphaned task remains in the processing list (where
+    eep-recovery will eventually re-enqueue it) but the slot is never returned.
+    Without this reconciliation a sufficiently leaky cluster ends up with
+    ``worker_slots <= 0`` and every claim attempt loops in the backoff sleep.
+
+    Conservative-by-design: the counter is **only ever raised**.  If the
+    counter is already higher than ``expected`` (which can transiently happen
+    when other workers are mid-acquire/release) we leave it alone.
 
     Args:
-        r:         Redis client (decode_responses=True recommended).
-        max_slots: Upper bound on concurrent in-flight pages.
+        r:              Redis client.
+        max_slots:      Upper bound on concurrent in-flight pages.
+        processing_key: Name of the in-flight queue list.  Defaults to the
+                        production queue; tests may pass an alternate key.
+
+    Returns:
+        ReconcileResult describing the action taken.
     """
-    r.set(SEMAPHORE_KEY, max_slots, nx=True)
+    in_flight_raw = r.llen(processing_key)
+    in_flight = int(in_flight_raw) if in_flight_raw is not None else 0
+
+    expected = max_slots - in_flight
+    if expected < 0:
+        expected = 0
+
+    raw_current = r.get(SEMAPHORE_KEY)
+    if raw_current is None:
+        current: int | None = None
+    else:
+        try:
+            current = int(raw_current)
+        except (TypeError, ValueError):
+            current = None
+
+    if current is None or current < expected:
+        r.set(SEMAPHORE_KEY, expected)
+        if current is not None:
+            logger.warning(
+                "concurrency: semaphore drifted current=%d expected=%d "
+                "in_flight=%d max=%d — reconciled to %d",
+                current,
+                expected,
+                in_flight,
+                max_slots,
+                expected,
+            )
+        return ReconcileResult(healed=True, slots=expected, in_flight=in_flight)
+
+    return ReconcileResult(healed=False, slots=current, in_flight=in_flight)
+
+
+def initialize_semaphore(
+    r: redis_lib.Redis,
+    max_slots: int,
+    *,
+    processing_key: str = QUEUE_PAGE_TASKS_PROCESSING,
+) -> None:
+    """
+    Initialize (or reconcile) the Redis semaphore at worker startup.
+
+    Reads the in-flight processing list and ensures the counter is at least
+    ``max_slots − LLEN(processing_key)``.  Concretely this means:
+
+      * Fresh boot, no work in flight → counter is set to ``max_slots``.
+      * Worker restart with N tasks still in the processing list and a healthy
+        counter at ``max_slots − N`` → no-op, in-flight slots are preserved.
+      * Worker restart after a crash that leaked slots (counter < expected) →
+        counter is restored to ``expected``, ending the backoff-loop deadlock.
+
+    Args:
+        r:              Redis client (decode_responses=True recommended).
+        max_slots:      Upper bound on concurrent in-flight pages.
+        processing_key: Name of the in-flight queue list.  Defaults to the
+                        production queue; tests may pass an alternate key.
+    """
+    reconcile_semaphore(r, max_slots, processing_key=processing_key)
 
 
 async def acquire_slot(r: redis_lib.Redis) -> None:

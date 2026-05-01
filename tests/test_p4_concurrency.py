@@ -5,7 +5,8 @@ Packet 4.1 — worker concurrency semaphore tests.
 
 Covers:
   - SEMAPHORE_KEY constant
-  - initialize_semaphore: sets value, NX idempotency
+  - initialize_semaphore / reconcile_semaphore: set value on fresh boot,
+    preserve in-flight counts on restart, recover from slot leaks
   - WorkerConcurrencyConfig: default values
   - acquire_slot: DECR when slots available; INCR-back + backoff when unavailable
   - backoff schedule: 1 s → 2 s → 4 s → 8 s (capped)
@@ -29,8 +30,10 @@ from services.eep_worker.app.concurrency import (
     WorkerSlotContext,
     acquire_slot,
     initialize_semaphore,
+    reconcile_semaphore,
     release_slot,
 )
+from shared.schemas.queue import QUEUE_PAGE_TASKS_PROCESSING
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
@@ -63,10 +66,18 @@ class TestWorkerConcurrencyConfig:
         assert WorkerConcurrencyConfig(max_concurrent_pages=5).max_concurrent_pages == 5
 
 
-# ── initialize_semaphore ───────────────────────────────────────────────────────
+# ── initialize_semaphore / reconcile_semaphore ─────────────────────────────────
 
 
-class TestInitializeSemaphore:
+def _push_in_flight(r: fakeredis.FakeRedis, n: int) -> None:
+    """Simulate *n* tasks currently parked in QUEUE_PAGE_TASKS_PROCESSING."""
+    for i in range(n):
+        r.lpush(QUEUE_PAGE_TASKS_PROCESSING, f"fake-task-{i}")
+
+
+class TestInitializeSemaphoreFreshBoot:
+    """First call on an empty Redis must initialise to max_slots."""
+
     def test_sets_key_when_absent(self, r: fakeredis.FakeRedis) -> None:
         initialize_semaphore(r, 20)
         assert _slot_count(r) == 20
@@ -75,17 +86,119 @@ class TestInitializeSemaphore:
         initialize_semaphore(r, 7)
         assert _slot_count(r) == 7
 
-    def test_nx_does_not_overwrite_existing(self, r: fakeredis.FakeRedis) -> None:
-        """Worker restart must not reset an already-running semaphore."""
-        initialize_semaphore(r, 20)
-        r.decr(SEMAPHORE_KEY)  # simulate one in-flight task → count = 19
-        initialize_semaphore(r, 20)  # second call must be a no-op
-        assert _slot_count(r) == 19
-
-    def test_nx_idempotent_on_full_count(self, r: fakeredis.FakeRedis) -> None:
+    def test_idempotent_on_full_count(self, r: fakeredis.FakeRedis) -> None:
+        """Calling initialize twice on an idle cluster is a no-op."""
         initialize_semaphore(r, 10)
         initialize_semaphore(r, 10)
         assert _slot_count(r) == 10
+
+
+class TestInitializeSemaphorePreservesInFlight:
+    """Worker restart must not clobber slots held by other live workers.
+
+    Production invariant: every claimed-but-not-acked task lives in
+    QUEUE_PAGE_TASKS_PROCESSING and exactly one slot is held against it.
+    Restarting a worker therefore must leave the counter at
+    (max - LLEN(processing)).
+    """
+
+    def test_does_not_overwrite_when_in_flight_tracked(self, r: fakeredis.FakeRedis) -> None:
+        initialize_semaphore(r, 20)
+        r.decr(SEMAPHORE_KEY)  # one slot acquired
+        _push_in_flight(r, 1)  # ...for the task now in the processing list
+        initialize_semaphore(r, 20)
+        assert _slot_count(r) == 19
+
+    def test_no_op_when_counter_consistent_with_many_in_flight(self, r: fakeredis.FakeRedis) -> None:
+        r.set(SEMAPHORE_KEY, 15)
+        _push_in_flight(r, 5)
+        initialize_semaphore(r, 20)
+        assert _slot_count(r) == 15
+
+    def test_no_op_when_counter_above_expected(self, r: fakeredis.FakeRedis) -> None:
+        """If counter is transiently higher than expected (mid-release race),
+        leave it alone — never *lower* the counter."""
+        r.set(SEMAPHORE_KEY, 20)
+        _push_in_flight(r, 3)  # expected would be 17, but counter is at 20
+        initialize_semaphore(r, 20)
+        assert _slot_count(r) == 20
+
+
+class TestInitializeSemaphoreSelfHeal:
+    """The bug we just lived through: workers crash mid-task and leak slots.
+
+    Without self-heal the counter eventually hits 0 (or negative) and every
+    acquire_slot call goes into infinite backoff because subsequent worker
+    restarts can no longer reset it (old NX semantics).
+    """
+
+    def test_heals_when_counter_leaked_to_zero(self, r: fakeredis.FakeRedis) -> None:
+        """Counter = 0, no in-flight: pure leak — restore to max."""
+        r.set(SEMAPHORE_KEY, 0)
+        initialize_semaphore(r, 20)
+        assert _slot_count(r) == 20
+
+    def test_heals_when_counter_negative(self, r: fakeredis.FakeRedis) -> None:
+        """A burst of acquire_slot during leak can drive the counter negative
+        before INCR-back fires — restore to max."""
+        r.set(SEMAPHORE_KEY, -3)
+        initialize_semaphore(r, 20)
+        assert _slot_count(r) == 20
+
+    def test_partial_leak_with_some_in_flight(self, r: fakeredis.FakeRedis) -> None:
+        """Counter at 5, three real in-flight tasks → expected 17 → heal to 17."""
+        r.set(SEMAPHORE_KEY, 5)
+        _push_in_flight(r, 3)
+        initialize_semaphore(r, 20)
+        assert _slot_count(r) == 17
+
+    def test_clamps_to_zero_when_in_flight_exceeds_max(self, r: fakeredis.FakeRedis) -> None:
+        """Defensive: a stale processing list with > max entries must not
+        produce a negative expected slot count."""
+        r.set(SEMAPHORE_KEY, -5)
+        _push_in_flight(r, 25)
+        initialize_semaphore(r, 20)
+        assert _slot_count(r) == 0
+
+
+class TestReconcileSemaphoreReport:
+    """reconcile_semaphore returns a structured ReconcileResult."""
+
+    def test_fresh_boot_reports_healed_with_max_slots(self, r: fakeredis.FakeRedis) -> None:
+        result = reconcile_semaphore(r, 20)
+        assert result.healed is True
+        assert result.slots == 20
+        assert result.in_flight == 0
+
+    def test_consistent_state_reports_no_heal(self, r: fakeredis.FakeRedis) -> None:
+        r.set(SEMAPHORE_KEY, 18)
+        _push_in_flight(r, 2)
+        result = reconcile_semaphore(r, 20)
+        assert result.healed is False
+        assert result.slots == 18
+        assert result.in_flight == 2
+
+    def test_leaked_state_reports_heal_and_new_slots(self, r: fakeredis.FakeRedis) -> None:
+        r.set(SEMAPHORE_KEY, 0)
+        _push_in_flight(r, 4)
+        result = reconcile_semaphore(r, 20)
+        assert result.healed is True
+        assert result.slots == 16  # 20 - 4
+        assert result.in_flight == 4
+
+    def test_higher_counter_left_alone(self, r: fakeredis.FakeRedis) -> None:
+        r.set(SEMAPHORE_KEY, 50)
+        result = reconcile_semaphore(r, 20)
+        assert result.healed is False
+        assert result.slots == 50
+        assert result.in_flight == 0
+
+    def test_custom_processing_key_is_honoured(self, r: fakeredis.FakeRedis) -> None:
+        r.lpush("custom:processing", "x", "y", "z")
+        result = reconcile_semaphore(r, 10, processing_key="custom:processing")
+        assert result.healed is True
+        assert result.slots == 7
+        assert result.in_flight == 3
 
 
 # ── acquire_slot ───────────────────────────────────────────────────────────────

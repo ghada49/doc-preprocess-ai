@@ -291,8 +291,15 @@ def build_iep1d_scaler(redis_client: redis_lib.Redis | None) -> Iep1dScaler:
             scale_timeout_seconds=float(
                 os.environ.get("IEP1D_SCALE_TIMEOUT_SECONDS", "600")
             ),
+            # 600s default (was 300s).  iep1d Fargate cold-start (task pull +
+            # model load) routinely takes 4–6 minutes from desired=0; a 300s
+            # ceiling caused the first wave of pages that need rescue to be
+            # routed to pending_human_correction even though iep1d was just
+            # about to come online.  Pre-warming via scale-up.yml is the
+            # primary mitigation; this widened ceiling is the belt-and-braces
+            # fallback for the on-demand path.
             ready_timeout_seconds=float(
-                os.environ.get("IEP1D_READY_TIMEOUT_SECONDS", "300")
+                os.environ.get("IEP1D_READY_TIMEOUT_SECONDS", "600")
             ),
             scale_down_after_idle_seconds=float(
                 os.environ.get("IEP1D_SCALE_DOWN_AFTER_IDLE_SECONDS", "300")
@@ -318,8 +325,9 @@ def build_iep1d_scaler(redis_client: redis_lib.Redis | None) -> Iep1dScaler:
         scale_timeout_seconds=float(
             os.environ.get("IEP1D_SCALE_TIMEOUT_SECONDS", "600")
         ),
+        # 600s default — see disabled-branch comment above for rationale.
         ready_timeout_seconds=float(
-            os.environ.get("IEP1D_READY_TIMEOUT_SECONDS", "300")
+            os.environ.get("IEP1D_READY_TIMEOUT_SECONDS", "600")
         ),
         scale_down_after_idle_seconds=float(
             os.environ.get("IEP1D_SCALE_DOWN_AFTER_IDLE_SECONDS", "300")
