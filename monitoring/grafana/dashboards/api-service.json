@@ -88,7 +88,7 @@
                                    },
                        "id":  2,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "vertical",
@@ -100,7 +100,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "value_and_name",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -332,7 +332,7 @@
 
                    },
     "timezone":  "browser",
-    "title":  "LibraryAI â€” API Service Health",
+    "title":  "LibraryAI - API Service Health",
     "uid":  "libraryai-api",
     "version":  1
 }

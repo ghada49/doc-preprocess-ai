@@ -4,7 +4,7 @@
 # observability stack.
 #
 # Key differences from prometheus.yml (docker-compose):
-#   - All targets use ECS Service Connect DNS (*.libraryai.local)
+#   - Targets use the short ECS Service Connect aliases published by deploy.yml.
 #   - No Alertmanager block — Alertmanager is not deployed in the ECS stack.
 #     Alert rules are still loaded so they are visible in the Prometheus UI,
 #     but no automated webhook actions will fire.
@@ -33,50 +33,50 @@ scrape_configs:
   # ── EEP API ───────────────────────────────────────────────────────────────
   - job_name: eep
     static_configs:
-      - targets: ["eep.libraryai.local:8000"]
+      - targets: ["eep:8000"]
 
   # ── Background workers and recovery services ──────────────────────────────
   - job_name: eep-worker
     static_configs:
-      - targets: ["eep-worker.libraryai.local:9100"]
+      - targets: ["eep-worker:9100"]
 
   - job_name: eep-recovery
     static_configs:
-      - targets: ["eep-recovery.libraryai.local:9101"]
+      - targets: ["eep-recovery:9101"]
 
   - job_name: shadow-worker
     static_configs:
-      - targets: ["shadow-worker.libraryai.local:9102"]
+      - targets: ["shadow-worker:9102"]
 
   - job_name: retraining-worker
     static_configs:
-      - targets: ["retraining-worker.libraryai.local:9104"]
+      - targets: ["retraining-worker:9104"]
 
   # ── IEP services ──────────────────────────────────────────────────────────
   - job_name: iep0
     static_configs:
-      - targets: ["iep0.libraryai.local:8006"]
+      - targets: ["iep0:8006"]
 
   - job_name: iep1a
     static_configs:
-      - targets: ["iep1a.libraryai.local:8001"]
+      - targets: ["iep1a:8001"]
 
   - job_name: iep1b
     static_configs:
-      - targets: ["iep1b.libraryai.local:8002"]
+      - targets: ["iep1b:8002"]
 
   - job_name: iep1d
     static_configs:
-      - targets: ["iep1d.libraryai.local:8003"]
+      - targets: ["iep1d:8003"]
 
   - job_name: iep1e
     static_configs:
-      - targets: ["iep1e.libraryai.local:8007"]
+      - targets: ["iep1e:8007"]
 
   - job_name: iep2a
     static_configs:
-      - targets: ["iep2a.libraryai.local:8004"]
+      - targets: ["iep2a:8004"]
 
   - job_name: iep2b
     static_configs:
-      - targets: ["iep2b.libraryai.local:8005"]
+      - targets: ["iep2b:8005"]

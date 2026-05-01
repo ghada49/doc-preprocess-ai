@@ -31,8 +31,488 @@
                                        "x":  0,
                                        "y":  0
                                    },
+                       "id":  30,
+                       "title":  "Live Sample Presence",
+                       "type":  "row"
+                   },
+                   {
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "prometheus"
+                                      },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "color":  {
+                                                                          "mode":  "thresholds"
+                                                                      },
+                                                            "mappings":  [
+                                                                             {
+                                                                                 "type":  "value",
+                                                                                 "options":  {
+                                                                                                 "0":  {
+                                                                                                           "text":  "NO DATA",
+                                                                                                           "color":  "red",
+                                                                                                           "index":  0
+                                                                                                       }
+                                                                                             }
+                                                                             }
+                                                                         ],
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "green",
+                                                                                                 "value":  1
+                                                                                             }
+                                                                                         ]
+                                                                           },
+                                                            "unit":  "short",
+                                                            "decimals":  0
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "gridPos":  {
+                                       "h":  4,
+                                       "w":  4,
+                                       "x":  0,
+                                       "y":  1
+                                   },
+                       "id":  31,
+                       "options":  {
+                                       "colorMode":  "background",
+                                       "graphMode":  "none",
+                                       "justifyMode":  "auto",
+                                       "orientation":  "horizontal",
+                                       "reduceOptions":  {
+                                                             "calcs":  [
+                                                                           "lastNotNull"
+                                                                       ],
+                                                             "fields":  "",
+                                                             "values":  false
+                                                         },
+                                       "textMode":  "value_and_name",
+                                       "noValue":  "NO DATA"
+                                   },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "prometheus"
+                                                          },
+                                           "expr":  "sum(increase(iep1a_geometry_confidence_count[$__range])) OR on() vector(0)",
+                                           "legendFormat":  "IEP1A samples",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "title":  "IEP1A samples",
+                       "type":  "stat"
+                   },
+                   {
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "prometheus"
+                                      },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "color":  {
+                                                                          "mode":  "thresholds"
+                                                                      },
+                                                            "mappings":  [
+                                                                             {
+                                                                                 "type":  "value",
+                                                                                 "options":  {
+                                                                                                 "0":  {
+                                                                                                           "text":  "NO DATA",
+                                                                                                           "color":  "red",
+                                                                                                           "index":  0
+                                                                                                       }
+                                                                                             }
+                                                                             }
+                                                                         ],
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "green",
+                                                                                                 "value":  1
+                                                                                             }
+                                                                                         ]
+                                                                           },
+                                                            "unit":  "short",
+                                                            "decimals":  0
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "gridPos":  {
+                                       "h":  4,
+                                       "w":  4,
+                                       "x":  4,
+                                       "y":  1
+                                   },
+                       "id":  32,
+                       "options":  {
+                                       "colorMode":  "background",
+                                       "graphMode":  "none",
+                                       "justifyMode":  "auto",
+                                       "orientation":  "horizontal",
+                                       "reduceOptions":  {
+                                                             "calcs":  [
+                                                                           "lastNotNull"
+                                                                       ],
+                                                             "fields":  "",
+                                                             "values":  false
+                                                         },
+                                       "textMode":  "value_and_name",
+                                       "noValue":  "NO DATA"
+                                   },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "prometheus"
+                                                          },
+                                           "expr":  "sum(increase(iep1b_geometry_confidence_count[$__range])) OR on() vector(0)",
+                                           "legendFormat":  "IEP1B samples",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "title":  "IEP1B samples",
+                       "type":  "stat"
+                   },
+                   {
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "prometheus"
+                                      },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "color":  {
+                                                                          "mode":  "thresholds"
+                                                                      },
+                                                            "mappings":  [
+                                                                             {
+                                                                                 "type":  "value",
+                                                                                 "options":  {
+                                                                                                 "0":  {
+                                                                                                           "text":  "NO DATA",
+                                                                                                           "color":  "red",
+                                                                                                           "index":  0
+                                                                                                       }
+                                                                                             }
+                                                                             }
+                                                                         ],
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "green",
+                                                                                                 "value":  1
+                                                                                             }
+                                                                                         ]
+                                                                           },
+                                                            "unit":  "short",
+                                                            "decimals":  0
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "gridPos":  {
+                                       "h":  4,
+                                       "w":  4,
+                                       "x":  8,
+                                       "y":  1
+                                   },
+                       "id":  33,
+                       "options":  {
+                                       "colorMode":  "background",
+                                       "graphMode":  "none",
+                                       "justifyMode":  "auto",
+                                       "orientation":  "horizontal",
+                                       "reduceOptions":  {
+                                                             "calcs":  [
+                                                                           "lastNotNull"
+                                                                       ],
+                                                             "fields":  "",
+                                                             "values":  false
+                                                         },
+                                       "textMode":  "value_and_name",
+                                       "noValue":  "NO DATA"
+                                   },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "prometheus"
+                                                          },
+                                           "expr":  "sum(increase(iep2a_mean_page_confidence_count[$__range])) OR on() vector(0)",
+                                           "legendFormat":  "IEP2A samples",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "title":  "IEP2A samples",
+                       "type":  "stat"
+                   },
+                   {
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "prometheus"
+                                      },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "color":  {
+                                                                          "mode":  "thresholds"
+                                                                      },
+                                                            "mappings":  [
+                                                                             {
+                                                                                 "type":  "value",
+                                                                                 "options":  {
+                                                                                                 "0":  {
+                                                                                                           "text":  "NO DATA",
+                                                                                                           "color":  "red",
+                                                                                                           "index":  0
+                                                                                                       }
+                                                                                             }
+                                                                             }
+                                                                         ],
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "green",
+                                                                                                 "value":  1
+                                                                                             }
+                                                                                         ]
+                                                                           },
+                                                            "unit":  "short",
+                                                            "decimals":  0
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "gridPos":  {
+                                       "h":  4,
+                                       "w":  4,
+                                       "x":  12,
+                                       "y":  1
+                                   },
+                       "id":  34,
+                       "options":  {
+                                       "colorMode":  "background",
+                                       "graphMode":  "none",
+                                       "justifyMode":  "auto",
+                                       "orientation":  "horizontal",
+                                       "reduceOptions":  {
+                                                             "calcs":  [
+                                                                           "lastNotNull"
+                                                                       ],
+                                                             "fields":  "",
+                                                             "values":  false
+                                                         },
+                                       "textMode":  "value_and_name",
+                                       "noValue":  "NO DATA"
+                                   },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "prometheus"
+                                                          },
+                                           "expr":  "sum(increase(iep2b_mean_page_confidence_count[$__range])) OR on() vector(0)",
+                                           "legendFormat":  "IEP2B samples",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "title":  "IEP2B samples",
+                       "type":  "stat"
+                   },
+                   {
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "prometheus"
+                                      },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "color":  {
+                                                                          "mode":  "thresholds"
+                                                                      },
+                                                            "mappings":  [
+                                                                             {
+                                                                                 "type":  "value",
+                                                                                 "options":  {
+                                                                                                 "0":  {
+                                                                                                           "text":  "NO DATA",
+                                                                                                           "color":  "red",
+                                                                                                           "index":  0
+                                                                                                       }
+                                                                                             }
+                                                                             }
+                                                                         ],
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "green",
+                                                                                                 "value":  1
+                                                                                             }
+                                                                                         ]
+                                                                           },
+                                                            "unit":  "short",
+                                                            "decimals":  0
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "gridPos":  {
+                                       "h":  4,
+                                       "w":  4,
+                                       "x":  16,
+                                       "y":  1
+                                   },
+                       "id":  35,
+                       "options":  {
+                                       "colorMode":  "background",
+                                       "graphMode":  "none",
+                                       "justifyMode":  "auto",
+                                       "orientation":  "horizontal",
+                                       "reduceOptions":  {
+                                                             "calcs":  [
+                                                                           "lastNotNull"
+                                                                       ],
+                                                             "fields":  "",
+                                                             "values":  false
+                                                         },
+                                       "textMode":  "value_and_name",
+                                       "noValue":  "NO DATA"
+                                   },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "prometheus"
+                                                          },
+                                           "expr":  "sum(drift_window_observations) OR on() vector(0)",
+                                           "legendFormat":  "Drift observations",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "title":  "Drift observations",
+                       "type":  "stat"
+                   },
+                   {
+                       "datasource":  {
+                                          "type":  "prometheus",
+                                          "uid":  "prometheus"
+                                      },
+                       "fieldConfig":  {
+                                           "defaults":  {
+                                                            "color":  {
+                                                                          "mode":  "thresholds"
+                                                                      },
+                                                            "mappings":  [
+                                                                             {
+                                                                                 "type":  "value",
+                                                                                 "options":  {
+                                                                                                 "0":  {
+                                                                                                           "text":  "NO DATA",
+                                                                                                           "color":  "red",
+                                                                                                           "index":  0
+                                                                                                       }
+                                                                                             }
+                                                                             }
+                                                                         ],
+                                                            "thresholds":  {
+                                                                               "mode":  "absolute",
+                                                                               "steps":  [
+                                                                                             {
+                                                                                                 "color":  "red",
+                                                                                                 "value":  null
+                                                                                             },
+                                                                                             {
+                                                                                                 "color":  "green",
+                                                                                                 "value":  1
+                                                                                             }
+                                                                                         ]
+                                                                           },
+                                                            "unit":  "short",
+                                                            "decimals":  0
+                                                        },
+                                           "overrides":  [
+
+                                                         ]
+                                       },
+                       "gridPos":  {
+                                       "h":  4,
+                                       "w":  4,
+                                       "x":  20,
+                                       "y":  1
+                                   },
+                       "id":  36,
+                       "options":  {
+                                       "colorMode":  "background",
+                                       "graphMode":  "none",
+                                       "justifyMode":  "auto",
+                                       "orientation":  "horizontal",
+                                       "reduceOptions":  {
+                                                             "calcs":  [
+                                                                           "lastNotNull"
+                                                                       ],
+                                                             "fields":  "",
+                                                             "values":  false
+                                                         },
+                                       "textMode":  "value_and_name",
+                                       "noValue":  "NO DATA"
+                                   },
+                       "targets":  [
+                                       {
+                                           "datasource":  {
+                                                              "type":  "prometheus",
+                                                              "uid":  "prometheus"
+                                                          },
+                                           "expr":  "sum(increase(iep1d_rectification_confidence_count[$__range])) OR on() vector(0)",
+                                           "legendFormat":  "IEP1D samples",
+                                           "refId":  "A"
+                                       }
+                                   ],
+                       "title":  "IEP1D samples",
+                       "type":  "stat"
+                   },
+                   {
+                       "collapsed":  false,
+                       "gridPos":  {
+                                       "h":  1,
+                                       "w":  24,
+                                       "x":  0,
+                                       "y":  5
+                                   },
                        "id":  1,
-                       "title":  "IEP1A / IEP1B â€” Geometry Confidence",
+                       "title":  "IEP1A / IEP1B - Geometry Confidence",
                        "type":  "row"
                    },
                    {
@@ -77,7 +557,7 @@
                                        "h":  8,
                                        "w":  12,
                                        "x":  0,
-                                       "y":  1
+                                       "y":  6
                                    },
                        "id":  2,
                        "options":  {
@@ -178,7 +658,7 @@
                                        "h":  8,
                                        "w":  12,
                                        "x":  12,
-                                       "y":  1
+                                       "y":  6
                                    },
                        "id":  3,
                        "options":  {
@@ -225,10 +705,10 @@
                                        "h":  1,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  9
+                                       "y":  14
                                    },
                        "id":  4,
-                       "title":  "IEP1A / IEP1B â€” TTA Prediction Variance",
+                       "title":  "IEP1A / IEP1B - TTA Prediction Variance",
                        "type":  "row"
                    },
                    {
@@ -272,7 +752,7 @@
                                        "h":  8,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  10
+                                       "y":  15
                                    },
                        "id":  5,
                        "options":  {
@@ -336,10 +816,10 @@
                                        "h":  1,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  18
+                                       "y":  23
                                    },
                        "id":  6,
-                       "title":  "IEP2A / IEP2B â€” Layout Confidence",
+                       "title":  "IEP2A / IEP2B - Layout Confidence",
                        "type":  "row"
                    },
                    {
@@ -384,7 +864,7 @@
                                        "h":  8,
                                        "w":  12,
                                        "x":  0,
-                                       "y":  19
+                                       "y":  24
                                    },
                        "id":  7,
                        "options":  {
@@ -467,7 +947,7 @@
                                        "h":  8,
                                        "w":  12,
                                        "x":  12,
-                                       "y":  19
+                                       "y":  24
                                    },
                        "id":  8,
                        "options":  {
@@ -513,10 +993,10 @@
                                        "h":  1,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  27
+                                       "y":  32
                                    },
                        "id":  9,
-                       "title":  "IEP1D â€” Rectification Signals",
+                       "title":  "IEP1D - Rectification Signals",
                        "type":  "row"
                    },
                    {
@@ -542,7 +1022,7 @@
                                        "h":  8,
                                        "w":  12,
                                        "x":  0,
-                                       "y":  28
+                                       "y":  33
                                    },
                        "id":  10,
                        "options":  {
@@ -596,7 +1076,7 @@
                                        "h":  8,
                                        "w":  12,
                                        "x":  12,
-                                       "y":  28
+                                       "y":  33
                                    },
                        "id":  11,
                        "options":  {
@@ -642,10 +1122,10 @@
                                        "h":  1,
                                        "w":  24,
                                        "x":  0,
-                                       "y":  36
+                                       "y":  41
                                    },
                        "id":  20,
-                       "title":  "Drift Detector â€” Window State vs Baseline",
+                       "title":  "Drift Detector - Window State vs Baseline",
                        "type":  "row"
                    },
                    {
@@ -670,7 +1150,7 @@
                                        "h":  8,
                                        "w":  12,
                                        "x":  0,
-                                       "y":  37
+                                       "y":  42
                                    },
                        "id":  21,
                        "options":  {
@@ -706,7 +1186,7 @@
                                            "refId":  "B"
                                        }
                                    ],
-                       "title":  "IEP1A / IEP1B â€” Window Mean vs Baseline",
+                       "title":  "IEP1A / IEP1B - Window Mean vs Baseline",
                        "type":  "timeseries"
                    },
                    {
@@ -731,7 +1211,7 @@
                                        "h":  8,
                                        "w":  12,
                                        "x":  12,
-                                       "y":  37
+                                       "y":  42
                                    },
                        "id":  22,
                        "options":  {
@@ -767,7 +1247,7 @@
                                            "refId":  "B"
                                        }
                                    ],
-                       "title":  "IEP2A / IEP2B / EEP â€” Window Mean vs Baseline",
+                       "title":  "IEP2A / IEP2B / EEP - Window Mean vs Baseline",
                        "type":  "timeseries"
                    },
                    {
@@ -813,7 +1293,7 @@
                                        "h":  8,
                                        "w":  12,
                                        "x":  0,
-                                       "y":  45
+                                       "y":  50
                                    },
                        "id":  23,
                        "options":  {
@@ -824,9 +1304,9 @@
                                                          },
                                        "orientation":  "auto",
                                        "textMode":  "auto",
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -839,7 +1319,7 @@
                                            "refId":  "A"
                                        }
                                    ],
-                       "title":  "Drift Status â€” All Metrics (green = OK, red = DRIFTING)",
+                       "title":  "Drift Status - All Metrics (green = OK, red = DRIFTING)",
                        "type":  "stat"
                    },
                    {
@@ -863,7 +1343,7 @@
                                        "h":  8,
                                        "w":  12,
                                        "x":  12,
-                                       "y":  45
+                                       "y":  50
                                    },
                        "id":  24,
                        "options":  {
@@ -907,7 +1387,7 @@
 
                    },
     "timezone":  "browser",
-    "title":  "LibraryAI â€” Model Signals",
+    "title":  "LibraryAI - Model Signals",
     "uid":  "libraryai-signals",
     "version":  1
 }

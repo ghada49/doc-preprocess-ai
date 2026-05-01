@@ -88,7 +88,7 @@
                                    },
                        "id":  2,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "horizontal",
@@ -100,7 +100,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "auto",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -169,7 +169,7 @@
                                    },
                        "id":  3,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "horizontal",
@@ -181,7 +181,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "auto",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -250,7 +250,7 @@
                                    },
                        "id":  4,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "horizontal",
@@ -262,7 +262,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "value",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -305,7 +305,10 @@
                                                                                              }
                                                                                          ]
                                                                            },
-                                                            "unit":  "none"
+                                                            "unit":  "none",
+                                                            "mappings":  [
+
+                                                                         ]
                                                         },
                                            "overrides":  [
 
@@ -319,7 +322,7 @@
                                    },
                        "id":  5,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "horizontal",
@@ -331,7 +334,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "value",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -366,7 +369,10 @@
                                                                                              }
                                                                                          ]
                                                                            },
-                                                            "unit":  "none"
+                                                            "unit":  "none",
+                                                            "mappings":  [
+
+                                                                         ]
                                                         },
                                            "overrides":  [
 
@@ -380,7 +386,7 @@
                                    },
                        "id":  6,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "horizontal",
@@ -392,7 +398,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "value",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -456,7 +462,7 @@
                                    },
                        "id":  7,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "horizontal",
@@ -468,7 +474,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "value",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -686,7 +692,7 @@
                                    },
                        "id":  12,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "vertical",
@@ -698,7 +704,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "value_and_name",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {

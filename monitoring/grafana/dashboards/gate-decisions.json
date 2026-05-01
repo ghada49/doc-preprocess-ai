@@ -64,7 +64,10 @@
                                                                            },
                                                             "unit":  "percentunit",
                                                             "min":  0,
-                                                            "max":  1
+                                                            "max":  1,
+                                                            "mappings":  [
+
+                                                                         ]
                                                         },
                                            "overrides":  [
 
@@ -78,7 +81,7 @@
                                    },
                        "id":  2,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "auto",
@@ -90,7 +93,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "auto",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -135,7 +138,10 @@
                                                                            },
                                                             "unit":  "percentunit",
                                                             "min":  0,
-                                                            "max":  1
+                                                            "max":  1,
+                                                            "mappings":  [
+
+                                                                         ]
                                                         },
                                            "overrides":  [
 
@@ -149,7 +155,7 @@
                                    },
                        "id":  3,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "auto",
@@ -161,7 +167,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "auto",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -206,7 +212,10 @@
                                                                            },
                                                             "unit":  "percentunit",
                                                             "min":  0,
-                                                            "max":  1
+                                                            "max":  1,
+                                                            "mappings":  [
+
+                                                                         ]
                                                         },
                                            "overrides":  [
 
@@ -220,7 +229,7 @@
                                    },
                        "id":  4,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "auto",
@@ -232,7 +241,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "auto",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -277,7 +286,10 @@
                                                                            },
                                                             "unit":  "percentunit",
                                                             "min":  0,
-                                                            "max":  1
+                                                            "max":  1,
+                                                            "mappings":  [
+
+                                                                         ]
                                                         },
                                            "overrides":  [
 
@@ -291,7 +303,7 @@
                                    },
                        "id":  5,
                        "options":  {
-                                       "colorMode":  "value",
+                                       "colorMode":  "background",
                                        "graphMode":  "none",
                                        "justifyMode":  "auto",
                                        "orientation":  "auto",
@@ -303,7 +315,7 @@
                                                              "values":  false
                                                          },
                                        "textMode":  "auto",
-                                       "noValue":  "Waiting for data"
+                                       "noValue":  "NO DATA"
                                    },
                        "targets":  [
                                        {
@@ -643,7 +655,7 @@
 
                    },
     "timezone":  "browser",
-    "title":  "LibraryAI â€” Gate Decisions",
+    "title":  "LibraryAI - Gate Decisions",
     "uid":  "libraryai-gates",
     "version":  1
 }
