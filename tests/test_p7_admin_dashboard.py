@@ -22,6 +22,7 @@ dependency_overrides directly.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -55,10 +56,12 @@ def _make_redis(llen_value: int = 0) -> MagicMock:
 def _make_session_scalar(*return_values: int) -> MagicMock:
     """
     Return a mock Session whose scalar() calls return successive values from
-    return_values.  Each call to .scalar() pops the next value.
+    return_values. The first value seeds mocked throughput timestamps; remaining
+    values are returned by successive .scalar() calls.
     """
     session = MagicMock(spec=Session)
-    scalars = list(return_values)
+    values = list(return_values)
+    throughput_count = values.pop(0) if values else 0
 
     chain = MagicMock()
     session.query.return_value = chain
@@ -67,9 +70,19 @@ def _make_session_scalar(*return_values: int) -> MagicMock:
     chain.isnot.return_value = chain
     chain.is_.return_value = chain
 
-    side_effect_list = [v for v in scalars]
-    chain.scalar.side_effect = side_effect_list
+    completed_at = datetime.now(timezone.utc)
+    chain.all.return_value = [(completed_at,)] * throughput_count
+    chain.scalar.side_effect = values
 
+    return session
+
+
+def _make_dashboard_session_with_throughput(
+    completed_at_values: list[datetime],
+    *scalar_values: int,
+) -> MagicMock:
+    session = _make_session_scalar(0, *scalar_values)
+    session.query.return_value.all.return_value = [(ts,) for ts in completed_at_values]
     return session
 
 
@@ -174,7 +187,7 @@ class TestDashboardSummarySchema:
     def test_200_correct_schema(self, inject_admin: Any) -> None:
         """Response must contain exactly the 7 documented fields."""
         # scalar return order matches the query sequence in dashboard.py:
-        # 1. throughput (terminal pages last hour)
+        # 1. throughput seed count for mocked terminal completion timestamps
         # 2. total_terminal
         # 3. total_accepted
         # 4. total_with_agreement (structural_agreement IS NOT NULL)
@@ -199,10 +212,21 @@ class TestDashboardSummarySchema:
         assert set(data.keys()) == expected_keys
 
     def test_throughput_value(self, inject_admin: Any) -> None:
-        session = _make_session_scalar(10, 0, 0, 0, 0, 0, 0, 0)
+        now = datetime.now(timezone.utc)
+        completed_at_values = [now] * 6 + [now - timedelta(hours=1)] * 4
+        session = _make_dashboard_session_with_throughput(
+            completed_at_values,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
+        )
         client = inject_admin(session, _make_redis())
         data = client.get("/v1/admin/dashboard-summary").json()
-        assert data["throughput_pages_per_hour"] == 10.0
+        assert data["throughput_pages_per_hour"] == 5.0
 
     def test_auto_accept_rate(self, inject_admin: Any) -> None:
         """80 accepted / 100 terminal = 0.8."""
@@ -280,8 +304,13 @@ class TestServiceHealthSchema:
         session.query.return_value = chain
         chain.filter.return_value = chain
         chain.with_entities.return_value = chain
-        side_effects = list(scalars)
-        chain.scalar.side_effect = side_effects
+        chain.isnot.return_value = chain
+        values = list(scalars)
+        human_reviewed = values[6] if len(values) > 6 else 0
+        scalar_values = values[:6] + values[7:]
+        completed_at = datetime.now(timezone.utc)
+        chain.all.return_value = [(completed_at,)] * human_reviewed
+        chain.scalar.side_effect = scalar_values
         return session
 
     def test_200_correct_schema(self, inject_admin: Any) -> None:
@@ -352,13 +381,17 @@ class TestServiceHealthSchema:
         assert data["structural_agreement_rate"] == 0.0
 
     def test_human_review_throughput_rate(self, inject_admin: Any) -> None:
-        """48 human-corrected pages over 24h window → 2.0 pages/hour."""
-        # preprocessing=0/0, rectification=0/0, layout=0/0, human_reviewed=48,
+        """6 corrections in one active hour and 4 in another yields 5.0 pages/hour."""
+        # preprocessing=0/0, rectification=0/0, layout=0/0, human_reviewed seed=0,
         # total_with_agreement=0, agreed=0, rescue_attempted=0, policy_skips=0
-        session = self._make_health_session(0, 0, 0, 0, 0, 0, 48, 0, 0, 0, 0)
+        now = datetime.now(timezone.utc)
+        session = self._make_health_session(0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0)
+        session.query.return_value.all.return_value = (
+            [(now,)] * 6 + [(now - timedelta(hours=1),)] * 4
+        )
         client = inject_admin(session, _make_redis())
         data = client.get("/v1/admin/service-health").json()
-        assert data["human_review_throughput_rate"] == 2.0
+        assert data["human_review_throughput_rate"] == 5.0
 
     def test_structural_agreement_rate_windowed(self, inject_admin: Any) -> None:
         """60 agreed / 80 with_agreement = 0.75."""

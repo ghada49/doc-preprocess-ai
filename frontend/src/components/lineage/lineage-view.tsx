@@ -57,6 +57,17 @@ export function LineageView({
     return data.lineage.filter((record) => record.sub_page_index === subPageIndex);
   }, [data, subPageIndex]);
 
+  const upstreamGeometryInvocations = useMemo(() => {
+    if (!data || subPageIndex == null) return [];
+    return data.lineage
+      .filter((record) => record.sub_page_index == null)
+      .flatMap((record) => record.service_invocations)
+      .filter(
+        (invocation) =>
+          invocation.service_name === "iep1a" || invocation.service_name === "iep1b"
+      );
+  }, [data, subPageIndex]);
+
   if (isLoading) {
     return (
       <div className="flex items-center justify-center py-16">
@@ -153,6 +164,28 @@ export function LineageView({
           <div className="space-y-3">
             {data.quality_gates.map((gate) => (
               <QualityGateCard key={gate.gate_id} gate={gate} />
+            ))}
+          </div>
+        </Section>
+      )}
+
+      {upstreamGeometryInvocations.length > 0 && (
+        <Section
+          title="Upstream Geometry Invocations"
+          icon={<Layers className="h-4 w-4 text-indigo-600" />}
+          count={upstreamGeometryInvocations.length}
+          defaultOpen
+        >
+          <p className="mb-3 text-xs text-slate-500">
+            This sub-page comes from a split parent. Geometry calls are logged on the parent
+            lineage row.
+          </p>
+          <div className="space-y-3">
+            {upstreamGeometryInvocations.map((invocation) => (
+              <InvocationCard
+                key={`upstream-${invocation.lineage_id}-${invocation.id}`}
+                invocation={invocation}
+              />
             ))}
           </div>
         </Section>
