@@ -88,6 +88,10 @@ jobs:
           RUNPOD_CONTAINER_DISK_GB: ${{ vars.RUNPOD_CONTAINER_DISK_GB || '50' }}
           RUNPOD_MIN_VCPU_PER_GPU: ${{ vars.RUNPOD_MIN_VCPU_PER_GPU || '2' }}
           RUNPOD_MIN_RAM_PER_GPU: ${{ vars.RUNPOD_MIN_RAM_PER_GPU || '8' }}
+          # If a pod never reaches RUNNING + /health within this window, terminate it and create a replacement (RunPod stuck on image pull).
+          RUNPOD_HEALTH_WAIT_SECONDS: ${{ vars.RUNPOD_HEALTH_WAIT_SECONDS || '600' }}
+          RUNPOD_HEALTH_POLL_SECONDS: ${{ vars.RUNPOD_HEALTH_POLL_SECONDS || '15' }}
+          RUNPOD_POD_REPLACE_MAX: ${{ vars.RUNPOD_POD_REPLACE_MAX || '3' }}
         run: |
           set -euo pipefail
 
@@ -258,12 +262,79 @@ jobs:
             return 1
           }
 
+          RUNPOD_HEALTH_WAIT_SECONDS="${RUNPOD_HEALTH_WAIT_SECONDS:-600}"
+          RUNPOD_HEALTH_POLL_SECONDS="${RUNPOD_HEALTH_POLL_SECONDS:-15}"
+          RUNPOD_POD_REPLACE_MAX="${RUNPOD_POD_REPLACE_MAX:-3}"
+          MAX_HEALTH_ITER=$(( (RUNPOD_HEALTH_WAIT_SECONDS + RUNPOD_HEALTH_POLL_SECONDS - 1) / RUNPOD_HEALTH_POLL_SECONDS ))
+          if [ "$MAX_HEALTH_ITER" -lt 1 ]; then MAX_HEALTH_ITER=1; fi
+
+          remove_pod_id_from_created_pods() {
+            local OLD_ID="$1"
+            local NEW_LIST=()
+            for id in "${CREATED_PODS[@]}"; do
+              [ "$id" = "$OLD_ID" ] && continue
+              NEW_LIST+=("$id")
+            done
+            CREATED_PODS=("${NEW_LIST[@]}")
+          }
+
+          terminate_runpod_pod() {
+            local TID="$1"
+            [ -z "$TID" ] && return 0
+            curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+              -H "Content-Type: application/json" \
+              -d "{\"query\":\"mutation { podTerminate(input: {podId: \\\"${TID}\\\"}) }\"}" \
+              > /dev/null || true
+            echo "Terminated RunPod pod: $TID" >&2
+          }
+
+          # Poll until RUNNING + /health, or each RUNPOD_HEALTH_WAIT_SECONDS window elapses — then replace pod (mitigate stuck image fetch).
+          wait_for_pod_with_replace() {
+            declare -n POD_REF="$1"
+            local PORT="$2" NAME="$3" RP_NAME="$4" RP_IMAGE="$5"
+            local POD_ID="${POD_REF}"
+            local WIN REPLACE_ROUND
+            REPLACE_ROUND=1
+            while [ "$REPLACE_ROUND" -le "$RUNPOD_POD_REPLACE_MAX" ]; do
+              local URL="https://${POD_ID}-${PORT}.proxy.runpod.net/health"
+              echo "Waiting for $NAME at $URL (${RUNPOD_HEALTH_WAIT_SECONDS}s per window, replace ${REPLACE_ROUND}/${RUNPOD_POD_REPLACE_MAX}) ..."
+              for WIN in $(seq 1 "$MAX_HEALTH_ITER"); do
+                STATUS=$(curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+                  -H "Content-Type: application/json" \
+                  -d "{\"query\":\"query { pod(input: {podId: \\\"${POD_ID}\\\"}) { desiredStatus runtime { uptimeInSeconds } } }\"}" \
+                  | python3 -c "import sys,json; d=json.load(sys.stdin); p=d['data']['pod']; print('RUNNING' if p.get('runtime') is not None else p.get('desiredStatus','UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
+                echo "  attempt $WIN/${MAX_HEALTH_ITER} — $NAME pod status=$STATUS"
+                if [ "$STATUS" = "RUNNING" ]; then
+                  if curl -sf --max-time 10 "$URL" > /dev/null 2>&1; then
+                    echo "$NAME is healthy (pod $POD_ID)."
+                    POD_REF="$POD_ID"
+                    return 0
+                  fi
+                fi
+                sleep "$RUNPOD_HEALTH_POLL_SECONDS"
+              done
+              if [ "$REPLACE_ROUND" -ge "$RUNPOD_POD_REPLACE_MAX" ]; then
+                echo "ERROR: $NAME pod $POD_ID did not become healthy after ${RUNPOD_POD_REPLACE_MAX} windows of ${RUNPOD_HEALTH_WAIT_SECONDS}s"
+                exit 1
+              fi
+              echo "::warning::$NAME pod $POD_ID not healthy within ${RUNPOD_HEALTH_WAIT_SECONDS}s — terminating and creating a replacement (${REPLACE_ROUND}/${RUNPOD_POD_REPLACE_MAX})"
+              terminate_runpod_pod "$POD_ID"
+              remove_pod_id_from_created_pods "$POD_ID"
+              POD_ID=$(create_pod "$RP_NAME" "$RP_IMAGE" "$PORT")
+              REPLACE_ROUND=$((REPLACE_ROUND + 1))
+            done
+            exit 1
+          }
+
           IEP0_POD=$(create_pod  "libraryai-iep0"  "gma51/libraryai-iep0:latest"  "8006")
-          CREATED_PODS+=("$IEP0_POD")
           IEP1A_POD=$(create_pod "libraryai-iep1a" "gma51/libraryai-iep1a:latest" "8001")
-          CREATED_PODS+=("$IEP1A_POD")
           IEP1B_POD=$(create_pod "libraryai-iep1b" "gma51/libraryai-iep1b:latest" "8002")
-          CREATED_PODS+=("$IEP1B_POD")
+
+          wait_for_pod_with_replace IEP0_POD  "8006" "iep0"  "libraryai-iep0"  "gma51/libraryai-iep0:latest"
+          wait_for_pod_with_replace IEP1A_POD "8001" "iep1a" "libraryai-iep1a" "gma51/libraryai-iep1a:latest"
+          wait_for_pod_with_replace IEP1B_POD "8002" "iep1b" "libraryai-iep1b" "gma51/libraryai-iep1b:latest"
+
+          echo "All RunPod GPU pods passed health checks."
 
           echo "IEP0_POD_ID=$IEP0_POD"   >> "$GITHUB_ENV"
           echo "IEP1A_POD_ID=$IEP1A_POD" >> "$GITHUB_ENV"
@@ -285,44 +356,7 @@ jobs:
           echo "Pod IDs saved to s3://libraryai2/ops/runpod-pods.json"
           trap - ERR
 
-      # ── Step 2: Wait for RunPod pods to respond to health checks ─────────
-      - name: Wait for RunPod pods to be ready
-        if: steps.processing-active.outputs.active != 'true'
-        env:
-          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
-        run: |
-          set -euo pipefail
-
-          wait_for_pod() {
-            local POD_ID="$1" PORT="$2" NAME="$3"
-            local URL="https://${POD_ID}-${PORT}.proxy.runpod.net/health"
-            echo "Waiting for $NAME to become ready at $URL ..."
-            for i in $(seq 1 120); do
-              # Check RunPod pod status via API
-              STATUS=$(curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
-                -H "Content-Type: application/json" \
-                -d "{\"query\":\"query { pod(input: {podId: \\\"${POD_ID}\\\"}) { desiredStatus runtime { uptimeInSeconds } } }\"}" \
-                | python3 -c "import sys,json; d=json.load(sys.stdin); p=d['data']['pod']; print('RUNNING' if p.get('runtime') is not None else p.get('desiredStatus','UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
-              echo "  attempt $i/120 — $NAME pod status=$STATUS"
-              if [ "$STATUS" = "RUNNING" ]; then
-                # Pod is up — check service health endpoint
-                if curl -sf --max-time 10 "$URL" > /dev/null 2>&1; then
-                  echo "$NAME is healthy."
-                  return 0
-                fi
-              fi
-              sleep 15
-            done
-            echo "ERROR: $NAME pod did not become healthy within 30 minutes"
-            exit 1
-          }
-
-          wait_for_pod "$IEP0_POD_ID"  "8006" "iep0"
-          wait_for_pod "$IEP1A_POD_ID" "8001" "iep1a"
-          wait_for_pod "$IEP1B_POD_ID" "8002" "iep1b"
-          echo "All RunPod GPU pods are healthy."
-
-      # ── Step 3: Register eep-worker task def with RunPod IEP URLs ────────
+      # ── Step 2: Register eep-worker task def with RunPod IEP URLs ────────
       - name: Update eep-worker task definition with RunPod IEP URLs
         if: steps.processing-active.outputs.active != 'true'
         run: |
@@ -344,7 +378,7 @@ jobs:
           echo "EEP_WORKER_TASK_DEF=$REVISION" >> "$GITHUB_ENV"
           echo "Registered eep-worker task def: $REVISION"
 
-      # ── Step 4: Start CPU inference services ─────────────────────────────
+      # ── Step 3: Start CPU inference services ─────────────────────────────
       # iep1d is the rectification rescue path (CPU/Fargate).  It used to be
       # left at desired=0 and started on-demand by services/eep_worker/app/
       # iep1d_scaler.py, but its cold-start latency routinely exceeded the
@@ -384,7 +418,7 @@ jobs:
             --services libraryai-iep1d libraryai-iep1e libraryai-iep2a-v2 libraryai-iep2b
           echo "All CPU IEP services healthy."
 
-      # ── Step 5: Start processing workers ─────────────────────────────────
+      # ── Step 4: Start processing workers ─────────────────────────────────
       # NOTE: libraryai-eep is always-on and is NOT managed by this workflow.
       - name: Start workers
         if: steps.processing-active.outputs.active != 'true'

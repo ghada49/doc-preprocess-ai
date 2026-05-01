@@ -247,7 +247,9 @@ def _do_scale_up() -> None:
     Start normal-processing infrastructure.
 
     Starts (in order):
-      1. RunPod GPU pods (iep0, iep1a, iep1b) — if RUNPOD_API_KEY is set
+      1. RunPod GPU pods (iep0, iep1a, iep1b) — if RUNPOD_API_KEY is set (pods that stay
+         unhealthy for RUNPOD_HEALTH_WAIT_SECONDS default 600s are terminated and recreated,
+         up to RUNPOD_POD_REPLACE_MAX times each)
       2. eep-worker — with RunPod IEP URLs injected into a new task def revision
       3. CPU IEP services (iep1d, iep1e, iep2a, iep2b) → 1 each
       4. Remaining worker services (eep-recovery, shadow-worker) → WORKER_DESIRED_COUNT
@@ -345,6 +347,115 @@ def _do_scale_up() -> None:
         return
 
 
+def _terminate_single_runpod_pod(api_key: str, pod_id: str) -> None:
+    """Terminate one RunPod pod (best-effort). Used when recycling stuck pulls."""
+    if not api_key or not pod_id:
+        return
+    import httpx  # noqa: PLC0415
+
+    mutation = 'mutation { podTerminate(input: { podId: "' + pod_id + '" }) }'
+    try:
+        resp = httpx.post(
+            f"https://api.runpod.io/graphql?api_key={api_key}",
+            json={"query": mutation},
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        if "errors" in data:
+            logger.warning(
+                "normal_scaler: RunPod terminate %s returned errors: %s",
+                pod_id,
+                data["errors"],
+            )
+            return
+        logger.info("normal_scaler: terminated RunPod pod %s (recycle stuck image pull)", pod_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("normal_scaler: failed to terminate RunPod pod %s: %s", pod_id, exc)
+
+
+def _runpod_pod_running_and_healthy(api_key: str, pod_id: str, health_url: str) -> bool:
+    """True when GraphQL reports runtime (RUNNING) and GET /health succeeds."""
+    import httpx  # noqa: PLC0415
+
+    try:
+        q = {
+            "query": (
+                'query { pod(input: { podId: "'
+                + pod_id.replace('"', "")
+                + '" }) { desiredStatus runtime { uptimeInSeconds } } }'
+            ),
+        }
+        resp = httpx.post(
+            f"https://api.runpod.io/graphql?api_key={api_key}",
+            json=q,
+            timeout=30.0,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        pod = (data.get("data") or {}).get("pod") or {}
+        if pod.get("runtime") is None:
+            return False
+        h = httpx.get(health_url, timeout=10.0)
+        return h.status_code == 200
+    except Exception:
+        return False
+
+
+def _wait_runpod_iep_ready_or_replace(
+    api_key: str,
+    pod_id: str,
+    port: int,
+    name: str,
+    image: str,
+    gpu_type_ids: list[str],
+    cloud_types: list[str],
+) -> str:
+    """
+    Poll until the pod is RUNNING and answers GET /health, or each
+    RUNPOD_HEALTH_WAIT_SECONDS window expires — then terminate and create a replacement.
+    Mitigates RunPod hosts stuck on Docker image fetch without failing the whole scale-up for 30+ minutes.
+    """
+    import time  # noqa: PLC0415
+
+    wait_s = int(os.environ.get("RUNPOD_HEALTH_WAIT_SECONDS", "600"))
+    poll_s = int(os.environ.get("RUNPOD_HEALTH_POLL_SECONDS", "15"))
+    max_windows = max(1, int(os.environ.get("RUNPOD_POD_REPLACE_MAX", "3")))
+    health_url = f"https://{pod_id}-{port}.proxy.runpod.net/health"
+
+    for window in range(max_windows):
+        deadline = time.monotonic() + wait_s
+        while time.monotonic() < deadline:
+            if _runpod_pod_running_and_healthy(api_key, pod_id, health_url):
+                logger.info("normal_scaler: RunPod %s pod %s is healthy.", name, pod_id)
+                return pod_id
+            remaining = deadline - time.monotonic()
+            time.sleep(min(float(poll_s), max(0.5, remaining)))
+
+        if window >= max_windows - 1:
+            raise RuntimeError(
+                f"RunPod {name} pod {pod_id} did not become healthy after "
+                f"{max_windows} window(s) of {wait_s}s each"
+            )
+
+        logger.warning(
+            "normal_scaler: %s pod %s not healthy within %ds — terminating and recreating "
+            "(window %d/%d)",
+            name,
+            pod_id,
+            wait_s,
+            window + 1,
+            max_windows,
+        )
+        _terminate_single_runpod_pod(api_key, pod_id)
+        pod_id = _create_runpod_pod_with_fallback(
+            api_key, name, image, port, gpu_type_ids, cloud_types
+        )
+        health_url = f"https://{pod_id}-{port}.proxy.runpod.net/health"
+
+    raise RuntimeError(f"RunPod {name}: internal wait loop exited unexpectedly")
+
+
 def _create_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
     """Create RunPod pods for iep0, iep1a, iep1b. Returns (iep0_url, iep1a_url, iep1b_url)."""
     import boto3  # noqa: PLC0415
@@ -370,6 +481,17 @@ def _create_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
             name,
             image,
             port,
+            gpu_type_ids,
+            cloud_types,
+        )
+
+    for name, image, port in _IEP_PODS:
+        pod_ids[name] = _wait_runpod_iep_ready_or_replace(
+            api_key,
+            pod_ids[name],
+            port,
+            name,
+            image,
             gpu_type_ids,
             cloud_types,
         )
