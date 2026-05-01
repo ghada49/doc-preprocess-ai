@@ -37,8 +37,9 @@ Safety guarantees
 
 6. Worker ownership tracking.
    CLAIMS_KEY (a Redis hash) maps task_id → "worker_id:claimed_at_iso".
-   This is best-effort metadata for the recovery service; queue safety does
-   not depend on it being present.
+   Per-task heartbeat keys are refreshed by live workers while they actively
+   own a task.  Recovery treats a live heartbeat as evidence that a stale DB
+   timestamp is still being worked, not abandoned.
 
 Queue directions
 ----------------
@@ -57,6 +58,9 @@ Exports
   ack_task(r, claimed)                    — mark task successfully processed
   fail_task(r, claimed, max_retries)      — retry or dead-letter on failure
   move_to_dead_letter(r, claimed)         — explicit dead-letter
+  record_task_heartbeat(r, task_id, worker_id, ttl_seconds)
+  clear_task_heartbeat(r, task_id)
+  has_live_task_heartbeat(r, task_id)
 
   get_processing_tasks(r)                 — reconciliation hook: list in-flight
   requeue_task(r, task)                   — reconciliation hook: re-enqueue
@@ -94,6 +98,14 @@ MAX_TASK_RETRIES: int = 3
 # Enables ownership inspection without scanning the full processing list.
 # Best-effort — queue safety does not depend on this key being consistent.
 CLAIMS_KEY: str = "libraryai:page_tasks:claims"
+
+# Redis string key prefix: task_id -> worker_id, with a short TTL.
+TASK_HEARTBEAT_KEY_PREFIX: str = "libraryai:page_tasks:heartbeat:"
+
+
+def task_heartbeat_key(task_id: str) -> str:
+    """Return the Redis key used for a live worker heartbeat."""
+    return f"{TASK_HEARTBEAT_KEY_PREFIX}{task_id}"
 
 
 # ---------------------------------------------------------------------------
@@ -248,6 +260,37 @@ def claim_task(
         worker_id=worker_id,
         claimed_at=claimed_at,
     )
+
+
+# ---------------------------------------------------------------------------
+# Live worker heartbeat
+# ---------------------------------------------------------------------------
+
+
+def record_task_heartbeat(
+    r: redis.Redis,
+    task_id: str,
+    worker_id: str,
+    ttl_seconds: int,
+) -> None:
+    """
+    Record that *worker_id* is still actively processing *task_id*.
+
+    The key has a short TTL and must be refreshed periodically.  If the worker
+    process dies or blocks hard, the key expires and recovery can reclaim the
+    task from the processing list.
+    """
+    r.set(task_heartbeat_key(task_id), worker_id, ex=max(1, int(ttl_seconds)))
+
+
+def clear_task_heartbeat(r: redis.Redis, task_id: str) -> None:
+    """Remove the live-worker heartbeat for *task_id*."""
+    r.delete(task_heartbeat_key(task_id))
+
+
+def has_live_task_heartbeat(r: redis.Redis, task_id: str) -> bool:
+    """Return True if a worker heartbeat for *task_id* is currently live."""
+    return bool(r.exists(task_heartbeat_key(task_id)))
 
 
 # ---------------------------------------------------------------------------

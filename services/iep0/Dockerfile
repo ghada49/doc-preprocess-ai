@@ -24,6 +24,7 @@ RUN uv pip install --system \
     "prometheus-client>=0.20.0" \
     "ultralytics>=8.1.0" \
     "boto3>=1.34.0" \
+    "redis>=4.0.0" \
     "numpy>=1.26,<2" \
     && pip uninstall -y opencv-python 2>/dev/null; \
     uv pip install --system "opencv-python-headless>=4.9.0" "numpy>=1.26,<2"

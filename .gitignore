@@ -61,8 +61,16 @@ Thumbs.db
 *.bin
 *.pkl
 *.pkl.version
+models/iep0/*
+!models/iep0/.gitkeep
+models/iep1a/*
+!models/iep1a/.gitkeep
+models/iep1b/*
+!models/iep1b/.gitkeep
 models/iep1d/*
 !models/iep1d/README.txt
+models/iep1e/**
+!models/iep1e/.gitkeep
 models/iep2a/*
 !models/iep2a/README.txt
 models/iep2b/*

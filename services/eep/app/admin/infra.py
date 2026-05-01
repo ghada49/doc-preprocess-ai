@@ -138,7 +138,7 @@ _SERVICE_CATALOG = [
     {
         "service_name": "iep0",
         "role": "Material-type Classification (YOLOv8)",
-        "deployment_type": "Fargate",
+        "deployment_type": "RunPod",
         "port": 8006,
         "invocation_pattern": "iep0%",
         "model_applicable": True,
@@ -146,7 +146,7 @@ _SERVICE_CATALOG = [
     {
         "service_name": "iep1a",
         "role": "Geometry Detection — YOLOv8-seg (primary)",
-        "deployment_type": "EC2 GPU",
+        "deployment_type": "RunPod",
         "port": 8001,
         "invocation_pattern": "iep1a%",
         "model_applicable": True,
@@ -154,7 +154,7 @@ _SERVICE_CATALOG = [
     {
         "service_name": "iep1b",
         "role": "Geometry Detection — YOLOv8-pose (challenger)",
-        "deployment_type": "EC2 GPU",
+        "deployment_type": "RunPod",
         "port": 8002,
         "invocation_pattern": "iep1b%",
         "model_applicable": True,
@@ -162,7 +162,7 @@ _SERVICE_CATALOG = [
     {
         "service_name": "iep1d",
         "role": "Document Rectification — UVDoc",
-        "deployment_type": "EC2 GPU",
+        "deployment_type": "Fargate",
         "port": 8003,
         "invocation_pattern": "iep1d%",
         "model_applicable": True,
@@ -178,7 +178,7 @@ _SERVICE_CATALOG = [
     {
         "service_name": "iep2a",
         "role": "Layout Detection — Detectron2",
-        "deployment_type": "EC2 GPU",
+        "deployment_type": "Fargate",
         "port": 8004,
         "invocation_pattern": "iep2a%",
         "model_applicable": True,
@@ -186,7 +186,7 @@ _SERVICE_CATALOG = [
     {
         "service_name": "iep2b",
         "role": "Layout Detection — DocLayout-YOLO",
-        "deployment_type": "EC2 GPU",
+        "deployment_type": "Fargate",
         "port": 8005,
         "invocation_pattern": "iep2b%",
         "model_applicable": True,

@@ -1,4 +1,4 @@
-name: Deploy
+﻿name: Deploy
 
 on:
   push:
@@ -11,6 +11,10 @@ on:
         default: "full"
         type: choice
         options: [full, staging-only]
+      force_rebuild:
+        description: "Rebuild all images (use when only GitHub variables changed)"
+        type: boolean
+        default: false
 
 permissions:
   id-token: write
@@ -41,59 +45,109 @@ jobs:
           - service: eep
             context: .
             dockerfile: services/eep/Dockerfile
+            paths: services/eep shared
           - service: eep-worker
             context: .
             dockerfile: services/eep_worker/Dockerfile
+            paths: services/eep_worker shared
           - service: eep-recovery
             context: .
             dockerfile: services/eep_recovery/Dockerfile
+            paths: services/eep_recovery shared
           - service: shadow-worker
             context: .
             dockerfile: services/shadow_worker/Dockerfile
+            paths: services/shadow_worker shared
           - service: retraining-worker
             context: .
             dockerfile: services/retraining_worker/Dockerfile
+            paths: services/retraining_worker
           - service: iep0
             context: .
             dockerfile: services/iep0/Dockerfile
+            paths: services/iep0
+            push_dockerhub: true
           - service: iep1a
             context: .
             dockerfile: services/iep1a/Dockerfile
+            paths: services/iep1a
+            push_dockerhub: true
           - service: iep1b
             context: .
             dockerfile: services/iep1b/Dockerfile
+            paths: services/iep1b
+            push_dockerhub: true
           - service: iep1d
             context: .
             dockerfile: services/iep1d/Dockerfile
+            paths: services/iep1d
           - service: iep1e
             context: .
             dockerfile: services/iep1e/Dockerfile
+            paths: services/iep1e
+            push_dockerhub: true
             build-args: |
               ENABLE_REAL_MODEL=true
           - service: dataset-builder
             context: .
             dockerfile: services/dataset_builder/Dockerfile
+            paths: services/dataset_builder
           - service: iep2a
             context: .
             dockerfile: services/iep2a/Dockerfile
+            paths: services/iep2a
+            push_dockerhub: true
             build-args: |
               ENABLE_REAL_MODEL=true
               ENABLE_PADDLE_BACKEND=true
           - service: iep2b
             context: .
             dockerfile: services/iep2b/Dockerfile
+            paths: services/iep2b
+            push_dockerhub: true
             build-args: |
               ENABLE_REAL_MODEL=true
           - service: frontend
             context: frontend
             dockerfile: frontend/Dockerfile
+            paths: frontend
             build-args: |
               NEXT_PUBLIC_API_BASE_URL=${{ vars.NEXT_PUBLIC_API_BASE_URL }}
           - service: mlflow
             context: .
             dockerfile: services/mlflow/Dockerfile
+            paths: services/mlflow
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Detect service changes
+        id: changed
+        run: |
+          if [[ "${{ inputs.force_rebuild || 'false' }}" == "true" ]]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "${{ matrix.service }}: force_rebuild=true — will build"
+            exit 0
+          fi
+          # On a branch ahead of main: compare to merge base with main.
+          # On main (or no origin/main): compare to the previous commit.
+          if git rev-parse --verify origin/main >/dev/null 2>&1; then
+            BASE=$(git merge-base origin/main HEAD)
+            if [ "$BASE" = "$(git rev-parse HEAD)" ]; then
+              BASE="HEAD~1"  # HEAD is on main — compare to previous commit
+            fi
+          else
+            BASE="HEAD~1"
+          fi
+          CHANGED=$(git diff --name-only "$BASE" HEAD -- ${{ matrix.paths }} | wc -l)
+          if [ "$CHANGED" -gt 0 ]; then
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+            echo "${{ matrix.service }}: $CHANGED changed files since $BASE — will build"
+          else
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "${{ matrix.service }}: no changes detected since $BASE — skipping build"
+          fi
 
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
@@ -104,28 +158,55 @@ jobs:
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
-      # ── Model-weight download (iep1d / iep2a / iep2b only) ────────────────
+      - name: Log in to Docker Hub
+        if: matrix.push_dockerhub == true
+        uses: docker/login-action@v3
+        with:
+          username: gma51
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      # ── Model-weight download (iep0 / iep1a / iep1b / iep1e / iep1d / iep2a / iep2b) ──
       # Weights are NOT committed to Git (see .gitignore).  They must be stored
       # in S3 and referenced via GitHub Actions repository variables:
       #
-      #   IEP1D_WEIGHTS_URI   s3://…/iep1d/best_model.pkl          (single file)
-      #   IEP2A_WEIGHTS_URI   s3://…/iep2a/pp-doclayoutv2.tar.gz   (tar.gz archive)
+      #   IEP0_WEIGHTS_URI    s3://libraryai2/models/iep0/iep0-models.tar.gz    (flat tar.gz)
+      #   IEP1A_WEIGHTS_URI   s3://libraryai2/models/iep1a/iep1a-models.tar.gz  (flat tar.gz)
+      #   IEP1B_WEIGHTS_URI   s3://libraryai2/models/iep1b/iep1b-models.tar.gz  (flat tar.gz)
+      #   IEP1E_WEIGHTS_URI   s3://libraryai2/models/iep1e/iep1e-models.tar.gz  (flat tar.gz)
+      #   IEP1D_WEIGHTS_URI   s3://…/iep1d/best_model.pkl                       (single file)
+      #   IEP2A_WEIGHTS_URI   s3://…/iep2a/pp-doclayoutv2.tar.gz               (tar.gz archive)
       #     Archive must contain one top-level directory whose contents unpack to:
       #       models/iep2a/paddle/PP-DocLayoutV2/{config.json,inference.yml,inference.pdiparams,…}
       #   IEP2B_WEIGHTS_URI   s3://…/iep2b/doclayout_yolo_docstructbench_imgsz1024.pt (single file)
       #
+      # IMPORTANT — archive format for iep0 / iep1a / iep1b / iep1e:
+      #   Archives were created with: tar -czf archive.tar.gz -C models/<svc> .
+      #   Contents are relative to the model directory (no top-level wrapper directory).
+      #   Extract with: tar -xzf "$ARCHIVE" -C "$DEST_DIR"  (do NOT use --strip-components=1)
+      #
       # Optional SHA-256 checksums (verified before extraction / use):
+      #   IEP0_WEIGHTS_SHA256 / IEP1A_WEIGHTS_SHA256 / IEP1B_WEIGHTS_SHA256 / IEP1E_WEIGHTS_SHA256
       #   IEP1D_WEIGHTS_SHA256 / IEP2A_WEIGHTS_SHA256 / IEP2B_WEIGHTS_SHA256
       #
       # IAM requirement: the github-actions-deploy OIDC role needs
-      #   s3:GetObject on arn:aws:s3:::libraryai-models/iep*
+      #   s3:GetObject on arn:aws:s3:::libraryai2/models/iep*
       # No long-lived keys — OIDC credentials from the step above are reused.
       - name: Download model weights
-        if: contains(fromJSON('["iep1d","iep2a","iep2b"]'), matrix.service)
+        if: steps.changed.outputs.skip != 'true' && contains(fromJSON('["iep0","iep1a","iep1b","iep1e","iep1d","iep2a","iep2b"]'), matrix.service)
         env:
+          IEP0_WEIGHTS_URI:     ${{ vars.IEP0_WEIGHTS_URI }}
+          IEP1A_WEIGHTS_URI:    ${{ vars.IEP1A_WEIGHTS_URI }}
+          IEP1B_WEIGHTS_URI:    ${{ vars.IEP1B_WEIGHTS_URI }}
+          IEP1E_WEIGHTS_URI:    ${{ vars.IEP1E_WEIGHTS_URI }}
           IEP1D_WEIGHTS_URI:    ${{ vars.IEP1D_WEIGHTS_URI }}
           IEP2A_WEIGHTS_URI:    ${{ vars.IEP2A_WEIGHTS_URI }}
           IEP2B_WEIGHTS_URI:    ${{ vars.IEP2B_WEIGHTS_URI }}
+          IEP2A_PADDLE_MODEL_VERSION: ${{ vars.IEP2A_PADDLE_MODEL_VERSION || 'paddleocr-pp-doclayoutv2' }}
+          IEP2B_MODEL_VERSION: ${{ vars.IEP2B_MODEL_VERSION || 'doclayout-yolo-docstructbench' }}
+          IEP0_WEIGHTS_SHA256:  ${{ vars.IEP0_WEIGHTS_SHA256 }}
+          IEP1A_WEIGHTS_SHA256: ${{ vars.IEP1A_WEIGHTS_SHA256 }}
+          IEP1B_WEIGHTS_SHA256: ${{ vars.IEP1B_WEIGHTS_SHA256 }}
+          IEP1E_WEIGHTS_SHA256: ${{ vars.IEP1E_WEIGHTS_SHA256 }}
           IEP1D_WEIGHTS_SHA256: ${{ vars.IEP1D_WEIGHTS_SHA256 }}
           IEP2A_WEIGHTS_SHA256: ${{ vars.IEP2A_WEIGHTS_SHA256 }}
           IEP2B_WEIGHTS_SHA256: ${{ vars.IEP2B_WEIGHTS_SHA256 }}
@@ -133,8 +214,92 @@ jobs:
           set -euo pipefail
           SVC="${{ matrix.service }}"
 
+          # ── Helper: flat tar.gz download → extract → verify ────────────────
+          # Archives for iep0/iep1a/iep1b/iep1e were created with:
+          #   tar -czf archive.tar.gz -C models/<svc> .
+          # so contents are relative to the model dir; no --strip-components needed.
+          download_flat_tar() {
+            local URI="$1" SHA256="$2" ARCHIVE="$3" DEST_DIR="$4"
+            shift 4
+            local REQ_FILES=("$@")
+
+            if [ -z "$URI" ]; then
+              echo "::error::$(echo "$ARCHIVE" | sed 's|/tmp/||;s|-weights.tar.gz||') weight URI not set. Add the corresponding WEIGHTS_URI variable in GitHub → Settings → Actions → Variables."
+              exit 1
+            fi
+
+            mkdir -p "$DEST_DIR"
+            echo "Downloading $(basename "$ARCHIVE") → $ARCHIVE"
+            aws s3 cp "$URI" "$ARCHIVE"
+            test -s "$ARCHIVE" || { echo "::error::Downloaded archive is empty: $ARCHIVE"; exit 1; }
+
+            if [ -n "$SHA256" ]; then
+              echo "$SHA256  $ARCHIVE" | sha256sum --check --strict
+              echo "Checksum OK."
+            else
+              echo "No checksum configured — skipping verification."
+            fi
+
+            # Flat archive: contents are relative to model dir — do NOT strip components.
+            tar -xzf "$ARCHIVE" -C "$DEST_DIR"
+            rm -f "$ARCHIVE"
+
+            for req in "${REQ_FILES[@]}"; do
+              if ! test -f "$req"; then
+                echo "::error::Required model file missing after extraction: $req"
+                exit 1
+              fi
+            done
+            echo "Model files verified."
+          }
+
+          # ── IEP0: flat tar.gz → models/iep0/ ─────────────────────────────
+          if [ "$SVC" = "iep0" ]; then
+            download_flat_tar \
+              "${IEP0_WEIGHTS_URI:-}" \
+              "${IEP0_WEIGHTS_SHA256:-}" \
+              "/tmp/iep0-weights.tar.gz" \
+              "models/iep0" \
+              "models/iep0/classifier.pt"
+
+          # ── IEP1A: flat tar.gz → models/iep1a/ ───────────────────────────
+          elif [ "$SVC" = "iep1a" ]; then
+            download_flat_tar \
+              "${IEP1A_WEIGHTS_URI:-}" \
+              "${IEP1A_WEIGHTS_SHA256:-}" \
+              "/tmp/iep1a-weights.tar.gz" \
+              "models/iep1a" \
+              "models/iep1a/Book_segmentation.pt" \
+              "models/iep1a/Newspaper_Segmentation.pt" \
+              "models/iep1a/Segmentation_microfilm.pt"
+
+          # ── IEP1B: flat tar.gz → models/iep1b/ ───────────────────────────
+          elif [ "$SVC" = "iep1b" ]; then
+            download_flat_tar \
+              "${IEP1B_WEIGHTS_URI:-}" \
+              "${IEP1B_WEIGHTS_SHA256:-}" \
+              "/tmp/iep1b-weights.tar.gz" \
+              "models/iep1b" \
+              "models/iep1b/Book_keypoint.pt" \
+              "models/iep1b/Microfilm_Keypoints.pt" \
+              "models/iep1b/Newspaper_Keypoints.pt"
+
+          # ── IEP1E: flat tar.gz → models/iep1e/ ───────────────────────────
+          elif [ "$SVC" = "iep1e" ]; then
+            download_flat_tar \
+              "${IEP1E_WEIGHTS_URI:-}" \
+              "${IEP1E_WEIGHTS_SHA256:-}" \
+              "/tmp/iep1e-weights.tar.gz" \
+              "models/iep1e" \
+              "models/iep1e/det/inference.pdiparams" \
+              "models/iep1e/det/inference.pdiparams.info" \
+              "models/iep1e/det/inference.pdmodel" \
+              "models/iep1e/rec/inference.pdiparams" \
+              "models/iep1e/rec/inference.pdiparams.info" \
+              "models/iep1e/rec/inference.pdmodel"
+
           # ── IEP2A: tar.gz archive → models/iep2a/paddle/PP-DocLayoutV2/ ──
-          if [ "$SVC" = "iep2a" ]; then
+          elif [ "$SVC" = "iep2a" ]; then
             URI="${IEP2A_WEIGHTS_URI:-}"
             SHA256="${IEP2A_WEIGHTS_SHA256:-}"
             DEST_DIR="models/iep2a/paddle/PP-DocLayoutV2"
@@ -168,6 +333,8 @@ jobs:
                 exit 1
               fi
             done
+            printf '%s\n' "$IEP2A_PADDLE_MODEL_VERSION" > "${DEST_DIR}.version"
+            test -s "${DEST_DIR}.version" || { echo "::error::IEP2A Paddle model version sidecar is empty: ${DEST_DIR}.version"; exit 1; }
             echo "iep2a model files verified."
 
           # ── IEP1D / IEP2B: single-file download ─────────────────────────
@@ -201,9 +368,14 @@ jobs:
             else
               echo "No checksum configured for $SVC — skipping verification."
             fi
+            if [ "$SVC" = "iep2b" ]; then
+              printf '%s\n' "$IEP2B_MODEL_VERSION" > "${DEST}.version"
+              test -s "${DEST}.version" || { echo "::error::IEP2B model version sidecar is empty: ${DEST}.version"; exit 1; }
+            fi
           fi
 
       - name: Build and push libraryai-${{ matrix.service }}
+        if: steps.changed.outputs.skip != 'true'
         uses: docker/build-push-action@v5
         with:
           context: ${{ matrix.context }}
@@ -215,6 +387,13 @@ jobs:
           build-args: ${{ matrix.build-args }}
           cache-from: type=registry,ref=${{ env.ECR_REGISTRY }}/libraryai-${{ matrix.service }}:latest
           cache-to: type=inline
+
+      - name: Push to Docker Hub (gma51)
+        if: steps.changed.outputs.skip != 'true' && matrix.push_dockerhub == true
+        run: |
+          docker pull ${{ env.ECR_REGISTRY }}/libraryai-${{ matrix.service }}:latest
+          docker tag ${{ env.ECR_REGISTRY }}/libraryai-${{ matrix.service }}:latest gma51/libraryai-${{ matrix.service }}:latest
+          docker push gma51/libraryai-${{ matrix.service }}:latest
 
   # ── 3. migrate staging database ───────────────────────────────────────────
   migrate-staging:
@@ -237,6 +416,7 @@ jobs:
           TASK_DEF=$(cat k8s/ecs/migration-task-def.json \
             | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
             | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
+            | sed "s|AWS_${{ vars.AWS_REGION }}|AWS_REGION|g" \
             | sed 's|:latest|:${{ github.sha }}|g')
           ARN=$(aws ecs register-task-definition \
             --cli-input-json "$TASK_DEF" \
@@ -295,17 +475,42 @@ jobs:
             local svc=$1
             case "$svc" in
               eep)      echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"eep","clientAliases":[{"port":8000,"dnsName":"eep"}]}]}' ;;
+              eep-worker) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"eep-worker","clientAliases":[{"port":9100,"dnsName":"eep-worker"}]}]}' ;;
+              eep-recovery) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"eep-recovery","clientAliases":[{"port":9101,"dnsName":"eep-recovery"}]}]}' ;;
+              shadow-worker) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"shadow-worker","clientAliases":[{"port":9102,"dnsName":"shadow-worker"}]}]}' ;;
+              retraining-worker) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"retraining-worker","clientAliases":[{"port":9104,"dnsName":"retraining-worker"}]}]}' ;;
               iep0)     echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep0","clientAliases":[{"port":8006,"dnsName":"iep0"}]}]}' ;;
               iep1a)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1a","clientAliases":[{"port":8001,"dnsName":"iep1a"}]}]}' ;;
               iep1b)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1b","clientAliases":[{"port":8002,"dnsName":"iep1b"}]}]}' ;;
               iep1d)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1d","clientAliases":[{"port":8003,"dnsName":"iep1d"}]}]}' ;;
               iep1e)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1e","clientAliases":[{"port":8007,"dnsName":"iep1e"}]}]}' ;;
-              iep2a)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2a","clientAliases":[{"port":8004,"dnsName":"iep2a"}]}]}' ;;
+              iep2a)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2a-v2","clientAliases":[{"port":8004,"dnsName":"iep2a-v2"}]}]}' ;;
               iep2b)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2b","clientAliases":[{"port":8005,"dnsName":"iep2b"}]}]}' ;;
               frontend) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"frontend","clientAliases":[{"port":3000,"dnsName":"frontend"}]}]}' ;;
               mlflow)   echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"mlflow","clientAliases":[{"port":5000,"dnsName":"mlflow.libraryai.local"}]}]}' ;;
               *)        echo '{"enabled":true,"namespace":"libraryai.local"}' ;;
             esac
+          }
+
+          ecs_service_name() {
+            local svc=$1
+            case "$svc" in
+              iep2a) echo "libraryai-iep2a-v2" ;;
+              *)     echo "libraryai-${svc}" ;;
+            esac
+          }
+
+          image_tag_for() {
+            local svc=$1
+            if aws ecr describe-images \
+                --repository-name "libraryai-${svc}" \
+                --image-ids "imageTag=${GITHUB_SHA}" \
+                >/dev/null 2>&1; then
+              echo "${GITHUB_SHA}"
+            else
+              echo "latest"
+              echo "libraryai-${svc}: ${GITHUB_SHA} not found in ECR; using latest" >&2
+            fi
           }
 
           SERVICES=(
@@ -314,32 +519,94 @@ jobs:
           )
           for SVC in "${SERVICES[@]}"; do
             FILE="k8s/ecs/${SVC}-task-def.json"
+            IMAGE_TAG=$(image_tag_for "$SVC")
             TASK_DEF=$(cat "$FILE" \
               | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
               | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
+              | sed "s|AWS_${{ vars.AWS_REGION }}|AWS_REGION|g" \
               | sed "s/CLUSTER_NAME/${CLUSTER}/g" \
-              | sed 's|:latest|:${{ github.sha }}|g')
+              | sed "s|:latest|:${IMAGE_TAG}|g" \
+              | sed "s|IEP0_URL_VALUE|${{ vars.IEP0_URL || 'http://iep0:8006' }}|g" \
+              | sed "s|IEP1A_URL_VALUE|${{ vars.IEP1A_URL || 'http://iep1a:8001' }}|g" \
+              | sed "s|IEP1B_URL_VALUE|${{ vars.IEP1B_URL || 'http://iep1b:8002' }}|g" \
+              | sed "s|IEP1E_URL_VALUE|${{ vars.IEP1E_URL || 'http://iep1e:8007' }}|g" \
+              | sed "s|IEP2A_URL_VALUE|${{ vars.IEP2A_URL || 'http://iep2a-v2:8004' }}|g" \
+              | sed "s|IEP2B_URL_VALUE|${{ vars.IEP2B_URL || 'http://iep2b:8005' }}|g" \
+              | sed "s|RUNPOD_POD_MODE_VALUE|${{ vars.RUNPOD_POD_MODE || 'create' }}|g" \
+              | sed "s|RUNPOD_IEP0_POD_ID_VALUE|${{ vars.RUNPOD_IEP0_POD_ID || '' }}|g" \
+              | sed "s|RUNPOD_IEP1A_POD_ID_VALUE|${{ vars.RUNPOD_IEP1A_POD_ID || '' }}|g" \
+              | sed "s|RUNPOD_IEP1B_POD_ID_VALUE|${{ vars.RUNPOD_IEP1B_POD_ID || '' }}|g" \
+              | sed "s|RUNPOD_GPU_TYPE_ID_VALUE|${{ vars.RUNPOD_GPU_TYPE_ID || '' }}|g" \
+              | sed "s|RUNPOD_GPU_TYPES_VALUE|${{ vars.RUNPOD_GPU_TYPES || 'NVIDIA RTX 4000 Ada Generation,NVIDIA RTX A4000,NVIDIA RTX 2000 Ada Generation,NVIDIA RTX A5000,NVIDIA RTX A4500,NVIDIA L4,NVIDIA A40,NVIDIA RTX A6000' }}|g" \
+              | sed "s|RUNPOD_CLOUD_TYPE_VALUE|${{ vars.RUNPOD_CLOUD_TYPE || 'SECURE' }}|g" \
+              | sed "s|RUNPOD_CLOUD_TYPES_VALUE|${{ vars.RUNPOD_CLOUD_TYPES || 'SECURE,COMMUNITY' }}|g" \
+              | sed "s|RUNPOD_CONTAINER_DISK_GB_VALUE|${{ vars.RUNPOD_CONTAINER_DISK_GB || '50' }}|g" \
+              | sed "s|RUNPOD_MIN_VCPU_PER_GPU_VALUE|${{ vars.RUNPOD_MIN_VCPU_PER_GPU || '2' }}|g" \
+              | sed "s|RUNPOD_MIN_RAM_PER_GPU_VALUE|${{ vars.RUNPOD_MIN_RAM_PER_GPU || '8' }}|g" \
+              | sed "s|GOOGLE_ENABLED_VALUE|${{ vars.GOOGLE_ENABLED || 'false' }}|g" \
+              | sed "s|GOOGLE_PROJECT_ID_VALUE|${{ vars.GOOGLE_PROJECT_ID || '' }}|g" \
+              | sed "s|GOOGLE_LOCATION_VALUE|${{ vars.GOOGLE_LOCATION || 'us' }}|g" \
+              | sed "s|GOOGLE_PROCESSOR_ID_LAYOUT_VALUE|${{ vars.GOOGLE_PROCESSOR_ID_LAYOUT || '' }}|g")
             REVISION=$(aws ecs register-task-definition \
               --cli-input-json "$TASK_DEF" \
               --query 'taskDefinition.taskDefinitionArn' --output text)
             echo "Registered $REVISION"
+            ECS_SERVICE=$(ecs_service_name "$SVC")
 
             if aws ecs describe-services \
                 --cluster "$CLUSTER" \
-                --services "libraryai-${SVC}" \
+                --services "$ECS_SERVICE" \
                 --query 'services[0].status' --output text 2>/dev/null \
                 | grep -qE "ACTIVE|DRAINING"; then
               SC=$(sc_config "$SVC")
+              DESIRED_ARGS=()
+              case "$SVC" in
+                eep-worker|eep-recovery|shadow-worker|retraining-worker|dataset-builder|iep0|iep1a|iep1b|iep1d|iep1e|iep2a|iep2b)
+                  DESIRED_ARGS=(--desired-count 0)
+                  ;;
+              esac
               aws ecs update-service \
                 --cluster "$CLUSTER" \
-                --service "libraryai-${SVC}" \
+                --service "$ECS_SERVICE" \
+                "${DESIRED_ARGS[@]}" \
                 --task-definition "$REVISION" \
                 --service-connect-configuration "$SC" \
                 --force-new-deployment \
                 --no-cli-pager
-              echo "Updated staging service libraryai-${SVC}"
+              echo "Updated staging service $ECS_SERVICE"
             else
-              echo "libraryai-${SVC} not yet created in staging — skipping update"
+              echo "$ECS_SERVICE not yet created in staging — skipping update"
+            fi
+          done
+
+      - name: Ensure staging processing services are stopped
+        run: |
+          set -e
+          # Deploy only refreshes task definitions for off-by-default processing
+          # services. Immediate processing scale-up is owned by normal_scaler.py,
+          # which injects live RunPod URLs before starting eep-worker.
+          ecs_service_name() {
+            local svc=$1
+            case "$svc" in
+              iep2a) echo "libraryai-iep2a-v2" ;;
+              *)     echo "libraryai-${svc}" ;;
+            esac
+          }
+          for SVC in eep-worker eep-recovery shadow-worker retraining-worker dataset-builder iep0 iep1a iep1b iep1d iep1e iep2a iep2b; do
+            ECS_SERVICE=$(ecs_service_name "$SVC")
+            if aws ecs describe-services \
+                --cluster "$CLUSTER" \
+                --services "$ECS_SERVICE" \
+                --query 'services[0].status' --output text 2>/dev/null \
+                | grep -qE "ACTIVE|DRAINING"; then
+              aws ecs update-service \
+                --cluster "$CLUSTER" \
+                --service "$ECS_SERVICE" \
+                --desired-count 0 \
+                --no-cli-pager
+              echo "$ECS_SERVICE desired -> 0"
+            else
+              echo "$ECS_SERVICE not present in staging — skipping"
             fi
           done
 
@@ -461,10 +728,14 @@ jobs:
         id: submit
         run: |
           [ -n "$E2E_FIXTURE_URI" ] || { echo "::error::E2E_FIXTURE_URI is not set — add it as a GitHub Actions variable"; exit 1; }
+          # Strip any trailing whitespace/CR that GitHub Actions may append to variable values,
+          # then use python3 to build the JSON body so special characters are always safe.
+          FIXTURE_URI=$(printf '%s' "$E2E_FIXTURE_URI" | tr -d '\r\n ')
+          REQUEST_BODY=$(python3 -c "import json,sys; print(json.dumps({'collection_id':'e2e-smoke-test','material_type':'book','policy_version':'e2e-v1','pages':[{'page_number':1,'input_uri':sys.argv[1]}]}))" "$FIXTURE_URI")
           RESP=$(curl -s -w "\nHTTP_STATUS:%{http_code}" -X POST "$BASE_URL/v1/jobs" \
             -H "Authorization: Bearer ${{ steps.auth.outputs.token }}" \
             -H "Content-Type: application/json" \
-            -d "{\"collection_id\":\"e2e-smoke-test\",\"material_type\":\"book\",\"policy_version\":\"e2e-v1\",\"pages\":[{\"page_number\":1,\"input_uri\":\"$E2E_FIXTURE_URI\"}]}")
+            -d "$REQUEST_BODY")
           HTTP_STATUS=$(echo "$RESP" | grep "HTTP_STATUS:" | cut -d: -f2)
           BODY=$(echo "$RESP" | sed '/HTTP_STATUS:/d')
           echo "HTTP $HTTP_STATUS — $BODY"
@@ -508,18 +779,26 @@ jobs:
         run: |
           echo "E2E tests failed — stopping processing workers in staging."
           echo "libraryai-eep is NOT touched: the API must remain reachable for diagnostics."
+          ecs_service_name() {
+            local svc=$1
+            case "$svc" in
+              iep2a) echo "libraryai-iep2a-v2" ;;
+              *)     echo "libraryai-${svc}" ;;
+            esac
+          }
           for SVC in eep-worker eep-recovery shadow-worker iep0 iep1a iep1b iep1d iep1e iep2a iep2b; do
+            ECS_SERVICE=$(ecs_service_name "$SVC")
             DESIRED=$(aws ecs describe-services \
               --cluster "$CLUSTER" \
-              --services "libraryai-${SVC}" \
+              --services "$ECS_SERVICE" \
               --query 'services[0].desiredCount' --output text 2>/dev/null || echo "0")
             if [ "$DESIRED" != "0" ] && [ "$DESIRED" != "None" ]; then
               aws ecs update-service \
                 --cluster "$CLUSTER" \
-                --service "libraryai-${SVC}" \
+                --service "$ECS_SERVICE" \
                 --desired-count 0 \
                 --no-cli-pager || true
-              echo "libraryai-${SVC} → 0"
+              echo "$ECS_SERVICE → 0"
             fi
           done
           echo "Rollback complete. EEP API still running. Investigate staging before re-promoting."
@@ -549,6 +828,7 @@ jobs:
           TASK_DEF=$(cat k8s/ecs/migration-task-def.json \
             | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
             | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
+            | sed "s|AWS_${{ vars.AWS_REGION }}|AWS_REGION|g" \
             | sed 's|:latest|:${{ github.sha }}|g')
           ARN=$(aws ecs register-task-definition \
             --cli-input-json "$TASK_DEF" \
@@ -607,6 +887,10 @@ jobs:
             local svc=$1
             case "$svc" in
               eep)      echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"eep","clientAliases":[{"port":8000,"dnsName":"eep"}]}]}' ;;
+              eep-worker) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"eep-worker","clientAliases":[{"port":9100,"dnsName":"eep-worker"}]}]}' ;;
+              eep-recovery) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"eep-recovery","clientAliases":[{"port":9101,"dnsName":"eep-recovery"}]}]}' ;;
+              shadow-worker) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"shadow-worker","clientAliases":[{"port":9102,"dnsName":"shadow-worker"}]}]}' ;;
+              retraining-worker) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"retraining-worker","clientAliases":[{"port":9104,"dnsName":"retraining-worker"}]}]}' ;;
               iep0)     echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep0","clientAliases":[{"port":8006,"dnsName":"iep0"}]}]}' ;;
               iep1a)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1a","clientAliases":[{"port":8001,"dnsName":"iep1a"}]}]}' ;;
               iep1b)    echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1b","clientAliases":[{"port":8002,"dnsName":"iep1b"}]}]}' ;;
@@ -620,17 +904,53 @@ jobs:
             esac
           }
 
+          image_tag_for() {
+            local svc=$1
+            if aws ecr describe-images \
+                --repository-name "libraryai-${svc}" \
+                --image-ids "imageTag=${GITHUB_SHA}" \
+                >/dev/null 2>&1; then
+              echo "${GITHUB_SHA}"
+            else
+              echo "latest"
+              echo "libraryai-${svc}: ${GITHUB_SHA} not found in ECR; using latest" >&2
+            fi
+          }
+
           SERVICES=(
             eep eep-worker eep-recovery shadow-worker retraining-worker
             dataset-builder frontend iep0 iep1a iep1b iep1d iep1e iep2a iep2b mlflow
           )
           for SVC in "${SERVICES[@]}"; do
             FILE="k8s/ecs/${SVC}-task-def.json"
+            IMAGE_TAG=$(image_tag_for "$SVC")
             TASK_DEF=$(cat "$FILE" \
               | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
               | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
+              | sed "s|AWS_${{ vars.AWS_REGION }}|AWS_REGION|g" \
               | sed "s/CLUSTER_NAME/${CLUSTER}/g" \
-              | sed 's|:latest|:${{ github.sha }}|g')
+              | sed "s|:latest|:${IMAGE_TAG}|g" \
+              | sed "s|IEP0_URL_VALUE|${{ vars.IEP0_URL || 'http://iep0:8006' }}|g" \
+              | sed "s|IEP1A_URL_VALUE|${{ vars.IEP1A_URL || 'http://iep1a:8001' }}|g" \
+              | sed "s|IEP1B_URL_VALUE|${{ vars.IEP1B_URL || 'http://iep1b:8002' }}|g" \
+              | sed "s|IEP1E_URL_VALUE|${{ vars.IEP1E_URL || 'http://iep1e:8007' }}|g" \
+              | sed "s|IEP2A_URL_VALUE|${{ vars.IEP2A_URL || 'http://iep2a:8004' }}|g" \
+              | sed "s|IEP2B_URL_VALUE|${{ vars.IEP2B_URL || 'http://iep2b:8005' }}|g" \
+              | sed "s|RUNPOD_POD_MODE_VALUE|${{ vars.RUNPOD_POD_MODE || 'create' }}|g" \
+              | sed "s|RUNPOD_IEP0_POD_ID_VALUE|${{ vars.RUNPOD_IEP0_POD_ID || '' }}|g" \
+              | sed "s|RUNPOD_IEP1A_POD_ID_VALUE|${{ vars.RUNPOD_IEP1A_POD_ID || '' }}|g" \
+              | sed "s|RUNPOD_IEP1B_POD_ID_VALUE|${{ vars.RUNPOD_IEP1B_POD_ID || '' }}|g" \
+              | sed "s|RUNPOD_GPU_TYPE_ID_VALUE|${{ vars.RUNPOD_GPU_TYPE_ID || '' }}|g" \
+              | sed "s|RUNPOD_GPU_TYPES_VALUE|${{ vars.RUNPOD_GPU_TYPES || 'NVIDIA RTX 4000 Ada Generation,NVIDIA RTX A4000,NVIDIA RTX 2000 Ada Generation,NVIDIA RTX A5000,NVIDIA RTX A4500,NVIDIA L4,NVIDIA A40,NVIDIA RTX A6000' }}|g" \
+              | sed "s|RUNPOD_CLOUD_TYPE_VALUE|${{ vars.RUNPOD_CLOUD_TYPE || 'SECURE' }}|g" \
+              | sed "s|RUNPOD_CLOUD_TYPES_VALUE|${{ vars.RUNPOD_CLOUD_TYPES || 'SECURE,COMMUNITY' }}|g" \
+              | sed "s|RUNPOD_CONTAINER_DISK_GB_VALUE|${{ vars.RUNPOD_CONTAINER_DISK_GB || '50' }}|g" \
+              | sed "s|RUNPOD_MIN_VCPU_PER_GPU_VALUE|${{ vars.RUNPOD_MIN_VCPU_PER_GPU || '2' }}|g" \
+              | sed "s|RUNPOD_MIN_RAM_PER_GPU_VALUE|${{ vars.RUNPOD_MIN_RAM_PER_GPU || '8' }}|g" \
+              | sed "s|GOOGLE_ENABLED_VALUE|${{ vars.GOOGLE_ENABLED || 'false' }}|g" \
+              | sed "s|GOOGLE_PROJECT_ID_VALUE|${{ vars.GOOGLE_PROJECT_ID || '' }}|g" \
+              | sed "s|GOOGLE_LOCATION_VALUE|${{ vars.GOOGLE_LOCATION || 'us' }}|g" \
+              | sed "s|GOOGLE_PROCESSOR_ID_LAYOUT_VALUE|${{ vars.GOOGLE_PROCESSOR_ID_LAYOUT || '' }}|g")
             REVISION=$(aws ecs register-task-definition \
               --cli-input-json "$TASK_DEF" \
               --query 'taskDefinition.taskDefinitionArn' --output text)
@@ -642,9 +962,16 @@ jobs:
                 --query 'services[0].status' --output text 2>/dev/null \
                 | grep -qE "ACTIVE|DRAINING"; then
               SC=$(sc_config "$SVC")
+              DESIRED_ARGS=()
+              case "$SVC" in
+                eep-worker|eep-recovery|shadow-worker|retraining-worker|dataset-builder|iep0|iep1a|iep1b|iep1d|iep1e|iep2a|iep2b)
+                  DESIRED_ARGS=(--desired-count 0)
+                  ;;
+              esac
               aws ecs update-service \
                 --cluster "$CLUSTER" \
                 --service "libraryai-${SVC}" \
+                "${DESIRED_ARGS[@]}" \
                 --task-definition "$REVISION" \
                 --service-connect-configuration "$SC" \
                 --force-new-deployment \
@@ -652,6 +979,29 @@ jobs:
               echo "Updated production service libraryai-${SVC}"
             else
               echo "libraryai-${SVC} not yet created in production — skipping update"
+            fi
+          done
+
+      - name: Ensure production processing services are stopped
+        run: |
+          set -e
+          # Deploy only refreshes task definitions for off-by-default processing
+          # services. Immediate processing scale-up is owned by normal_scaler.py,
+          # which injects live RunPod URLs before starting eep-worker.
+          for SVC in eep-worker eep-recovery shadow-worker retraining-worker dataset-builder iep0 iep1a iep1b iep1d iep1e iep2a iep2b; do
+            if aws ecs describe-services \
+                --cluster "$CLUSTER" \
+                --services "libraryai-${SVC}" \
+                --query 'services[0].status' --output text 2>/dev/null \
+                | grep -qE "ACTIVE|DRAINING"; then
+              aws ecs update-service \
+                --cluster "$CLUSTER" \
+                --service "libraryai-${SVC}" \
+                --desired-count 0 \
+                --no-cli-pager
+              echo "libraryai-${SVC} desired -> 0"
+            else
+              echo "libraryai-${SVC} not present in production — skipping"
             fi
           done
 

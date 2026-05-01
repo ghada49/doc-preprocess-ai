@@ -155,7 +155,7 @@ export default function ObservabilityPage() {
               <MetricTile
                 label="Pages / Hour"
                 value={summary?.throughput_pages_per_hour != null ? String(Math.round(summary.throughput_pages_per_hour)) : "—"}
-                sub="Terminal pages in last 60 min"
+                sub="Active-hour average"
               />
               <MetricTile
                 label="Auto-Accept Rate"
@@ -172,7 +172,7 @@ export default function ObservabilityPage() {
               <MetricTile
                 label="Human Review Rate"
                 value={health?.human_review_throughput_rate != null ? `${health.human_review_throughput_rate.toFixed(1)}/h` : "—"}
-                sub={`Corrected pages/hour (last ${health?.window_hours ?? "—"}h)`}
+                sub="Active-hour correction average"
               />
             </div>
           )}
@@ -350,7 +350,7 @@ export default function ObservabilityPage() {
               <code className="font-mono">/metrics</code> endpoint on all active services (configured
               via <code className="font-mono">shared/middleware.py</code>). Four pre-built Grafana
               dashboards are provisioned from{" "}
-              <code className="font-mono">monitoring/grafana/provisioning/dashboards/</code>:
+              <code className="font-mono">monitoring/grafana/dashboards/</code>:
               api-service, gate-decisions, model-signals, workers-queue.
             </p>
           </div>

@@ -84,6 +84,7 @@ from services.eep_worker.app.normalization_step import (
     NormalizationOutcome,
     run_normalization_and_first_validation,
 )
+from monitoring.drift_observer import observe_and_check
 from services.eep.app.google.document_ai import run_google_cleanup
 from services.eep_worker.app.google_config import get_google_worker_state
 from shared.gpu.backend import BackendError, BackendErrorKind, GPUBackend
@@ -557,6 +558,10 @@ async def _run_google_third_pass(
     assert (
         third_selection.selected is not None
     ), "route_decision=='accepted' guarantees a selected candidate"
+    # Google cleanup also produces a single-page output (cleaned version of
+    # the IEP1D-rectified single-page image).  Use page_index=0 to index the
+    # third-pass geometry response — see comment at the second IEP1C
+    # normalization site for full reasoning.
     third_norm: NormalizationOutcome = run_normalization_and_first_validation(
         full_res_image=cleaned_image,
         selected_geometry=third_selection.selected.response,
@@ -567,8 +572,9 @@ async def _run_google_third_pass(
         output_uri=rescue_output_uri,
         storage=storage,
         image_loader=image_loader,
-        page_index=page_index,
+        page_index=0,
         gate_config=gate_config,
+        session=session,
     )
 
     if third_norm.route == "accept_now":
@@ -756,6 +762,11 @@ async def run_rescue_flow(
         }
     )
     IEP1D_QUALITY_GATE_DECISIONS.labels(decision=_iep1d_decision).inc()
+    observe_and_check(
+        "iep1d.rectification_confidence",
+        rectify_response.rectification_confidence,
+        session,
+    )
     for _reason in _rejection_reasons:
         IEP1D_REJECTION_REASONS.labels(reason=_reason).inc()
 
@@ -913,6 +924,15 @@ async def run_rescue_flow(
     assert (
         selection_result.selected is not None
     ), "route_decision=='accepted' guarantees a selected candidate"
+    # IEP1D rectifies a single-page input into a single-page output (one
+    # de-warped rectangle).  The post-rescue geometry response from
+    # IEP1A/IEP1B therefore describes ONE page region regardless of whether
+    # this rescue is for a split child (page_index=0 or 1 in the parent
+    # split path).  Use page_index=0 here to index the rectified-image
+    # geometry response — the caller's page_index is preserved only for
+    # output bookkeeping (already encoded in rescue_output_uri).
+    # Bug reference: list-index-out-of-range on right split child rescue.
+    rescued_page_index = 0
     norm_outcome: NormalizationOutcome = run_normalization_and_first_validation(
         full_res_image=rectified_image,
         selected_geometry=selection_result.selected.response,
@@ -923,8 +943,9 @@ async def run_rescue_flow(
         output_uri=rescue_output_uri,
         storage=storage,
         image_loader=image_loader,
-        page_index=page_index,
+        page_index=rescued_page_index,
         gate_config=gate_config,
+        session=session,
     )
 
     logger.info(

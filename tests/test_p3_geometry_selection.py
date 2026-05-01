@@ -25,7 +25,9 @@ from services.eep.app.gates.geometry_selection import (
     GeometryCandidate,
     GeometrySelectionResult,
     PreprocessingGateConfig,
+    _DEFAULT_AREA_FRACTION_BOUNDS,
     _bbox_iou,
+    _area_fraction_bounds_for_material,
     _compute_split_confidence,
     _corners_convex_and_valid,
     _quadrilateral_area,
@@ -386,6 +388,25 @@ class TestSanityAreaFraction:
         )
         r = _region(page_area_fraction=0.15)  # below custom min
         result = check_sanity(_response(pages=[r]), "book", PROXY_W, PROXY_H, cfg)
+        assert "area_fraction_plausible" in result.failed_checks
+
+    def test_newspaper_uses_lower_default_min_than_book(self) -> None:
+        r = _region(page_area_fraction=0.12)
+        book = check_sanity(_response(pages=[r]), "book", PROXY_W, PROXY_H, CONFIG)
+        newspaper = check_sanity(_response(pages=[r]), "newspaper", PROXY_W, PROXY_H, CONFIG)
+        assert _area_fraction_bounds_for_material(CONFIG, "book") == (0.15, 1.0)
+        assert _area_fraction_bounds_for_material(CONFIG, "newspaper") == (0.10, 1.0)
+        assert "area_fraction_plausible" in book.failed_checks
+        assert "area_fraction_plausible" not in newspaper.failed_checks
+
+    def test_microfilm_default_area_threshold_matches_book(self) -> None:
+        assert _area_fraction_bounds_for_material(CONFIG, "microfilm") == (0.15, 1.0)
+
+    def test_legacy_scalar_area_override_preserves_book_threshold_behavior(self) -> None:
+        cfg = PreprocessingGateConfig(geometry_sanity_area_min_fraction=0.20)
+        r = _region(page_area_fraction=0.15)
+        result = check_sanity(_response(pages=[r]), "book", PROXY_W, PROXY_H, cfg)
+        assert cfg.area_fraction_bounds == dict(_DEFAULT_AREA_FRACTION_BOUNDS)
         assert "area_fraction_plausible" in result.failed_checks
 
 
@@ -1150,6 +1171,26 @@ class TestRunGeometrySelectionHighTrust:
         result = run_geometry_selection(a, b, "book", PROXY_W, PROXY_H)
         assert result.page_area_preference_triggered is False
 
+    def test_newspaper_accepts_strong_iep1a_when_iep1b_mildly_fails_area(self) -> None:
+        a = _valid_iep1a(
+            geometry_confidence=0.94,
+            tta_prediction_variance=0.02,
+            page_area_fraction=0.50,
+        )
+        b = _valid_iep1b(
+            geometry_confidence=0.88,
+            tta_prediction_variance=0.03,
+            page_area_fraction=0.09,
+        )
+        result = run_geometry_selection(a, b, "newspaper", PROXY_W, PROXY_H)
+        assert result.structural_agreement is True
+        assert result.route_decision == "accepted"
+        assert result.geometry_trust == "high"
+        assert result.selected is not None
+        assert result.selected.model == "iep1a"
+        assert result.selection_reason == "newspaper_iep1a_mild_iep1b_area_fallback"
+        assert result.sanity_results["iep1b"]["failed_checks"] == ["area_fraction_plausible"]
+
 
 # ---------------------------------------------------------------------------
 # run_geometry_selection — low trust path
@@ -1222,6 +1263,42 @@ class TestRunGeometrySelectionLowTrust:
 # ---------------------------------------------------------------------------
 
 
+    def test_book_thresholds_unchanged_when_iep1b_mildly_fails_area(self) -> None:
+        a = _valid_iep1a(
+            geometry_confidence=0.94,
+            tta_prediction_variance=0.02,
+            page_area_fraction=0.50,
+        )
+        b = _valid_iep1b(
+            geometry_confidence=0.88,
+            tta_prediction_variance=0.03,
+            page_area_fraction=0.12,
+        )
+        result = run_geometry_selection(a, b, "book", PROXY_W, PROXY_H)
+        assert result.structural_agreement is True
+        assert result.route_decision == "rectification"
+        assert result.geometry_trust == "low"
+        assert result.sanity_results["iep1b"]["failed_checks"] == ["area_fraction_plausible"]
+
+    def test_newspaper_severe_iep1b_area_failure_does_not_auto_accept(self) -> None:
+        a = _valid_iep1a(
+            geometry_confidence=0.94,
+            tta_prediction_variance=0.02,
+            page_area_fraction=0.50,
+        )
+        b = _valid_iep1b(
+            geometry_confidence=0.88,
+            tta_prediction_variance=0.03,
+            page_area_fraction=0.03,
+        )
+        result = run_geometry_selection(a, b, "newspaper", PROXY_W, PROXY_H)
+        assert result.structural_agreement is True
+        assert result.route_decision == "rectification"
+        assert result.geometry_trust == "low"
+        assert result.selected is not None
+        assert result.selected.model == "iep1a"
+
+
 class TestRunGeometrySelectionPendingHuman:
     def test_both_fail_sanity_routes_to_human_sanity_reason(self) -> None:
         bad_a = _response(pages=[_region(page_area_fraction=0.01)])
@@ -1232,6 +1309,15 @@ class TestRunGeometrySelectionPendingHuman:
         assert result.selected is None
         assert result.geometry_trust is None
         assert result.selection_reason is None
+
+    def test_newspaper_both_models_severe_area_failure_routes_to_human(self) -> None:
+        bad_a = _response(pages=[_region(page_area_fraction=0.03)])
+        bad_b = _response(pages=[_region(page_area_fraction=0.03)])
+        result = run_geometry_selection(bad_a, bad_b, "newspaper", PROXY_W, PROXY_H)
+        assert result.structural_agreement is True
+        assert result.route_decision == "pending_human_correction"
+        assert result.review_reason == "geometry_sanity_failed"
+        assert result.selected is None
 
     def test_both_fail_split_confidence_routes_to_human_split_reason(self) -> None:
         # Both pass sanity but fail split confidence filter.

@@ -48,12 +48,15 @@ from typing import Literal
 import cv2
 import numpy as np
 
+from sqlalchemy.orm import Session
+
 from services.eep.app.gates.artifact_validation import (
     ArtifactImageDimensions,
     ArtifactValidationResult,
     run_artifact_validation,
 )
 from services.eep.app.gates.geometry_selection import PreprocessingGateConfig
+from monitoring.drift_observer import observe_and_check
 from shared.io.storage import StorageBackend
 from shared.metrics import EEP_ARTIFACT_VALIDATION_ROUTE
 from shared.normalization.normalize import (
@@ -239,6 +242,7 @@ def run_normalization_and_first_validation(
     image_loader: Callable[[str], ArtifactImageDimensions],
     page_index: int = 0,
     gate_config: PreprocessingGateConfig | None = None,
+    session: Session | None = None,
 ) -> NormalizationOutcome:
     """
     Execute Steps 4 and 5 of the EEP pipeline: normalize then validate.
@@ -360,6 +364,24 @@ def run_normalization_and_first_validation(
         else "invalid"
     )
     EEP_ARTIFACT_VALIDATION_ROUTE.labels(route=_av_label).inc()
+    if session is not None:
+        quality = getattr(branch_response, "quality", None)
+        if quality is not None:
+            blur_score = getattr(quality, "blur_score", None)
+            border_score = getattr(quality, "border_score", None)
+            foreground_coverage = getattr(quality, "foreground_coverage", None)
+            if blur_score is not None:
+                observe_and_check("iep1c.blur_score", blur_score, session)
+            if border_score is not None:
+                observe_and_check("iep1c.border_score", border_score, session)
+            if foreground_coverage is not None:
+                observe_and_check("iep1c.foreground_coverage", foreground_coverage, session)
+        for label in ("valid", "invalid", "rectification_triggered"):
+            observe_and_check(
+                f"eep.artifact_validation_route.{label}_fraction",
+                1.0 if _av_label == label else 0.0,
+                session,
+            )
 
     duration_ms = (time.monotonic() - t0) * 1000.0
 

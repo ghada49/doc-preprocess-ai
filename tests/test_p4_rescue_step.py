@@ -796,6 +796,58 @@ class TestIntegration:
         assert outcome.validation_result.passed is False
 
     @pytest.mark.asyncio
+    async def test_split_child_right_index_does_not_crash_post_rescue(
+        self,
+    ) -> None:
+        """
+        Regression test for the "split normalization failed: list index out of
+        range" bug observed in production.
+
+        When a split child with sub_page_index=1 (right half) goes through the
+        rescue flow, IEP1D rectifies its single-page input into a single-page
+        output.  IEP1A/IEP1B then return a GeometryResponse with page_count=1
+        and len(pages)==1.  The post-rescue normalization must index into
+        pages[0] regardless of the original page_index — using page_index=1
+        here would raise IndexError.
+
+        This test exercises the real run_normalization_and_first_validation
+        with is_split_child=True, page_index=1, and asserts the rescue completes
+        without raising.
+        """
+        ctx = self._setup()
+        # Post-rescue geometry response describes ONE page (the rectified
+        # single-page image).  Caller passes page_index=1 because this is
+        # the right-half rescue of a split parent.
+        single_page_inv = _make_invocation_result(route_decision="accepted")
+        assert len(single_page_inv.iep1a_result.pages) == 1, (
+            "test fixture sanity: post-rescue response has one page"
+        )
+
+        hard = ArtifactHardCheckResult(passed=True, failed_checks=[])
+        passing_validation = ArtifactValidationResult(
+            hard_result=hard,
+            soft_score=0.9,
+            signal_scores=None,
+            soft_passed=True,
+            passed=True,
+        )
+        with patch(
+            "services.eep_worker.app.normalization_step.run_artifact_validation",
+            return_value=passing_validation,
+        ):
+            outcome = await self._call(
+                ctx,
+                inv_result=single_page_inv,
+                is_split_child=True,
+                page_index=1,
+            )
+
+        assert outcome.route == "accept_now", (
+            f"expected accept_now post-rescue (no IndexError), got "
+            f"{outcome.route!r} review_reason={outcome.review_reason!r}"
+        )
+
+    @pytest.mark.asyncio
     async def test_worker_consumes_real_rectified_artifact_from_storage(
         self,
         workspace_tmp_path: Callable[[], Path],

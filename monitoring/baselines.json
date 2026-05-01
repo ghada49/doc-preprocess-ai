@@ -1,49 +1,153 @@
 {
-  "_placeholder_note": "TEMPORARY — synthetic placeholder values only. Replace with real baselines after Phase 4 baseline evaluation (spec Section 10.4). Run training/scripts/compute_baselines.py --split validation and commit the result before first production deployment.",
-
-  "iep1a.geometry_confidence":            {"mean": 0.85, "std": 0.08},
-  "iep1a.split_detection_rate":           {"mean": 0.15, "std": 0.05},
-  "iep1a.tta_structural_agreement_rate":  {"mean": 0.92, "std": 0.05},
-  "iep1a.tta_prediction_variance":        {"mean": 0.02, "std": 0.01},
-
-  "iep1b.geometry_confidence":            {"mean": 0.83, "std": 0.09},
-  "iep1b.split_detection_rate":           {"mean": 0.14, "std": 0.05},
-  "iep1b.tta_structural_agreement_rate":  {"mean": 0.91, "std": 0.05},
-  "iep1b.tta_prediction_variance":        {"mean": 0.02, "std": 0.01},
-
-  "iep1c.blur_score":                     {"mean": 0.75, "std": 0.10},
-  "iep1c.border_score":                   {"mean": 0.80, "std": 0.08},
-  "iep1c.foreground_coverage":            {"mean": 0.85, "std": 0.07},
-
-  "iep1d.rectification_confidence":       {"mean": 0.80, "std": 0.09},
-
-  "iep2a.mean_page_confidence":           {"mean": 0.82, "std": 0.08},
-  "iep2a.region_count":                   {"mean": 8.5,  "std": 2.0},
-  "iep2a.class_fraction.text_block":      {"mean": 0.50, "std": 0.10},
-  "iep2a.class_fraction.title":           {"mean": 0.10, "std": 0.04},
-  "iep2a.class_fraction.table":           {"mean": 0.15, "std": 0.06},
-  "iep2a.class_fraction.image":           {"mean": 0.15, "std": 0.06},
-  "iep2a.class_fraction.caption":         {"mean": 0.10, "std": 0.04},
-
-  "iep2b.mean_page_confidence":           {"mean": 0.79, "std": 0.09},
-  "iep2b.region_count":                   {"mean": 8.0,  "std": 2.5},
-  "iep2b.class_fraction.text_block":      {"mean": 0.50, "std": 0.11},
-  "iep2b.class_fraction.title":           {"mean": 0.10, "std": 0.05},
-  "iep2b.class_fraction.table":           {"mean": 0.15, "std": 0.07},
-  "iep2b.class_fraction.image":           {"mean": 0.15, "std": 0.07},
-  "iep2b.class_fraction.caption":         {"mean": 0.10, "std": 0.05},
-
-  "eep.geometry_selection_route.accepted_fraction":               {"mean": 0.70, "std": 0.08},
-  "eep.geometry_selection_route.review_fraction":                 {"mean": 0.20, "std": 0.06},
-  "eep.geometry_selection_route.structural_disagreement_fraction":{"mean": 0.05, "std": 0.03},
-  "eep.geometry_selection_route.sanity_failed_fraction":          {"mean": 0.02, "std": 0.02},
-  "eep.geometry_selection_route.split_confidence_low_fraction":   {"mean": 0.02, "std": 0.02},
-  "eep.geometry_selection_route.tta_variance_high_fraction":      {"mean": 0.01, "std": 0.01},
-
-  "eep.artifact_validation_route.valid_fraction":                 {"mean": 0.75, "std": 0.08},
-  "eep.artifact_validation_route.invalid_fraction":               {"mean": 0.10, "std": 0.05},
-  "eep.artifact_validation_route.rectification_triggered_fraction":{"mean": 0.15, "std": 0.06},
-
-  "eep.structural_agreement_rate":        {"mean": 0.88, "std": 0.05},
-  "eep.layout_consensus_confidence":      {"mean": 0.82, "std": 0.07}
+  "_generated_by": "training/scripts/derive_spec_baselines.py",
+  "_generated_at": "2026-05-01T10:18:53.377051+00:00",
+  "_methodology": "Analytically derived from spec quality gate thresholds, TTA alarm thresholds (services/iep1a/app/tta.py), Prometheus alert rules (monitoring/alert_rules/libraryai-alerts.yml), and domain estimates for archival document digitisation workloads.  Each std is sized so the 3\u03c3 drift-detection bound sits just outside the corresponding quality gate limit.  Replace with empirically computed values after \u2265200 production observations per metric are available.",
+  "iep1a.geometry_confidence": {
+    "mean": 0.87,
+    "std": 0.07
+  },
+  "iep1a.split_detection_rate": {
+    "mean": 0.15,
+    "std": 0.06
+  },
+  "iep1a.tta_structural_agreement_rate": {
+    "mean": 0.93,
+    "std": 0.05
+  },
+  "iep1a.tta_prediction_variance": {
+    "mean": 0.02,
+    "std": 0.02
+  },
+  "iep1b.geometry_confidence": {
+    "mean": 0.85,
+    "std": 0.07
+  },
+  "iep1b.split_detection_rate": {
+    "mean": 0.15,
+    "std": 0.06
+  },
+  "iep1b.tta_structural_agreement_rate": {
+    "mean": 0.92,
+    "std": 0.05
+  },
+  "iep1b.tta_prediction_variance": {
+    "mean": 0.02,
+    "std": 0.02
+  },
+  "iep1c.blur_score": {
+    "mean": 0.78,
+    "std": 0.1
+  },
+  "iep1c.border_score": {
+    "mean": 0.82,
+    "std": 0.08
+  },
+  "iep1c.foreground_coverage": {
+    "mean": 0.85,
+    "std": 0.07
+  },
+  "iep1d.rectification_confidence": {
+    "mean": 0.82,
+    "std": 0.09
+  },
+  "iep2a.mean_page_confidence": {
+    "mean": 0.83,
+    "std": 0.08
+  },
+  "iep2a.region_count": {
+    "mean": 8.5,
+    "std": 2.0
+  },
+  "iep2a.class_fraction.text_block": {
+    "mean": 0.5,
+    "std": 0.1
+  },
+  "iep2a.class_fraction.title": {
+    "mean": 0.1,
+    "std": 0.04
+  },
+  "iep2a.class_fraction.table": {
+    "mean": 0.15,
+    "std": 0.06
+  },
+  "iep2a.class_fraction.image": {
+    "mean": 0.15,
+    "std": 0.06
+  },
+  "iep2a.class_fraction.caption": {
+    "mean": 0.1,
+    "std": 0.04
+  },
+  "iep2b.mean_page_confidence": {
+    "mean": 0.8,
+    "std": 0.09
+  },
+  "iep2b.region_count": {
+    "mean": 8.0,
+    "std": 2.5
+  },
+  "iep2b.class_fraction.text_block": {
+    "mean": 0.5,
+    "std": 0.11
+  },
+  "iep2b.class_fraction.title": {
+    "mean": 0.1,
+    "std": 0.05
+  },
+  "iep2b.class_fraction.table": {
+    "mean": 0.15,
+    "std": 0.07
+  },
+  "iep2b.class_fraction.image": {
+    "mean": 0.15,
+    "std": 0.07
+  },
+  "iep2b.class_fraction.caption": {
+    "mean": 0.1,
+    "std": 0.05
+  },
+  "eep.geometry_selection_route.accepted_fraction": {
+    "mean": 0.7,
+    "std": 0.08
+  },
+  "eep.geometry_selection_route.review_fraction": {
+    "mean": 0.2,
+    "std": 0.06
+  },
+  "eep.geometry_selection_route.structural_disagreement_fraction": {
+    "mean": 0.05,
+    "std": 0.03
+  },
+  "eep.geometry_selection_route.sanity_failed_fraction": {
+    "mean": 0.02,
+    "std": 0.02
+  },
+  "eep.geometry_selection_route.split_confidence_low_fraction": {
+    "mean": 0.02,
+    "std": 0.02
+  },
+  "eep.geometry_selection_route.tta_variance_high_fraction": {
+    "mean": 0.01,
+    "std": 0.01
+  },
+  "eep.artifact_validation_route.valid_fraction": {
+    "mean": 0.75,
+    "std": 0.08
+  },
+  "eep.artifact_validation_route.invalid_fraction": {
+    "mean": 0.1,
+    "std": 0.05
+  },
+  "eep.artifact_validation_route.rectification_triggered_fraction": {
+    "mean": 0.15,
+    "std": 0.06
+  },
+  "eep.structural_agreement_rate": {
+    "mean": 0.9,
+    "std": 0.05
+  },
+  "eep.layout_consensus_confidence": {
+    "mean": 0.84,
+    "std": 0.07
+  }
 }

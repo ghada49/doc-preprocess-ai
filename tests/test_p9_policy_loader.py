@@ -27,6 +27,7 @@ import pytest
 import yaml
 
 from services.eep.app.gates.geometry_selection import (
+    _DEFAULT_AREA_FRACTION_BOUNDS,
     PreprocessingGateConfig,
     _DEFAULT_ASPECT_RATIO_BOUNDS,
 )
@@ -86,6 +87,31 @@ class TestParseGateConfig:
     def test_direct_field_geometry_sanity_max(self):
         cfg = parse_gate_config({"preprocessing": {"geometry_sanity_area_max_fraction": 0.95}})
         assert cfg.geometry_sanity_area_max_fraction == pytest.approx(0.95)
+
+    def test_area_fraction_bounds_full_override(self):
+        cfg = parse_gate_config({
+            "preprocessing": {
+                "area_fraction_bounds": {
+                    "book": [0.14, 0.98],
+                    "newspaper": [0.08, 1.0],
+                    "microfilm": [0.12, 0.99],
+                }
+            }
+        })
+        assert cfg.area_fraction_bounds["book"] == (0.14, 0.98)
+        assert cfg.area_fraction_bounds["newspaper"] == (0.08, 1.0)
+        assert cfg.area_fraction_bounds["microfilm"] == (0.12, 0.99)
+
+    def test_area_fraction_bounds_partial_override_merges_with_defaults(self):
+        cfg = parse_gate_config({
+            "preprocessing": {
+                "area_fraction_bounds": {
+                    "newspaper": [0.08, 1.0],
+                }
+            }
+        })
+        assert cfg.area_fraction_bounds["newspaper"] == (0.08, 1.0)
+        assert cfg.area_fraction_bounds["book"] == _DEFAULT_AREA_FRACTION_BOUNDS["book"]
 
     def test_direct_field_artifact_validation_threshold(self):
         cfg = parse_gate_config({"preprocessing": {"artifact_validation_threshold": 0.70}})

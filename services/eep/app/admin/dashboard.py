@@ -16,8 +16,8 @@ computed on-request from the authoritative tables; no caching layer is
 introduced.
 
 Fields (spec Section 11.4):
-  throughput_pages_per_hour    — pages that reached a terminal state in the
-                                 rolling last 60 minutes.
+  throughput_pages_per_hour    — average pages reaching a terminal state per
+                                 active hour.
   auto_accept_rate             — fraction of all-time terminal pages where
                                  acceptance_decision = 'accepted'.
   structural_agreement_rate    — fraction of all-time page_lineage rows where
@@ -46,15 +46,16 @@ Fields (spec Section 11.4):
                                  status = 'success' in the window.
   layout_success_rate          — fraction of layout-stage invocations with
                                  status = 'success' in the window.
-  human_review_throughput_rate — human-corrected pages per hour over the window
+  human_review_throughput_rate — average human-corrected pages per active hour
                                  (page_lineage.human_correction_timestamp).
   structural_agreement_rate    — fraction of page_lineage rows created in the
                                  window where structural_agreement IS TRUE.
-  window_hours                 — the window used for all rate computations.
+  window_hours                 — the window used for stage, rescue, and
+                                 structural-agreement rates.
 
 Query parameter:
   window_hours (int, default 24, min 1, max 720) — look-back window for
-  service-health rates.
+  service-health rates except the active-hour human review throughput.
 
 Error responses:
   401 — missing or invalid bearer token
@@ -93,8 +94,6 @@ logger = logging.getLogger(__name__)
 router = APIRouter(tags=["admin"])
 
 _TERMINAL_STATES = ("accepted", "review", "failed")
-
-
 # ── Helpers ─────────────────────────────────────────────────────────────────────
 
 
@@ -105,6 +104,61 @@ def _safe_rate(numerator: int, denominator: int) -> float:
     return round(numerator / denominator, 4)
 
 
+def _average_timestamp_rows_per_active_hour(rows: list[object]) -> float:
+    """
+    Average event rows across hourly buckets that actually contain events.
+    """
+    buckets: dict[datetime, int] = {}
+    for row in rows:
+        try:
+            event_at = row[0]
+        except (TypeError, KeyError, IndexError):
+            event_at = row
+        if event_at is None:
+            continue
+        if event_at.tzinfo is None:
+            event_at = event_at.replace(tzinfo=timezone.utc)
+        bucket = event_at.astimezone(timezone.utc).replace(
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        buckets[bucket] = buckets.get(bucket, 0) + 1
+    if not buckets:
+        return 0.0
+    return round(sum(buckets.values()) / len(buckets), 4)
+
+
+def _average_terminal_pages_per_hour(db: Session) -> float:
+    """
+    Average terminal page completions across active historical hourly buckets.
+
+    Example: 6 pages from 10:00-10:59 and 4 pages from 11:00-11:59 returns 5/h.
+    """
+    rows = (
+        db.query(JobPage.status_updated_at)
+        .filter(
+            JobPage.status.in_(_TERMINAL_STATES),
+            JobPage.status_updated_at.isnot(None),
+        )
+        .all()
+    )
+    return _average_timestamp_rows_per_active_hour(rows)
+
+
+def _average_human_review_pages_per_hour(db: Session) -> float:
+    """Average human-corrected pages across active historical hourly buckets."""
+    rows = (
+        db.query(PageLineage.human_correction_timestamp)
+        .filter(
+            PageLineage.human_corrected.is_(True),
+            PageLineage.human_correction_timestamp.isnot(None),
+        )
+        .all()
+    )
+    return _average_timestamp_rows_per_active_hour(rows)
+
+
 # ── Response schemas ─────────────────────────────────────────────────────────────
 
 
@@ -113,8 +167,7 @@ class DashboardSummaryResponse(BaseModel):
     System-wide KPI snapshot.
 
     Fields:
-        throughput_pages_per_hour    — pages completing (reaching a terminal state)
-                                       in the last 60 minutes
+        throughput_pages_per_hour    — average terminal pages per active hour
         auto_accept_rate             — fraction of terminal pages automatically accepted
         structural_agreement_rate    — fraction of pages where IEP1A and IEP1B agreed
         pending_corrections_count    — pages currently awaiting human correction
@@ -140,14 +193,14 @@ class ServiceHealthResponse(BaseModel):
         preprocessing_success_rate   — IEP1A/IEP1B/IEP1C invocation success rate
         rectification_success_rate   — IEP1D invocation success rate
         layout_success_rate          — IEP2A/IEP2B invocation success rate
-        human_review_throughput_rate — human-corrected pages per hour
+        human_review_throughput_rate — human-corrected pages per active hour
         structural_agreement_rate    — IEP1A/IEP1B geometric agreement rate
         rescue_rate                  — fraction of first-pass failures that entered
                                        IEP1D rescue (vs. skipped by policy). 0.0 when
                                        no failures occurred in the window.
         policy_skips_count           — count of pages skipped to pending_human_correction
                                        by the disabled_direct_review policy in the window.
-        window_hours                 — look-back window used for all rates
+        window_hours                 — look-back window used for the windowed rates
     """
 
     preprocessing_success_rate: float
@@ -182,19 +235,7 @@ def get_dashboard_summary(
 
     **Auth:** admin role required (403 for non-admin callers).
     """
-    now = datetime.now(timezone.utc)
-    one_hour_ago = now - timedelta(hours=1)
-
-    # throughput: terminal pages completed in the rolling last hour
-    throughput_pages_per_hour: float = float(
-        db.query(func.count(JobPage.page_id))
-        .filter(
-            JobPage.status.in_(_TERMINAL_STATES),
-            JobPage.status_updated_at >= one_hour_ago,
-        )
-        .scalar()
-        or 0
-    )
+    throughput_pages_per_hour = _average_terminal_pages_per_hour(db)
 
     # auto_accept_rate: accepted / all terminal (all-time)
     total_terminal: int = (
@@ -289,8 +330,8 @@ def get_service_health(
     invocations exist for a stage within the window, the rate is ``0.0``
     rather than ``null`` to keep the response shape stable.
 
-    ``window_hours`` is echoed back in the response so callers always know
-    which window produced the numbers they are seeing.
+    ``window_hours`` is echoed back in the response so callers know which
+    window produced the stage, rescue, and structural-agreement rates.
 
     **Auth:** admin role required (403 for non-admin callers).
     """
@@ -324,17 +365,7 @@ def get_service_health(
     # Layout stage: IEP2A / IEP2B
     layout_success_rate = _stage_rate(["iep2%"])
 
-    # Human review throughput: human-corrected pages per hour in the window
-    human_reviewed: int = (
-        db.query(func.count(PageLineage.lineage_id))
-        .filter(
-            PageLineage.human_corrected.is_(True),
-            PageLineage.human_correction_timestamp >= window_start,
-        )
-        .scalar()
-        or 0
-    )
-    human_review_throughput_rate = round(human_reviewed / window_hours, 4)
+    human_review_throughput_rate = _average_human_review_pages_per_hour(db)
 
     # Structural agreement rate: page_lineage rows created within the window
     total_with_agreement_window: int = (

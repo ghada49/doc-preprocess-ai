@@ -13,115 +13,549 @@ permissions:
 env:
   AWS_REGION:  ${{ vars.AWS_REGION }}
   ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
-  GPU_ASG:     ${{ vars.GPU_ASG_NAME }}
 
 jobs:
   scale-up:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
+
       - name: Configure AWS credentials (OIDC)
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/github-actions-deploy
           aws-region: ${{ vars.AWS_REGION }}
 
-      # ── Step 1: Scale GPU EC2 Auto Scaling Group ─────────────────────────
-      - name: Scale GPU ASG to desired capacity
+      - name: Check whether processing is already active
+        id: processing-active
+        # Mirrors services/eep/app/scaling/normal_scaler.py:_normal_processing_already_active.
+        # The cluster is "active" only when every ECS-managed normal-processing
+        # service has BOTH desired>=1 AND running>=1.  Checking eep-worker
+        # alone (the previous behaviour) silently skipped scale-up whenever an
+        # operator brought a CPU IEP or worker singleton to 0 individually,
+        # leaving the cluster half-up and unable to make progress.
+        # GPU IEPs (iep0/1a/1b) are NOT consulted here — their ECS placeholders
+        # always sit at desired=0 by design; the real GPU work runs on RunPod.
         run: |
-          aws autoscaling set-desired-capacity \
-            --auto-scaling-group-name "$GPU_ASG" \
-            --desired-capacity ${{ vars.GPU_ASG_DESIRED || '1' }} \
-            --no-honor-cooldown
-          echo "GPU ASG set to desired=${{ vars.GPU_ASG_DESIRED || '1' }}"
-
-      # ── Step 2: Wait for GPU container instances to register ─────────────
-      - name: Wait for GPU container instances to register in ECS cluster
-        run: |
-          REQUIRED=${{ vars.GPU_ASG_DESIRED || '1' }}
-          echo "Waiting for $REQUIRED GPU container instance(s) to register..."
-          for i in $(seq 1 30); do
-            COUNT=$(aws ecs list-container-instances \
+          set -euo pipefail
+          ACTIVE_CHECK_SERVICES=(
+            libraryai-iep1d
+            libraryai-iep1e
+            libraryai-iep2a-v2
+            libraryai-iep2b
+            libraryai-eep-worker
+            libraryai-eep-recovery
+            libraryai-shadow-worker
+          )
+          ALL_ACTIVE=true
+          for SVC in "${ACTIVE_CHECK_SERVICES[@]}"; do
+            COUNTS=$(aws ecs describe-services \
               --cluster "$ECS_CLUSTER" \
-              --status ACTIVE \
-              --filter "attribute:ecs.instance-type =~ g4dn.*" \
-              --query 'length(containerInstanceArns)' --output text 2>/dev/null || echo "0")
-            echo "  Attempt $i/30 — registered GPU instances: $COUNT"
-            if [ "$COUNT" -ge "$REQUIRED" ]; then
-              echo "GPU instances ready."
-              break
+              --services "$SVC" \
+              --query 'services[0].[desiredCount,runningCount]' \
+              --output text 2>/dev/null || echo "0 0")
+            read -r DESIRED RUNNING <<< "$COUNTS"
+            DESIRED="${DESIRED:-0}"; RUNNING="${RUNNING:-0}"
+            # describe-services returns "None None" when the service was deleted
+            if [ "$DESIRED" = "None" ]; then DESIRED=0; fi
+            if [ "$RUNNING" = "None" ]; then RUNNING=0; fi
+            echo "$SVC desired=$DESIRED running=$RUNNING"
+            if [ "$DESIRED" -lt 1 ] || [ "$RUNNING" -lt 1 ]; then
+              ALL_ACTIVE=false
             fi
-            sleep 20
           done
-          # Final check — fail if instances never appeared
-          COUNT=$(aws ecs list-container-instances \
-            --cluster "$ECS_CLUSTER" \
-            --status ACTIVE \
-            --filter "attribute:ecs.instance-type =~ g4dn.*" \
-            --query 'length(containerInstanceArns)' --output text)
-          if [ "$COUNT" -lt "$REQUIRED" ]; then
-            echo "ERROR: Only $COUNT GPU instance(s) registered after 10 minutes — aborting scale-up"
-            exit 1
+          if [ "$ALL_ACTIVE" = "true" ]; then
+            echo "active=true" >> "$GITHUB_OUTPUT"
+            echo "All normal-processing services already active; skipping scale-up to avoid duplicate RunPod pods."
+          else
+            echo "active=false" >> "$GITHUB_OUTPUT"
+            echo "At least one normal-processing service is below desired/running >= 1; proceeding with scale-up."
           fi
 
-      # ── Step 3: Start GPU inference services ─────────────────────────────
-      # NOTE: libraryai-eep is always-on and is NOT managed by this workflow.
-      - name: Start GPU services (iep0, iep1a, iep1b)
+      # ── Step 1: Create RunPod GPU pods (iep0, iep1a, iep1b) ─────────────
+      - name: Create RunPod GPU pods
+        if: steps.processing-active.outputs.active != 'true'
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+          RUNPOD_POD_MODE: ${{ vars.RUNPOD_POD_MODE || 'create' }}
+          RUNPOD_IEP0_POD_ID: ${{ vars.RUNPOD_IEP0_POD_ID || '' }}
+          RUNPOD_IEP1A_POD_ID: ${{ vars.RUNPOD_IEP1A_POD_ID || '' }}
+          RUNPOD_IEP1B_POD_ID: ${{ vars.RUNPOD_IEP1B_POD_ID || '' }}
+          RUNPOD_GPU_TYPE_ID: ${{ vars.RUNPOD_GPU_TYPE_ID || '' }}
+          RUNPOD_GPU_TYPES: ${{ vars.RUNPOD_GPU_TYPES || 'NVIDIA RTX 4000 Ada Generation,NVIDIA RTX A4000,NVIDIA RTX 2000 Ada Generation,NVIDIA RTX A5000,NVIDIA RTX A4500,NVIDIA L4,NVIDIA A40,NVIDIA RTX A6000' }}
+          RUNPOD_CLOUD_TYPE: ${{ vars.RUNPOD_CLOUD_TYPE || 'SECURE' }}
+          RUNPOD_CLOUD_TYPES: ${{ vars.RUNPOD_CLOUD_TYPES || 'SECURE,COMMUNITY' }}
+          RUNPOD_CONTAINER_DISK_GB: ${{ vars.RUNPOD_CONTAINER_DISK_GB || '50' }}
+          RUNPOD_MIN_VCPU_PER_GPU: ${{ vars.RUNPOD_MIN_VCPU_PER_GPU || '2' }}
+          RUNPOD_MIN_RAM_PER_GPU: ${{ vars.RUNPOD_MIN_RAM_PER_GPU || '8' }}
+          # If a pod never reaches RUNNING + /health within this window, terminate it and create a replacement (RunPod stuck on image pull).
+          RUNPOD_HEALTH_WAIT_SECONDS: ${{ vars.RUNPOD_HEALTH_WAIT_SECONDS || '600' }}
+          RUNPOD_HEALTH_POLL_SECONDS: ${{ vars.RUNPOD_HEALTH_POLL_SECONDS || '15' }}
+          RUNPOD_POD_REPLACE_MAX: ${{ vars.RUNPOD_POD_REPLACE_MAX || '3' }}
         run: |
-          for SVC in iep0 iep1a iep1b; do
-            aws ecs update-service \
-              --cluster "$ECS_CLUSTER" \
-              --service "libraryai-${SVC}" \
-              --desired-count 1 \
-              --no-cli-pager
-            echo "Started libraryai-${SVC}"
+          set -euo pipefail
+
+          normalize_cloud_type() {
+            local VALUE
+            VALUE="$(echo "${1:-COMMUNITY}" | tr '[:lower:]' '[:upper:]')"
+            if [ "$VALUE" = "SECURITY" ]; then
+              echo "SECURE"
+            elif [ "$VALUE" = "SECURE" ] || [ "$VALUE" = "COMMUNITY" ]; then
+              echo "$VALUE"
+            else
+              echo "COMMUNITY"
+            fi
+          }
+
+          normalize_gpu_type() {
+            case "$1" in
+              A40) echo "NVIDIA A40" ;;
+              "RTX 3090"|3090) echo "NVIDIA GeForce RTX 3090" ;;
+              "RTX 4090"|4090) echo "NVIDIA GeForce RTX 4090" ;;
+              "RTX A5000"|A5000) echo "NVIDIA RTX A5000" ;;
+              "RTX A4000"|A4000) echo "NVIDIA RTX A4000" ;;
+              "RTX A4500"|A4500) echo "NVIDIA RTX A4500" ;;
+              "RTX A6000"|A6000) echo "NVIDIA RTX A6000" ;;
+              L4) echo "NVIDIA L4" ;;
+              L40) echo "NVIDIA L40" ;;
+              L40S) echo "NVIDIA L40S" ;;
+              "RTX 4000 ADA"|"4000 ADA"|"RTX 4000") echo "NVIDIA RTX 4000 Ada Generation" ;;
+              "RTX 2000 ADA"|"2000 ADA") echo "NVIDIA RTX 2000 Ada Generation" ;;
+              *) echo "$1" ;;
+            esac
+          }
+
+          is_supported_gpu_type() {
+            case "$1" in
+              "NVIDIA GeForce RTX 4090"|"NVIDIA A40"|"NVIDIA RTX A5000"|\
+              "NVIDIA GeForce RTX 5090"|"NVIDIA H100 80GB HBM3"|\
+              "NVIDIA GeForce RTX 3090"|"NVIDIA RTX A4500"|"NVIDIA L40S"|\
+              "NVIDIA H200"|"NVIDIA L4"|"NVIDIA RTX 6000 Ada Generation"|\
+              "NVIDIA A100-SXM4-80GB"|"NVIDIA RTX 4000 Ada Generation"|\
+              "NVIDIA RTX A6000"|"NVIDIA A100 80GB PCIe"|\
+              "NVIDIA RTX 2000 Ada Generation"|"NVIDIA RTX A4000"|\
+              "NVIDIA RTX PRO 6000 Blackwell Server Edition"|"NVIDIA H100 PCIe"|\
+              "NVIDIA H100 NVL"|"NVIDIA L40"|"NVIDIA B200"|\
+              "NVIDIA GeForce RTX 3080 Ti"|\
+              "NVIDIA RTX PRO 6000 Blackwell Workstation Edition"|\
+              "NVIDIA GeForce RTX 3080"|"NVIDIA GeForce RTX 3070")
+                return 0
+                ;;
+              *)
+                echo "::warning::Skipping unsupported RunPod REST GPU type: $1"
+                return 1
+                ;;
+            esac
+          }
+
+          GPU_CANDIDATES=()
+          add_gpu_candidate() {
+            local RAW="$1" GPU EXISTING
+            RAW="$(echo "$RAW" | xargs)"
+            [ -z "$RAW" ] && return 0
+            GPU="$(normalize_gpu_type "$RAW")"
+            is_supported_gpu_type "$GPU" || return 0
+            for EXISTING in "${GPU_CANDIDATES[@]}"; do
+              [ "$EXISTING" = "$GPU" ] && return 0
+            done
+            GPU_CANDIDATES+=("$GPU")
+          }
+
+          add_gpu_candidate "$RUNPOD_GPU_TYPE_ID"
+          IFS=',' read -ra EXTRA_GPU_TYPES <<< "$RUNPOD_GPU_TYPES"
+          for GPU_TYPE in "${EXTRA_GPU_TYPES[@]}"; do
+            add_gpu_candidate "$GPU_TYPE"
           done
+          if [ "${#GPU_CANDIDATES[@]}" -eq 0 ]; then
+            add_gpu_candidate "NVIDIA RTX A5000"
+          fi
+          RUNPOD_CLOUD_TYPE="$(normalize_cloud_type "$RUNPOD_CLOUD_TYPE")"
+          CLOUD_CANDIDATES=()
+          add_cloud_candidate() {
+            local CLOUD
+            CLOUD="$(normalize_cloud_type "$1")"
+            for EXISTING in "${CLOUD_CANDIDATES[@]}"; do
+              [ "$EXISTING" = "$CLOUD" ] && return 0
+            done
+            CLOUD_CANDIDATES+=("$CLOUD")
+          }
+          add_cloud_candidate "$RUNPOD_CLOUD_TYPE"
+          IFS=',' read -ra EXTRA_CLOUD_TYPES <<< "$RUNPOD_CLOUD_TYPES"
+          for CLOUD_TYPE in "${EXTRA_CLOUD_TYPES[@]}"; do
+            add_cloud_candidate "$CLOUD_TYPE"
+          done
+          echo "RunPod cloud candidates: ${CLOUD_CANDIDATES[*]}"
+          echo "RunPod GPU candidates: ${GPU_CANDIDATES[*]}"
 
-      # NOTE: libraryai-iep1d is a rescue-path service and is NOT started here.
-      # It remains at desired-count 0 during normal processing.
-      # IEP1D_SCALER_MODE in the eep-worker task controls on-demand startup.
-      # Scale iep1d manually only if IEP1D_SCALER_MODE=disabled and rescue testing is needed.
-      - name: Wait for GPU services to become healthy
-        run: |
-          echo "Waiting for stable: libraryai-iep0 libraryai-iep1a libraryai-iep1b"
-          aws ecs wait services-stable \
-            --cluster "$ECS_CLUSTER" \
-            --services libraryai-iep0 libraryai-iep1a libraryai-iep1b
-          echo "All GPU services healthy."
+          if [ "$RUNPOD_POD_MODE" = "existing" ]; then
+            IEP0_POD="$RUNPOD_IEP0_POD_ID"
+            IEP1A_POD="$RUNPOD_IEP1A_POD_ID"
+            IEP1B_POD="$RUNPOD_IEP1B_POD_ID"
+            if [ -z "$IEP0_POD" ] || [ -z "$IEP1A_POD" ] || [ -z "$IEP1B_POD" ]; then
+              echo "ERROR: RUNPOD_POD_MODE=existing requires RUNPOD_IEP0_POD_ID, RUNPOD_IEP1A_POD_ID, RUNPOD_IEP1B_POD_ID"
+              exit 1
+            fi
 
-      # ── Step 4: Start CPU inference services ─────────────────────────────
-      - name: Start CPU IEP services (iep1e, iep2a, iep2b)
+            resume_pod() {
+              local POD_ID="$1" NAME="$2"
+              curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "{\"query\":\"mutation { podResume(input: { podId: \\\"${POD_ID}\\\", gpuCount: 1 }) { id desiredStatus imageName } }\"}" \
+                > /dev/null
+              echo "Resumed $NAME pod: $POD_ID"
+            }
+
+            resume_pod "$IEP0_POD"  "iep0"
+            resume_pod "$IEP1A_POD" "iep1a"
+            resume_pod "$IEP1B_POD" "iep1b"
+
+            echo "IEP0_POD_ID=$IEP0_POD"   >> "$GITHUB_ENV"
+            echo "IEP1A_POD_ID=$IEP1A_POD" >> "$GITHUB_ENV"
+            echo "IEP1B_POD_ID=$IEP1B_POD" >> "$GITHUB_ENV"
+            echo "IEP0_URL=https://${IEP0_POD}-8006.proxy.runpod.net"   >> "$GITHUB_ENV"
+            echo "IEP1A_URL=https://${IEP1A_POD}-8001.proxy.runpod.net" >> "$GITHUB_ENV"
+            echo "IEP1B_URL=https://${IEP1B_POD}-8002.proxy.runpod.net" >> "$GITHUB_ENV"
+            echo "RUNPOD_CREATED_BY_THIS_RUN=false" >> "$GITHUB_ENV"
+            EXIST=$(aws s3 cp s3://libraryai2/ops/runpod-pods.json - 2>/dev/null || echo '{}')
+            APPEND_JSON=$(IEP0_POD="$IEP0_POD" IEP1A_POD="$IEP1A_POD" IEP1B_POD="$IEP1B_POD" python3 -c "
+import json, os
+from datetime import datetime, timezone
+now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+run = os.environ.get('GITHUB_RUN_ID', 'manual')
+pods = [
+    ('iep0', os.environ['IEP0_POD']),
+    ('iep1a', os.environ['IEP1A_POD']),
+    ('iep1b', os.environ['IEP1B_POD']),
+]
+print(json.dumps([{'role': r, 'pod_id': p, 'created_at': now, 'source': f'github_actions_existing:{run}'} for r, p in pods]))
+")
+            export APPEND_JSON
+            export REMOVE_IDS=""
+            echo "$EXIST" | python3 "${GITHUB_WORKSPACE}/scripts/runpod_s3_state.py" merge | aws s3 cp - s3://libraryai2/ops/runpod-pods.json
+            exit 0
+          fi
+
+          CREATED_PODS=()
+          POD_CREATION_LOG=()
+          TERMINATED_IDS=()
+          cleanup_created_pods_on_error() {
+            if [ "${#CREATED_PODS[@]}" -eq 0 ]; then
+              return 0
+            fi
+            echo "::warning::Scale-up failed during RunPod creation; terminating newly-created pods: ${CREATED_PODS[*]}"
+            for POD_ID in "${CREATED_PODS[@]}"; do
+              [ -z "$POD_ID" ] && continue
+              curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "{\"query\":\"mutation { podTerminate(input: {podId: \\\"${POD_ID}\\\"}) }\"}" \
+                > /dev/null || true
+              echo "Terminated newly-created RunPod pod: $POD_ID"
+            done
+          }
+          trap cleanup_created_pods_on_error ERR
+
+          create_pod() {
+            local NAME="$1" IMAGE="$2" PORT="$3"
+            local GPU_JSON RESPONSE POD_ID PAYLOAD CLOUD_TYPE
+            GPU_JSON=$(printf '%s\n' "${GPU_CANDIDATES[@]}" | python3 -c 'import json,sys; print(json.dumps([line.strip() for line in sys.stdin if line.strip()]))')
+            for CLOUD_TYPE in "${CLOUD_CANDIDATES[@]}"; do
+              echo "Creating $NAME on RunPod REST cloudType=$CLOUD_TYPE gpuTypeIds=$GPU_JSON" >&2
+              PAYLOAD=$(python3 -c 'import json,os,sys; name,image,port,cloud,gpu_json=sys.argv[1:6]; env={"PYTHONPATH":"/app","AWS_REGION":os.environ.get("AWS_REGION","eu-central-1"),"S3_REGION":os.environ.get("AWS_REGION","eu-central-1"),"S3_BUCKET_NAME":"libraryai2","HEALTH_PORT":port,"RUNPOD_TERMINATE_ON_IDLE":"true"}; env.update({"IEP0_MODEL_PATH":"/app/models/iep0/classifier.pt"} if name.endswith("iep0") else {"IEP1A_MODELS_DIR":"/app/models/iep1a"} if name.endswith("iep1a") else {"IEP1B_MODELS_DIR":"/app/models/iep1b"} if name.endswith("iep1b") else {}); payload={"name":name,"imageName":image,"computeType":"GPU","cloudType":cloud,"gpuCount":1,"gpuTypeIds":json.loads(gpu_json),"gpuTypePriority":"custom","interruptible":False,"containerDiskInGb":int(os.environ.get("RUNPOD_CONTAINER_DISK_GB","50") or "50"),"minVCPUPerGPU":int(os.environ.get("RUNPOD_MIN_VCPU_PER_GPU","2") or "2"),"minRAMPerGPU":int(os.environ.get("RUNPOD_MIN_RAM_PER_GPU","8") or "8"),"ports":[f"{port}/http"],"env":env}; print(json.dumps(payload))' "$NAME" "$IMAGE" "$PORT" "$CLOUD_TYPE" "$GPU_JSON")
+              RESPONSE=$(curl -sS -X POST "https://rest.runpod.io/v1/pods" \
+                -H "Authorization: Bearer ${RUNPOD_API_KEY}" \
+                -H "Content-Type: application/json" \
+                -d "$PAYLOAD")
+              POD_ID=$(echo "$RESPONSE" | python3 -c 'import json,sys; d=json.load(sys.stdin); pod_id=d.get("id") or d.get("data", {}).get("id"); print(pod_id or ""); sys.exit(0 if pod_id else 1)' 2>/dev/null || true)
+              if [ -n "$POD_ID" ]; then
+                CREATED_PODS+=("$POD_ID")
+                case "$NAME" in
+                  libraryai-iep0) POD_CREATION_LOG+=("iep0|$POD_ID") ;;
+                  libraryai-iep1a) POD_CREATION_LOG+=("iep1a|$POD_ID") ;;
+                  libraryai-iep1b) POD_CREATION_LOG+=("iep1b|$POD_ID") ;;
+                esac
+                echo "$POD_ID"
+                return 0
+              fi
+              echo "RunPod REST create failed for $NAME cloudType=$CLOUD_TYPE" >&2
+              echo "$RESPONSE" >&2
+            done
+            echo "ERROR: failed to create $NAME with all GPU candidates: ${GPU_CANDIDATES[*]}" >&2
+            return 1
+          }
+
+          RUNPOD_HEALTH_WAIT_SECONDS="${RUNPOD_HEALTH_WAIT_SECONDS:-600}"
+          RUNPOD_HEALTH_POLL_SECONDS="${RUNPOD_HEALTH_POLL_SECONDS:-15}"
+          RUNPOD_POD_REPLACE_MAX="${RUNPOD_POD_REPLACE_MAX:-3}"
+          MAX_HEALTH_ITER=$(( (RUNPOD_HEALTH_WAIT_SECONDS + RUNPOD_HEALTH_POLL_SECONDS - 1) / RUNPOD_HEALTH_POLL_SECONDS ))
+          if [ "$MAX_HEALTH_ITER" -lt 1 ]; then MAX_HEALTH_ITER=1; fi
+
+          remove_pod_id_from_created_pods() {
+            local OLD_ID="$1"
+            local NEW_LIST=()
+            for id in "${CREATED_PODS[@]}"; do
+              [ "$id" = "$OLD_ID" ] && continue
+              NEW_LIST+=("$id")
+            done
+            CREATED_PODS=("${NEW_LIST[@]}")
+          }
+
+          terminate_runpod_pod() {
+            local TID="$1"
+            [ -z "$TID" ] && return 0
+            curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+              -H "Content-Type: application/json" \
+              -d "{\"query\":\"mutation { podTerminate(input: {podId: \\\"${TID}\\\"}) }\"}" \
+              > /dev/null || true
+            echo "Terminated RunPod pod: $TID" >&2
+          }
+
+          # Poll until RUNNING + /health, or each RUNPOD_HEALTH_WAIT_SECONDS window elapses — then replace pod (mitigate stuck image fetch).
+          wait_for_pod_with_replace() {
+            declare -n POD_REF="$1"
+            local PORT="$2" NAME="$3" RP_NAME="$4" RP_IMAGE="$5"
+            local POD_ID="${POD_REF}"
+            local WIN REPLACE_ROUND
+            REPLACE_ROUND=1
+            while [ "$REPLACE_ROUND" -le "$RUNPOD_POD_REPLACE_MAX" ]; do
+              local URL="https://${POD_ID}-${PORT}.proxy.runpod.net/health"
+              echo "Waiting for $NAME at $URL (${RUNPOD_HEALTH_WAIT_SECONDS}s per window, replace ${REPLACE_ROUND}/${RUNPOD_POD_REPLACE_MAX}) ..."
+              for WIN in $(seq 1 "$MAX_HEALTH_ITER"); do
+                STATUS=$(curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+                  -H "Content-Type: application/json" \
+                  -d "{\"query\":\"query { pod(input: {podId: \\\"${POD_ID}\\\"}) { desiredStatus runtime { uptimeInSeconds } } }\"}" \
+                  | python3 -c "import sys,json; d=json.load(sys.stdin); p=d['data']['pod']; print('RUNNING' if p.get('runtime') is not None else p.get('desiredStatus','UNKNOWN'))" 2>/dev/null || echo "UNKNOWN")
+                echo "  attempt $WIN/${MAX_HEALTH_ITER} — $NAME pod status=$STATUS"
+                if [ "$STATUS" = "RUNNING" ]; then
+                  if curl -sf --max-time 10 "$URL" > /dev/null 2>&1; then
+                    echo "$NAME is healthy (pod $POD_ID)."
+                    POD_REF="$POD_ID"
+                    return 0
+                  fi
+                fi
+                sleep "$RUNPOD_HEALTH_POLL_SECONDS"
+              done
+              if [ "$REPLACE_ROUND" -ge "$RUNPOD_POD_REPLACE_MAX" ]; then
+                echo "ERROR: $NAME pod $POD_ID did not become healthy after ${RUNPOD_POD_REPLACE_MAX} windows of ${RUNPOD_HEALTH_WAIT_SECONDS}s"
+                exit 1
+              fi
+              echo "::warning::$NAME pod $POD_ID not healthy within ${RUNPOD_HEALTH_WAIT_SECONDS}s — terminating and creating a replacement (${REPLACE_ROUND}/${RUNPOD_POD_REPLACE_MAX})"
+              TERMINATED_IDS+=("$POD_ID")
+              terminate_runpod_pod "$POD_ID"
+              remove_pod_id_from_created_pods "$POD_ID"
+              POD_ID=$(create_pod "$RP_NAME" "$RP_IMAGE" "$PORT")
+              REPLACE_ROUND=$((REPLACE_ROUND + 1))
+            done
+            exit 1
+          }
+
+          IEP0_POD=$(create_pod  "libraryai-iep0"  "gma51/libraryai-iep0:latest"  "8006")
+          IEP1A_POD=$(create_pod "libraryai-iep1a" "gma51/libraryai-iep1a:latest" "8001")
+          IEP1B_POD=$(create_pod "libraryai-iep1b" "gma51/libraryai-iep1b:latest" "8002")
+
+          wait_for_pod_with_replace IEP0_POD  "8006" "iep0"  "libraryai-iep0"  "gma51/libraryai-iep0:latest"
+          wait_for_pod_with_replace IEP1A_POD "8001" "iep1a" "libraryai-iep1a" "gma51/libraryai-iep1a:latest"
+          wait_for_pod_with_replace IEP1B_POD "8002" "iep1b" "libraryai-iep1b" "gma51/libraryai-iep1b:latest"
+
+          echo "All RunPod GPU pods passed health checks."
+
+          echo "IEP0_POD_ID=$IEP0_POD"   >> "$GITHUB_ENV"
+          echo "IEP1A_POD_ID=$IEP1A_POD" >> "$GITHUB_ENV"
+          echo "IEP1B_POD_ID=$IEP1B_POD" >> "$GITHUB_ENV"
+
+          echo "IEP0_URL=https://${IEP0_POD}-8006.proxy.runpod.net"   >> "$GITHUB_ENV"
+          echo "IEP1A_URL=https://${IEP1A_POD}-8001.proxy.runpod.net" >> "$GITHUB_ENV"
+          echo "IEP1B_URL=https://${IEP1B_POD}-8002.proxy.runpod.net" >> "$GITHUB_ENV"
+          echo "RUNPOD_CREATED_BY_THIS_RUN=true" >> "$GITHUB_ENV"
+
+          echo "Created RunPod pods:"
+          echo "  iep0:  $IEP0_POD  → https://${IEP0_POD}-8006.proxy.runpod.net"
+          echo "  iep1a: $IEP1A_POD → https://${IEP1A_POD}-8001.proxy.runpod.net"
+          echo "  iep1b: $IEP1B_POD → https://${IEP1B_POD}-8002.proxy.runpod.net"
+
+          # Merge into S3 (v2) — append all pod creations (including health-check replacements);
+          # remove pod IDs that were terminated during replace.
+          EXIST=$(aws s3 cp s3://libraryai2/ops/runpod-pods.json - 2>/dev/null || echo '{}')
+          APPEND_JSON=$(printf '%s\n' "${POD_CREATION_LOG[@]}" | python3 -c "
+import json, sys, os
+from datetime import datetime, timezone
+now = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+run = os.environ.get('GITHUB_RUN_ID', 'manual')
+out = []
+for line in sys.stdin:
+    line = line.strip()
+    if not line or '|' not in line:
+        continue
+    role, pid = line.split('|', 1)
+    out.append({'role': role, 'pod_id': pid, 'created_at': now, 'source': f'github_actions:{run}'})
+print(json.dumps(out))
+")
+          export APPEND_JSON
+          REMOVE_MERGED="$(IFS=,; echo "${TERMINATED_IDS[*]}")"
+          export REMOVE_IDS="$REMOVE_MERGED"
+          echo "$EXIST" | python3 "${GITHUB_WORKSPACE}/scripts/runpod_s3_state.py" merge | aws s3 cp - s3://libraryai2/ops/runpod-pods.json
+          echo "Pod state merged to s3://libraryai2/ops/runpod-pods.json (append; removed replaced IDs: ${REMOVE_IDS:-none})"
+          trap - ERR
+
+      # ── Step 2: Register eep-worker task def with RunPod IEP URLs ────────
+      - name: Update eep-worker task definition with RunPod IEP URLs
+        if: steps.processing-active.outputs.active != 'true'
         run: |
-          for SVC in iep1e iep2a iep2b; do
+          CLUSTER="$ECS_CLUSTER"
+          TASK_DEF=$(cat k8s/ecs/eep-worker-task-def.json \
+            | sed "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
+            | sed "s/REGION/${{ vars.AWS_REGION }}/g" \
+            | sed "s|AWS_${{ vars.AWS_REGION }}|AWS_REGION|g" \
+            | sed "s/CLUSTER_NAME/${CLUSTER}/g" \
+            | sed "s|IEP0_URL_VALUE|${IEP0_URL}|g" \
+            | sed "s|IEP1A_URL_VALUE|${IEP1A_URL}|g" \
+            | sed "s|IEP1B_URL_VALUE|${IEP1B_URL}|g" \
+            | sed "s|IEP1E_URL_VALUE|http://iep1e:8007|g" \
+            | sed "s|IEP2A_URL_VALUE|http://iep2a-v2:8004|g" \
+            | sed "s|IEP2B_URL_VALUE|http://iep2b:8005|g")
+          REVISION=$(aws ecs register-task-definition \
+            --cli-input-json "$TASK_DEF" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "EEP_WORKER_TASK_DEF=$REVISION" >> "$GITHUB_ENV"
+          echo "Registered eep-worker task def: $REVISION"
+
+      # ── Step 3: Start CPU inference services ─────────────────────────────
+      # iep1d is the rectification rescue path (CPU/Fargate).  It used to be
+      # left at desired=0 and started on-demand by services/eep_worker/app/
+      # iep1d_scaler.py, but its cold-start latency routinely exceeded the
+      # worker's IEP1D_READY_TIMEOUT_SECONDS, sending the first wave of pages
+      # that need rescue straight to pending_human_correction.  Pre-warming
+      # iep1d here costs one extra Fargate task during the processing window
+      # (~$0.02/hour) and eliminates that race.  The on-demand scaler still
+      # exists as a defence-in-depth fallback (idempotent when desired=1).
+      - name: Start CPU IEP services (iep1d, iep1e, iep2a-v2, iep2b)
+        if: steps.processing-active.outputs.active != 'true'
+        run: |
+          sc_config() {
+            case "$1" in
+              libraryai-iep1d) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1d","clientAliases":[{"port":8003,"dnsName":"iep1d"}]}]}' ;;
+              libraryai-iep1e) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep1e","clientAliases":[{"port":8007,"dnsName":"iep1e"}]}]}' ;;
+              libraryai-iep2a-v2) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2a-v2","clientAliases":[{"port":8004,"dnsName":"iep2a-v2"}]}]}' ;;
+              libraryai-iep2b) echo '{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"http","discoveryName":"iep2b","clientAliases":[{"port":8005,"dnsName":"iep2b"}]}]}' ;;
+            esac
+          }
+          for SVC in libraryai-iep1d libraryai-iep1e libraryai-iep2a-v2 libraryai-iep2b; do
+            SC_CONFIG=$(sc_config "$SVC")
             aws ecs update-service \
               --cluster "$ECS_CLUSTER" \
-              --service "libraryai-${SVC}" \
+              --service "$SVC" \
               --desired-count 1 \
+              --service-connect-configuration "$SC_CONFIG" \
+              --force-new-deployment \
               --no-cli-pager
-            echo "Started libraryai-${SVC}"
+            echo "Started $SVC"
           done
 
       - name: Wait for CPU IEP services to become healthy
+        if: steps.processing-active.outputs.active != 'true'
         run: |
           aws ecs wait services-stable \
             --cluster "$ECS_CLUSTER" \
-            --services libraryai-iep1e libraryai-iep2a libraryai-iep2b
+            --services libraryai-iep1d libraryai-iep1e libraryai-iep2a-v2 libraryai-iep2b
           echo "All CPU IEP services healthy."
 
-      # ── Step 5: Start processing workers ─────────────────────────────────
+      # ── Step 4: Start processing workers ─────────────────────────────────
+      # NOTE: libraryai-eep is always-on and is NOT managed by this workflow.
       - name: Start workers
+        if: steps.processing-active.outputs.active != 'true'
         run: |
-          for SVC in eep-worker eep-recovery shadow-worker; do
-            aws ecs update-service \
-              --cluster "$ECS_CLUSTER" \
-              --service "libraryai-${SVC}" \
-              --desired-count ${{ vars.WORKER_DESIRED_COUNT || '2' }} \
-              --no-cli-pager
-            echo "Started libraryai-${SVC} desired=${{ vars.WORKER_DESIRED_COUNT || '2' }}"
-          done
+          DESIRED=${{ vars.WORKER_DESIRED_COUNT || '2' }}
+          EEP_WORKER_SC='{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"eep-worker","clientAliases":[{"port":9100,"dnsName":"eep-worker"}]}]}'
+          EEP_RECOVERY_SC='{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"eep-recovery","clientAliases":[{"port":9101,"dnsName":"eep-recovery"}]}]}'
+          SHADOW_WORKER_SC='{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"shadow-worker","clientAliases":[{"port":9102,"dnsName":"shadow-worker"}]}]}'
+          # eep-worker gets the new task def with RunPod IEP URLs
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service libraryai-eep-worker \
+            --task-definition "$EEP_WORKER_TASK_DEF" \
+            --desired-count "$DESIRED" \
+            --service-connect-configuration "$EEP_WORKER_SC" \
+            --force-new-deployment \
+            --no-cli-pager
+          echo "Started libraryai-eep-worker desired=$DESIRED (RunPod URLs injected)"
+
+          # eep-recovery mutates Redis queues and must run as a singleton.
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service libraryai-eep-recovery \
+            --desired-count 1 \
+            --service-connect-configuration "$EEP_RECOVERY_SC" \
+            --force-new-deployment \
+            --no-cli-pager
+          echo "Started libraryai-eep-recovery desired=1"
+
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service libraryai-shadow-worker \
+            --desired-count "$DESIRED" \
+            --service-connect-configuration "$SHADOW_WORKER_SC" \
+            --force-new-deployment \
+            --no-cli-pager
+          echo "Started libraryai-shadow-worker desired=$DESIRED"
 
       - name: Wait for workers to become healthy
+        if: steps.processing-active.outputs.active != 'true'
         run: |
           aws ecs wait services-stable \
             --cluster "$ECS_CLUSTER" \
             --services libraryai-eep-worker libraryai-eep-recovery libraryai-shadow-worker
           echo "All workers healthy — processing window open."
+          echo ""
+          echo "RunPod GPU pods:"
+          echo "  iep0:  ${IEP0_URL}"
+          echo "  iep1a: ${IEP1A_URL}"
+          echo "  iep1b: ${IEP1B_URL}"
+
+      - name: Cleanup failed scale-up resources
+        if: ${{ failure() && steps.processing-active.outputs.active != 'true' }}
+        env:
+          RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
+        run: |
+          set -euo pipefail
+
+          echo "Scale-up failed; rolling back AWS services touched by this workflow."
+          for SVC in libraryai-eep-worker libraryai-iep1d libraryai-iep1e libraryai-iep2a-v2 libraryai-iep2b libraryai-eep-recovery libraryai-shadow-worker; do
+            aws ecs update-service \
+              --cluster "$ECS_CLUSTER" \
+              --service "$SVC" \
+              --desired-count 0 \
+              --no-cli-pager >/dev/null 2>&1 || true
+            echo "Set $SVC desired=0"
+          done
+
+          if [ "${RUNPOD_CREATED_BY_THIS_RUN:-false}" != "true" ]; then
+            echo "No newly-created RunPod pods recorded for this run; skipping RunPod cleanup."
+            exit 0
+          fi
+
+          echo "Terminating RunPod pods created by this failed scale-up."
+          for ITEM in "iep0:${IEP0_POD_ID:-}" "iep1a:${IEP1A_POD_ID:-}" "iep1b:${IEP1B_POD_ID:-}"; do
+            NAME="${ITEM%%:*}"
+            POD_ID="${ITEM#*:}"
+            if [ -z "$POD_ID" ]; then
+              echo "No pod id recorded for $NAME"
+              continue
+            fi
+            curl -sf -X POST "https://api.runpod.io/graphql?api_key=${RUNPOD_API_KEY}" \
+              -H "Content-Type: application/json" \
+              -d "{\"query\":\"mutation { podTerminate(input: {podId: \\\"${POD_ID}\\\"}) }\"}" \
+              > /dev/null || true
+            echo "Terminated $NAME RunPod pod: $POD_ID"
+          done
+
+          # Remove terminated pod IDs from S3 bookkeeping (do not delete entire file).
+          EXIST=$(aws s3 cp s3://libraryai2/ops/runpod-pods.json - 2>/dev/null || echo '{}')
+          REMOVE_LIST=""
+          for ITEM in "iep0:${IEP0_POD_ID:-}" "iep1a:${IEP1A_POD_ID:-}" "iep1b:${IEP1B_POD_ID:-}"; do
+            POD_ID="${ITEM#*:}"
+            [ -z "$POD_ID" ] && continue
+            REMOVE_LIST+="${POD_ID},"
+          done
+          export APPEND_JSON='[]'
+          export REMOVE_IDS="${REMOVE_LIST%,}"
+          echo "$EXIST" | python3 "${GITHUB_WORKSPACE}/scripts/runpod_s3_state.py" merge | aws s3 cp - s3://libraryai2/ops/runpod-pods.json
+

@@ -76,7 +76,7 @@ export function LayoutOverlay({
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [selectedRegionId, setSelectedRegionId] = useState<string | null>(null);
 
-  const imageQuery = useArtifactPreview(imageUri, { maxWidth: 2400 });
+  const imageQuery = useArtifactPreview(imageUri, { maxWidth: 1600 });
   const layoutQuery = useArtifactJson<LayoutAdjudicationResult>(layoutUri);
 
   const layout = layoutQuery.data;

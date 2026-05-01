@@ -4,8 +4,8 @@ providers:
   - name: LibraryAI
     type: file
     disableDeletion: false
-    updateIntervalSeconds: 30
+    updateIntervalSeconds: 300
     allowUiUpdates: true
     options:
-      path: /etc/grafana/provisioning/dashboards
+      path: /var/lib/grafana/dashboards/libraryai
       foldersFromFilesStructure: true

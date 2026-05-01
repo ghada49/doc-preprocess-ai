@@ -43,6 +43,14 @@ _DEFAULT_ASPECT_RATIO_BOUNDS: dict[str, tuple[float, float]] = {
     "book": (0.5, 2.5),
     "newspaper": (0.3, 5.0),
     "archival_document": (0.5, 3.0),
+    "microfilm": (0.3, 5.0),
+}
+
+_DEFAULT_AREA_FRACTION_BOUNDS: dict[str, tuple[float, float]] = {
+    "book": (0.15, 1.0),
+    "newspaper": (0.10, 1.0),
+    "archival_document": (0.15, 1.0),
+    "microfilm": (0.15, 1.0),
 }
 
 
@@ -57,6 +65,7 @@ class PreprocessingGateConfig:
     Fields used in Packet 3.1 (structural agreement + sanity checks):
         geometry_sanity_area_min_fraction — page region must be ≥ this fraction of image area
         geometry_sanity_area_max_fraction — page region must be ≤ this fraction of image area
+        area_fraction_bounds              — per-material-type [min, max] page-area fraction
         aspect_ratio_bounds               — per-material-type [min, max] width/height ratio
 
     Fields declared for completeness (used from Packet 3.2 onward):
@@ -90,9 +99,15 @@ class PreprocessingGateConfig:
 
     geometry_sanity_area_min_fraction: float = 0.15
     geometry_sanity_area_max_fraction: float = 1.0
+    area_fraction_bounds: dict[str, tuple[float, float]] = field(
+        default_factory=lambda: dict(_DEFAULT_AREA_FRACTION_BOUNDS)
+    )
     aspect_ratio_bounds: dict[str, tuple[float, float]] = field(
         default_factory=lambda: dict(_DEFAULT_ASPECT_RATIO_BOUNDS)
     )
+    newspaper_iep1b_mild_area_min_fraction: float = 0.08
+    newspaper_strong_iep1a_geometry_confidence_min: float = 0.90
+    newspaper_strong_iep1a_tta_agreement_min: float = 0.90
     # Packet 3.2 fields — declared here so config is a single object.
     split_confidence_threshold: float = 0.75
     tta_variance_ceiling: float = 0.15
@@ -213,6 +228,36 @@ def _bbox_iou(
     a2 = (b2[2] - b2[0]) * (b2[3] - b2[1])
     union = a1 + a2 - inter
     return inter / union if union > 0 else 0.0
+
+
+def _area_fraction_bounds_for_material(
+    config: PreprocessingGateConfig,
+    material_type: MaterialType,
+) -> tuple[float, float]:
+    """
+    Return page-area fraction bounds for a material type.
+
+    ``geometry_sanity_area_min_fraction`` and
+    ``geometry_sanity_area_max_fraction`` are legacy scalar policy fields. If a
+    caller explicitly changes either scalar while leaving material bounds at
+    defaults, preserve the old all-material override behavior.
+    """
+    scalar_changed = (
+        config.geometry_sanity_area_min_fraction != 0.15
+        or config.geometry_sanity_area_max_fraction != 1.0
+    )
+    if scalar_changed and config.area_fraction_bounds == _DEFAULT_AREA_FRACTION_BOUNDS:
+        return (
+            config.geometry_sanity_area_min_fraction,
+            config.geometry_sanity_area_max_fraction,
+        )
+    return config.area_fraction_bounds.get(
+        material_type,
+        (
+            config.geometry_sanity_area_min_fraction,
+            config.geometry_sanity_area_max_fraction,
+        ),
+    )
 
 
 def _region_width_height(region: PageRegion) -> tuple[float, float] | None:
@@ -339,14 +384,10 @@ def check_sanity(
         # For 2-page spreads each page is naturally smaller, so halve the
         # minimum area threshold when the response reports page_count == 2.
         # -------------------------------------------------------------------
-        area_min = config.geometry_sanity_area_min_fraction
+        area_min, area_max = _area_fraction_bounds_for_material(config, material_type)
         if response.page_count == 2:
             area_min = area_min / 2.0
-        if not (
-            area_min
-            <= region.page_area_fraction
-            <= config.geometry_sanity_area_max_fraction
-        ):
+        if not (area_min <= region.page_area_fraction <= area_max):
             if "area_fraction_plausible" not in failed:
                 failed.append("area_fraction_plausible")
 
@@ -529,9 +570,11 @@ class GeometrySelectionResult:
 
     Attributes:
         selected                    — winning GeometryCandidate; None if routed to human
-        geometry_trust              — "high" only if both models were provided, both
-                                      survived all filters, and structural agreement held;
-                                      "low" if any dropout or disagreement; None when no
+        geometry_trust              — "high" only if both models were provided,
+                                      structural agreement held, and either both survived
+                                      all filters or the narrow newspaper IEP1B mild
+                                      area-fraction exception applied; "low" if any other
+                                      dropout or disagreement occurred; None when no
                                       candidate was selected
         selection_reason            — short label explaining why this candidate was chosen
                                       (e.g. "higher_confidence"); None when no candidate
@@ -598,6 +641,66 @@ def _select_candidate(
 
     best = max(candidates, key=lambda c: c.response.geometry_confidence)
     return best, "higher_confidence"
+
+
+def _page_area_fractions(response: GeometryResponse | None) -> list[float]:
+    if response is None:
+        return []
+    return [region.page_area_fraction for region in response.pages]
+
+
+def _only_failed_area_fraction(sanity_result: dict[str, object] | None) -> bool:
+    if not sanity_result:
+        return False
+    failed = sanity_result.get("failed_checks")
+    return failed == ["area_fraction_plausible"]
+
+
+def _newspaper_iep1b_mild_area_dropout_is_acceptable(
+    *,
+    material_type: MaterialType,
+    structural_agreement: bool | None,
+    iep1a_response: GeometryResponse | None,
+    iep1b_response: GeometryResponse | None,
+    sanity_results: dict[str, dict[str, object]],
+    surviving_candidates: list[GeometryCandidate],
+    config: PreprocessingGateConfig,
+) -> bool:
+    """
+    Narrow newspaper exception for IEP1B keypoint area underestimation.
+
+    It only applies when IEP1A is a strong surviving candidate, both models
+    structurally agree, and IEP1B failed exactly the area-fraction sanity check
+    by a mild margin. Other sanity failures, structural disagreement, unstable
+    TTA, single-model mode, and severe newspaper area failures still take the
+    normal rectification/review path.
+    """
+    if material_type != "newspaper" or structural_agreement is not True:
+        return False
+    if iep1a_response is None or iep1b_response is None:
+        return False
+    if sanity_results.get("iep1a", {}).get("passed") is not True:
+        return False
+    if not _only_failed_area_fraction(sanity_results.get("iep1b")):
+        return False
+    if not any(candidate.model == "iep1a" for candidate in surviving_candidates):
+        return False
+    if iep1a_response.geometry_confidence < config.newspaper_strong_iep1a_geometry_confidence_min:
+        return False
+    if (
+        iep1a_response.tta_structural_agreement_rate
+        < config.newspaper_strong_iep1a_tta_agreement_min
+    ):
+        return False
+    if iep1a_response.tta_prediction_variance > config.tta_variance_ceiling:
+        return False
+    if iep1b_response.tta_prediction_variance > config.tta_variance_ceiling:
+        return False
+
+    iep1b_area_fractions = _page_area_fractions(iep1b_response)
+    if not iep1b_area_fractions:
+        return False
+    return min(iep1b_area_fractions) >= config.newspaper_iep1b_mild_area_min_fraction
 
 
 def run_geometry_selection(
@@ -693,6 +796,15 @@ def run_geometry_selection(
 
     # --- Page area preference ---
     page_area_preference_triggered = check_page_area_preference(candidates, config)
+    newspaper_iep1b_area_tolerated = _newspaper_iep1b_mild_area_dropout_is_acceptable(
+        material_type=material_type,
+        structural_agreement=structural_agreement,
+        iep1a_response=iep1a_response,
+        iep1b_response=iep1b_response,
+        sanity_results=sanity_results,
+        surviving_candidates=candidates,
+        config=config,
+    )
 
     # --- Route to human when no candidates survive ---
     if not candidates:
@@ -720,10 +832,16 @@ def run_geometry_selection(
 
     # --- Select winner ---
     any_dropped = dropped_at_sanity or dropped_at_split or dropped_at_tta
-    high_trust = both_present and (structural_agreement is True) and not any_dropped
+    high_trust = both_present and (structural_agreement is True) and (
+        not any_dropped or newspaper_iep1b_area_tolerated
+    )
     geometry_trust: Literal["high", "low"] | None = "high" if high_trust else "low"
 
-    selected, selection_reason = _select_candidate(candidates, page_area_preference_triggered)
+    if newspaper_iep1b_area_tolerated:
+        selected = next(c for c in candidates if c.model == "iep1a")
+        selection_reason = "newspaper_iep1a_mild_iep1b_area_fallback"
+    else:
+        selected, selection_reason = _select_candidate(candidates, page_area_preference_triggered)
 
     route_decision: Literal["accepted", "rectification", "pending_human_correction"] = (
         "accepted" if high_trust else "rectification"

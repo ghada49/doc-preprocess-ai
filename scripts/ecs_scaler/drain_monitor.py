@@ -13,7 +13,7 @@ Queue keys (from shared/schemas/queue.py):
   libraryai:page_tasks:dead_letter      — exhausted retries (warning only)
 
 DB checks:
-  jobs.status IN ('queued', 'running')
+  jobs.status IN ('queued', 'running') with at least one active/processable page
   job_pages.status IN ('queued', 'preprocessing', 'rectification',
                        'layout_detection', 'semantic_norm')
 
@@ -92,7 +92,14 @@ PAGE_ACTIVE_STATES = (
 def _check_db(conn) -> tuple[int, int]:
     with conn.cursor() as cur:
         cur.execute(
-            "SELECT COUNT(*) FROM jobs WHERE status IN ('queued', 'running')"
+            """
+            SELECT COUNT(DISTINCT j.id)
+            FROM jobs j
+            JOIN job_pages p ON p.job_id = j.id
+            WHERE j.status IN ('queued', 'running')
+              AND p.status = ANY(%s)
+            """,
+            (list(PAGE_ACTIVE_STATES),),
         )
         active_jobs = cur.fetchone()[0]
         cur.execute(

@@ -2,9 +2,27 @@ import { apiPost, getAccessToken, API_BASE_URL } from "./client";
 import type { PresignReadRequest, PresignReadResponse } from "@/types/api";
 
 export interface ArtifactPreviewBlob {
-  blob: Blob;
+  blob?: Blob;
+  url?: string;
   originalWidth: number | null;
   originalHeight: number | null;
+  previewWidth: number | null;
+  previewHeight: number | null;
+  scaleX: number | null;
+  scaleY: number | null;
+}
+
+interface ArtifactPreviewUrlResponse {
+  preview_url: string;
+  preview_uri: string;
+  expires_in: number;
+  width: number;
+  height: number;
+  source_width: number;
+  source_height: number;
+  scale_x: number;
+  scale_y: number;
+  cache_hit: boolean;
 }
 
 export class ArtifactPreviewError extends Error {
@@ -71,14 +89,18 @@ export async function fetchArtifactJson<T>(
 }
 
 /**
- * Call POST /v1/artifacts/preview and return the PNG blob plus source dimensions.
+ * Call POST /v1/artifacts/preview and return a displayable preview URL plus
+ * source dimensions. Production S3 previews come back as cached presigned URLs;
+ * local/file fallback still accepts the legacy streamed PNG response.
  */
 export async function fetchArtifactPreviewBlobUrl(
   uri: string,
   options: { pageIndex?: number; maxWidth?: number } = {}
 ): Promise<string> {
   const preview = await fetchArtifactPreviewBlob(uri, options);
-  return URL.createObjectURL(preview.blob);
+  if (preview.url) return preview.url;
+  if (preview.blob) return URL.createObjectURL(preview.blob);
+  throw new ArtifactPreviewError("We could not load this preview.");
 }
 
 export async function fetchArtifactPreviewBlob(
@@ -93,6 +115,7 @@ export async function fetchArtifactPreviewBlob(
   const body: Record<string, unknown> = { uri };
   if (options.pageIndex != null) body["page_index"] = options.pageIndex;
   if (options.maxWidth != null) body["max_width"] = options.maxWidth;
+  body["return_url"] = true;
 
   let response: Response;
   try {
@@ -119,13 +142,39 @@ export async function fetchArtifactPreviewBlob(
     throw new ArtifactPreviewError(detail, response.status);
   }
 
+  const contentType = response.headers.get("Content-Type") ?? "";
+  if (contentType.includes("application/json")) {
+    const json = (await response.json()) as ArtifactPreviewUrlResponse;
+    return {
+      url: json.preview_url,
+      originalWidth: json.source_width,
+      originalHeight: json.source_height,
+      previewWidth: json.width,
+      previewHeight: json.height,
+      scaleX: json.scale_x,
+      scaleY: json.scale_y,
+    };
+  }
+
   const originalWidth = parsePositiveIntHeader(response.headers.get("X-Original-Width"));
   const originalHeight = parsePositiveIntHeader(response.headers.get("X-Original-Height"));
+  const previewWidth = parsePositiveIntHeader(response.headers.get("X-Preview-Width"));
+  const previewHeight = parsePositiveIntHeader(response.headers.get("X-Preview-Height"));
 
   return {
     blob: await response.blob(),
     originalWidth,
     originalHeight,
+    previewWidth,
+    previewHeight,
+    scaleX:
+      originalWidth != null && previewWidth != null
+        ? previewWidth / originalWidth
+        : null,
+    scaleY:
+      originalHeight != null && previewHeight != null
+        ? previewHeight / originalHeight
+        : null,
   };
 }
 

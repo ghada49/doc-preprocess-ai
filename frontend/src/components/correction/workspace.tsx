@@ -82,7 +82,7 @@ export function CorrectionWorkspace({
   const [quadPoints, setQuadPoints] = useState<QuadPoint[] | null>(null);
   // splitX is stored in original image pixel coordinates (not preview pixels).
   const [splitX, setSplitX] = useState<number | null>(null);
-  // previewNaturalWidth: width of the preview PNG currently displayed (≤ 2400px).
+  // previewNaturalWidth: width of the preview PNG currently displayed.
   // Used to scale splitX between original pixels and preview pixels.
   const [previewNaturalWidth, setPreviewNaturalWidth] = useState<number | null>(null);
   const [previewNaturalHeight, setPreviewNaturalHeight] = useState<number | null>(null);
@@ -97,11 +97,10 @@ export function CorrectionWorkspace({
     isError: viewerIsError,
   } = useArtifactPreview(
     activeUri,
-    { maxWidth: 2400 },
+    { maxWidth: 1600 },
     {
       scopeKey: [jobId, pageNumber, subPageIndex ?? "root", activeSource],
-      staleTimeMs: 0,
-      refetchOnMount: "always",
+      staleTimeMs: 5 * 60 * 1000,
     }
   );
 

@@ -49,9 +49,11 @@ from shared.metrics import EEP_GEOMETRY_SELECTION_ROUTE
 from services.eep.app.gates.geometry_selection import (
     GeometrySelectionResult,
     PreprocessingGateConfig,
+    _area_fraction_bounds_for_material,
     run_geometry_selection,
 )
 from services.eep_worker.app.circuit_breaker import CircuitBreaker
+from services.eep_worker.app.presigned_inputs import maybe_presign_input_uri
 from shared.gpu.backend import BackendError, BackendErrorKind, GPUBackend
 from shared.schemas.geometry import GeometryResponse
 
@@ -365,8 +367,9 @@ async def _invoke_one(
 def _observe_geometry_metrics(
     iep1a: GeometryResponse | None,
     iep1b: GeometryResponse | None,
-    route_decision: str,
     session: Session,
+    selection_result: GeometrySelectionResult | None = None,
+    route_decision: str | None = None,
 ) -> None:
     """
     Feed geometry and selection-gate metrics into the drift detector.
@@ -380,7 +383,8 @@ def _observe_geometry_metrics(
       iep1a.geometry_confidence, iep1a.tta_structural_agreement_rate,
       iep1a.tta_prediction_variance, iep1a.split_detection_rate  (if IEP1A succeeded)
       iep1b.*  (same four fields, if IEP1B succeeded)
-      eep.geometry_selection_route.accepted_fraction  (binary: 1.0 = accepted)
+      eep.structural_agreement_rate  (binary: 1.0 when both models agree)
+      all eep.geometry_selection_route.* fractions (binary one-vs-rest)
     """
     if iep1a is not None:
         observe_and_check("iep1a.geometry_confidence", iep1a.geometry_confidence, session)
@@ -396,12 +400,61 @@ def _observe_geometry_metrics(
         )
         observe_and_check("iep1b.tta_prediction_variance", iep1b.tta_prediction_variance, session)
         observe_and_check("iep1b.split_detection_rate", float(iep1b.split_required), session)
-    observe_and_check(
-        "eep.geometry_selection_route.accepted_fraction",
-        1.0 if route_decision == "accepted" else 0.0,
-        session,
+    if iep1a is not None and iep1b is not None:
+        structurally_agreed = (
+            iep1a.page_count == iep1b.page_count
+            and iep1a.split_required == iep1b.split_required
+        )
+        observe_and_check("eep.structural_agreement_rate", float(structurally_agreed), session)
+
+    route_decision = route_decision or (
+        selection_result.route_decision if selection_result is not None else "unknown"
     )
+    route_flags = {
+        "accepted_fraction": route_decision == "accepted",
+        "review_fraction": route_decision in {"pending_human_correction", "review"},
+        "structural_disagreement_fraction": (
+            selection_result.structural_agreement is False
+            if selection_result is not None
+            else route_decision == "structural_disagreement"
+        ),
+        "sanity_failed_fraction": (
+            selection_result.review_reason == "geometry_sanity_failed"
+            if selection_result is not None
+            else route_decision == "geometry_sanity_failed"
+        ),
+        "split_confidence_low_fraction": (
+            selection_result.review_reason == "split_confidence_low"
+            if selection_result is not None
+            else route_decision == "split_confidence_low"
+        ),
+        "tta_variance_high_fraction": (
+            selection_result.review_reason == "tta_variance_high"
+            if selection_result is not None
+            else route_decision == "tta_variance_high"
+        ),
+    }
+    for suffix, active in route_flags.items():
+        observe_and_check(
+            f"eep.geometry_selection_route.{suffix}",
+            1.0 if active else 0.0,
+            session,
+        )
     EEP_GEOMETRY_SELECTION_ROUTE.labels(route=route_decision).inc()
+
+
+def _page_area_fractions(response: GeometryResponse | None) -> list[float]:
+    if response is None:
+        return []
+    return [region.page_area_fraction for region in response.pages]
+
+
+def _has_area_fraction_failure(selection_result: GeometrySelectionResult) -> bool:
+    for sanity in selection_result.sanity_results.values():
+        failed = sanity.get("failed_checks")
+        if isinstance(failed, list) and "area_fraction_plausible" in failed:
+            return True
+    return False
 
 
 # ── Main entry point ───────────────────────────────────────────────────────────
@@ -460,10 +513,13 @@ async def invoke_geometry_services(
                               (both failed or both skipped).  The gate is NOT
                               called in this case.
     """
+    request_image_uri = maybe_presign_input_uri(proxy_image_uri, iep1a_endpoint)
+    request_image_uri = maybe_presign_input_uri(request_image_uri, iep1b_endpoint)
+
     payload: dict[str, Any] = {
         "job_id": job_id,
         "page_number": page_number,
-        "image_uri": proxy_image_uri,
+        "image_uri": request_image_uri,
         "material_type": material_type,
     }
 
@@ -513,20 +569,43 @@ async def invoke_geometry_services(
     # ── Debug: log geometry gate outcome ──────────────────────────────────────
     logger.info(
         "geometry_gate: job=%s page=%d route=%s review=%s sanity=%s "
-        "tta_var=%s structural_agreement=%s",
+        "tta_var=%s structural_agreement=%s area_fractions=%s",
         job_id, page_number,
         selection_result.route_decision,
         selection_result.review_reason,
         selection_result.sanity_results,
         selection_result.tta_variance_per_model,
         selection_result.structural_agreement,
+        {
+            "iep1a": _page_area_fractions(outcome_a.response),
+            "iep1b": _page_area_fractions(outcome_b.response),
+        },
     )
+    if material_type == "newspaper" and _has_area_fraction_failure(selection_result):
+        logger.warning(
+            "newspaper_area_fraction_gate: job=%s page=%d route=%s review=%s "
+            "structural_agreement=%s area_bounds=%s mild_iep1b_min=%s "
+            "iep1a_area_fractions=%s iep1b_area_fractions=%s sanity=%s",
+            job_id,
+            page_number,
+            selection_result.route_decision,
+            selection_result.review_reason,
+            selection_result.structural_agreement,
+            _area_fraction_bounds_for_material(
+                gate_config or PreprocessingGateConfig(),
+                "newspaper",
+            ),
+            (gate_config or PreprocessingGateConfig()).newspaper_iep1b_mild_area_min_fraction,
+            _page_area_fractions(outcome_a.response),
+            _page_area_fractions(outcome_b.response),
+            selection_result.sanity_results,
+        )
 
     # ── Drift observation (best-effort; never blocks return) ─────────────────
     _observe_geometry_metrics(
         iep1a=outcome_a.response,
         iep1b=outcome_b.response,
-        route_decision=selection_result.route_decision,
+        selection_result=selection_result,
         session=session,
     )
 

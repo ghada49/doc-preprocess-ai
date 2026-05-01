@@ -6,14 +6,14 @@
 #   - prometheus.ecs.yml  → /etc/prometheus/prometheus.yml
 #   - alert_rules/        → /etc/prometheus/rules/
 #
-# The ECS-specific config uses Service Connect DNS (*.libraryai.local) and
+# The ECS-specific config uses the Service Connect aliases from deploy.yml and
 # omits the Alertmanager block (Alertmanager is not deployed in ECS).
 # Alert rules are still included so they are visible in the Prometheus UI.
 #
 # Build context: repository root.
 # Image pushed to: ACCOUNT_ID.dkr.ecr.REGION.amazonaws.com/libraryai-prometheus-ecs:latest
 
-FROM prom/prometheus:latest
+FROM prom/prometheus:v2.51.0
 
 # Override the default prometheus.yml with the ECS-specific config
 COPY monitoring/prometheus/prometheus.ecs.yml /etc/prometheus/prometheus.yml

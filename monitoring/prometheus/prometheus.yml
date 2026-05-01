@@ -26,24 +26,23 @@ scrape_configs:
       - targets: ["eep:8000"]
 
   # ── Background workers and recovery services ─────────────────────────────
-  # Workers use FQDN because their ECS Service Connect configs have no
-  # clientAliases (deploy.yml falls through to the default `*` case).
-  # Short-name resolution is only available for services with explicit aliases.
+  # Local docker-compose uses service names on the bridge network.  ECS uses
+  # the separate prometheus.ecs.yml with Service Connect FQDNs.
   - job_name: eep-worker
     static_configs:
-      - targets: ["eep-worker.libraryai.local:9100"]
+      - targets: ["eep-worker:9100"]
 
   - job_name: eep-recovery
     static_configs:
-      - targets: ["eep-recovery.libraryai.local:9101"]
+      - targets: ["eep-recovery:9101"]
 
   - job_name: shadow-worker
     static_configs:
-      - targets: ["shadow-worker.libraryai.local:9102"]
+      - targets: ["shadow-worker:9102"]
 
   - job_name: retraining-worker
     static_configs:
-      - targets: ["retraining-worker.libraryai.local:9104"]
+      - targets: ["retraining-worker:9104"]
 
 
   # ── IEP services ──────────────────────────────────────────────────────────

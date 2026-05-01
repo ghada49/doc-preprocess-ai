@@ -25,7 +25,7 @@ export function ArtifactImage({
   containerClassName,
   expiresIn = 300,
   fallbackText,
-  maxWidth = 1800,
+  maxWidth = 1600,
 }: ArtifactImageProps) {
   const [imgError, setImgError] = useState(false);
   const [imgLoaded, setImgLoaded] = useState(false);

@@ -75,7 +75,7 @@ const healthRateMeta: Array<{
     key: "human_review_throughput_rate",
     label: "Human Review Throughput",
     kind: "rate",
-    subtitle: "Human-corrected pages per hour over the selected window.",
+    subtitle: "Human-corrected pages per active hour.",
   },
 ];
 
@@ -187,6 +187,7 @@ export default function AdminDashboardPage() {
               }
               icon={Zap}
               iconColor="text-yellow-600"
+              sublabel="Active-hour average"
               loading={summaryLoading}
             />
             <KPICard
