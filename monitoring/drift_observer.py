@@ -62,6 +62,13 @@ from sqlalchemy.orm import Session
 
 from monitoring.drift_detector import DriftDetector
 from services.eep.app.db.models import RetrainingTrigger
+from shared.metrics import (
+    DRIFT_BASELINE_MEAN,
+    DRIFT_BASELINE_STD,
+    DRIFT_IS_DRIFTING,
+    DRIFT_WINDOW_MEAN,
+    DRIFT_WINDOW_OBSERVATIONS,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +209,10 @@ def observe_and_check(
         _detector_instance = detector if detector is not None else get_detector()
         _detector_instance.observe(metric, value)
 
+        # Emit Prometheus gauges so Grafana can show window state from page 1,
+        # regardless of whether drift has fired yet.
+        _emit_drift_gauges(metric, _detector_instance)
+
         if not _detector_instance.is_drifting(metric):
             return
 
@@ -229,6 +240,34 @@ def observe_and_check(
 
 
 # ── Internal helpers ──────────────────────────────────────────────────────────
+
+_baselines_exported = False
+
+
+def _export_baselines_once(detector: DriftDetector) -> None:
+    """
+    Push static baseline mean/std into Prometheus Gauges once per process.
+
+    Called on the first observation so that DRIFT_BASELINE_MEAN and
+    DRIFT_BASELINE_STD are available in Grafana even before any drift fires.
+    """
+    global _baselines_exported
+    if _baselines_exported:
+        return
+    for metric_key, baseline in detector._baselines.items():
+        DRIFT_BASELINE_MEAN.labels(metric=metric_key).set(baseline.mean)
+        DRIFT_BASELINE_STD.labels(metric=metric_key).set(baseline.std)
+    _baselines_exported = True
+
+
+def _emit_drift_gauges(metric: str, detector: DriftDetector) -> None:
+    """Update per-metric drift window gauges after each observation."""
+    _export_baselines_once(detector)
+    window_mean = detector.window_mean(metric)
+    if window_mean is not None:
+        DRIFT_WINDOW_MEAN.labels(metric=metric).set(window_mean)
+    DRIFT_WINDOW_OBSERVATIONS.labels(metric=metric).set(detector.window_size(metric))
+    DRIFT_IS_DRIFTING.labels(metric=metric).set(1.0 if detector.is_drifting(metric) else 0.0)
 
 
 def _is_in_cooldown(db: Session, trigger_type: str, now: datetime) -> bool:

@@ -357,6 +357,41 @@ IEP2B_GPU_INFERENCE_SECONDS = Histogram(
     buckets=_GPU_SECONDS_BUCKETS,
 )
 
+# ── Drift detector window state ───────────────────────────────────────────────
+# Updated by drift_observer.observe_and_check after every observation so that
+# Grafana can show current window mean vs baseline from the very first page
+# processed, without waiting for a drift trigger to fire.
+
+DRIFT_WINDOW_MEAN = Gauge(
+    "drift_window_mean",
+    "Current sliding-window mean for a monitored drift metric",
+    ["metric"],
+)
+
+DRIFT_WINDOW_OBSERVATIONS = Gauge(
+    "drift_window_observations",
+    "Number of observations currently in the sliding window for a drift metric",
+    ["metric"],
+)
+
+DRIFT_IS_DRIFTING = Gauge(
+    "drift_is_drifting",
+    "1 if the metric is currently drifting (window mean > threshold_std σ from baseline), else 0",
+    ["metric"],
+)
+
+DRIFT_BASELINE_MEAN = Gauge(
+    "drift_baseline_mean",
+    "Configured baseline mean for a monitored drift metric (static, from baselines.json)",
+    ["metric"],
+)
+
+DRIFT_BASELINE_STD = Gauge(
+    "drift_baseline_std",
+    "Configured baseline std for a monitored drift metric (static, from baselines.json)",
+    ["metric"],
+)
+
 # ── Shadow worker metrics ─────────────────────────────────────────────────────
 
 SHADOW_TASKS_ENQUEUED = Counter(
