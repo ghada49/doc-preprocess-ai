@@ -20,6 +20,7 @@ def _make_redis(task_json: str) -> MagicMock:
     r = MagicMock()
     r.lrange.return_value = [task_json]
     r.llen.return_value = 0
+    r.exists.return_value = 0
     pipe = MagicMock()
     pipe.execute.return_value = None
     r.pipeline.return_value = pipe

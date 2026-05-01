@@ -42,8 +42,10 @@ from services.eep.app.queue import (
     ClaimedTask,
     ack_task,
     claim_task,
+    clear_task_heartbeat,
     enqueue_page_task,
     fail_task,
+    record_task_heartbeat,
 )
 from services.eep_worker.app.circuit_breaker import CircuitBreaker, CircuitBreakerConfig
 from services.eep_worker.app.concurrency import WorkerSlotContext, initialize_semaphore
@@ -133,6 +135,7 @@ class WorkerConfig:
     poll_timeout_seconds: float
     max_concurrent_pages: int
     max_task_retries: int
+    task_heartbeat_interval_seconds: float
     layout_artifact_io_timeout_seconds: float
     layout_artifact_io_attempts: int
     layout_artifact_io_backoff_seconds: float
@@ -154,6 +157,8 @@ class WorkerConfig:
     iep2b_circuit_breaker: CircuitBreaker
     iep1e_endpoint: str
     iep1e_circuit_breaker: CircuitBreaker
+    iep1e_ready_timeout_seconds: float
+    iep1e_ready_poll_interval_seconds: float
     iep1d_scaler: Iep1dScaler
 
 
@@ -220,6 +225,10 @@ def build_worker_config(
         poll_timeout_seconds=_env_float("WORKER_POLL_TIMEOUT_SECONDS", 5.0),
         max_concurrent_pages=_env_int("MAX_CONCURRENT_PAGES", 20),
         max_task_retries=_env_int("MAX_TASK_RETRIES", MAX_TASK_RETRIES),
+        task_heartbeat_interval_seconds=max(
+            5.0,
+            _env_float("WORKER_TASK_HEARTBEAT_SECONDS", 60.0),
+        ),
         layout_artifact_io_timeout_seconds=_env_float(
             "LAYOUT_ARTIFACT_IO_TIMEOUT_SECONDS",
             45.0,
@@ -250,6 +259,8 @@ def build_worker_config(
         iep2b_circuit_breaker=CircuitBreaker("iep2b", cb_cfg),
         iep1e_endpoint=_service_endpoint("IEP1E_URL", "http://iep1e:8007", "/v1/semantic-norm"),
         iep1e_circuit_breaker=CircuitBreaker("iep1e", cb_cfg),
+        iep1e_ready_timeout_seconds=_env_float("IEP1E_READY_TIMEOUT_SECONDS", 120.0),
+        iep1e_ready_poll_interval_seconds=_env_float("IEP1E_READY_POLL_INTERVAL_SECONDS", 5.0),
         iep1d_scaler=build_iep1d_scaler(redis_client),
     )
 
@@ -817,6 +828,49 @@ def _page_task_for(page: JobPage) -> PageTask:
     )
 
 
+def _iep1e_ready_timeout(config: Any) -> float:
+    return float(getattr(config, "iep1e_ready_timeout_seconds", 120.0))
+
+
+def _iep1e_ready_poll_interval(config: Any) -> float:
+    return float(getattr(config, "iep1e_ready_poll_interval_seconds", 5.0))
+
+
+async def _run_task_heartbeat(
+    redis_client: redis_lib.Redis,
+    claimed: ClaimedTask,
+    *,
+    interval_seconds: float,
+    watchdog: TaskWatchdog | None = None,
+) -> None:
+    """
+    Refresh the live-owner marker for one claimed task until cancelled.
+
+    Recovery uses this Redis TTL to distinguish a long-running live task from
+    an abandoned task in the processing list.  The in-process watchdog is also
+    refreshed from this loop so a healthy event loop does not self-requeue long
+    but active work.
+    """
+    ttl_seconds = max(5, int(interval_seconds * 3))
+    while True:
+        try:
+            record_task_heartbeat(
+                redis_client,
+                claimed.task.task_id,
+                claimed.worker_id,
+                ttl_seconds,
+            )
+            if watchdog is not None:
+                watchdog.refresh(claimed.task.task_id)
+        except redis_lib.RedisError:
+            logger.exception(
+                "worker_loop: task heartbeat failed task=%s page_id=%s",
+                claimed.task.task_id,
+                claimed.task.page_id,
+            )
+        await asyncio.sleep(interval_seconds)
+
+
 def _mime_type_for_uri(uri: str) -> str:
     if uri.lower().endswith(".png"):
         return "image/png"
@@ -1076,11 +1130,12 @@ async def _call_layout_service(
     return None
 
 
-_IEP1E_READY_POLL_INTERVAL_SECONDS: float = 5.0
-_IEP1E_READY_TIMEOUT_SECONDS: float = 600.0  # covers model download + init on cold start
-
-
-async def _wait_for_iep1e_ready(endpoint: str) -> bool:
+async def _wait_for_iep1e_ready(
+    endpoint: str,
+    *,
+    timeout_seconds: float,
+    poll_interval_seconds: float,
+) -> bool:
     """
     Poll iep1e /ready until it returns HTTP 200 or the timeout expires.
 
@@ -1099,7 +1154,9 @@ async def _wait_for_iep1e_ready(endpoint: str) -> bool:
     """
     parsed = urlparse(endpoint)
     ready_url = f"{parsed.scheme}://{parsed.netloc}/ready"
-    deadline = asyncio.get_event_loop().time() + _IEP1E_READY_TIMEOUT_SECONDS
+    timeout_seconds = max(0.0, timeout_seconds)
+    poll_interval_seconds = max(0.5, poll_interval_seconds)
+    deadline = asyncio.get_event_loop().time() + timeout_seconds
 
     async with httpx.AsyncClient() as client:
         while True:
@@ -1107,7 +1164,7 @@ async def _wait_for_iep1e_ready(endpoint: str) -> bool:
             if remaining <= 0:
                 logger.warning(
                     "worker_loop: iep1e not ready after %.0fs — skipping",
-                    _IEP1E_READY_TIMEOUT_SECONDS,
+                    timeout_seconds,
                 )
                 return False
             try:
@@ -1121,7 +1178,7 @@ async def _wait_for_iep1e_ready(endpoint: str) -> bool:
             except (httpx.ConnectError, httpx.TimeoutException, httpx.RequestError):
                 pass  # container still starting
 
-            await asyncio.sleep(_IEP1E_READY_POLL_INTERVAL_SECONDS)
+            await asyncio.sleep(min(poll_interval_seconds, max(0.0, remaining)))
 
 
 async def _call_iep1e(
@@ -1135,6 +1192,8 @@ async def _call_iep1e(
     endpoint: str,
     backend: GPUBackend,
     cb: CircuitBreaker,
+    ready_timeout_seconds: float,
+    ready_poll_interval_seconds: float,
 ) -> SemanticNormResponse | None:
     """
     Call IEP1E POST /v1/semantic-norm.  Never raises — all failures return None.
@@ -1168,8 +1227,25 @@ async def _call_iep1e(
     # /health returns 200 immediately (FastAPI up), but /ready returns 503 until
     # PaddlePaddle models are loaded.  Waiting here prevents warm_inference_timeout
     # from firing on the first request after a container restart.
-    if not await _wait_for_iep1e_ready(endpoint):
+    logger.info(
+        "worker_loop: iep1e readiness wait started job=%s page=%d timeout=%.0fs",
+        job_id,
+        page_number,
+        ready_timeout_seconds,
+    )
+    if not await _wait_for_iep1e_ready(
+        endpoint,
+        timeout_seconds=ready_timeout_seconds,
+        poll_interval_seconds=ready_poll_interval_seconds,
+    ):
+        cb.record_failure(None)
+        logger.warning(
+            "worker_loop: iep1e readiness timeout job=%s page=%d; using fallback",
+            job_id,
+            page_number,
+        )
         return None
+    logger.info("worker_loop: iep1e ready job=%s page=%d", job_id, page_number)
 
     payload: dict[str, object] = {
         "job_id": job_id,
@@ -1452,6 +1528,17 @@ async def _run_preprocessing(
         split_loader = make_cv2_image_loader(split_storage)
 
         try:
+            split_started_at = time.monotonic()
+            logger.info(
+                "worker_loop: split normalization started job=%s page=%d "
+                "full_res=%dx%d left_uri=%s right_uri=%s",
+                job.job_id,
+                page.page_number,
+                full_res_image.shape[1],
+                full_res_image.shape[0],
+                left_output_uri,
+                right_output_uri,
+            )
             split_outcome: SplitOutcome = await run_split_normalization(
                 full_res_image=full_res_image,
                 selected_geometry=selection.selected.response,
@@ -1480,6 +1567,15 @@ async def _run_preprocessing(
                 session=session,
                 iep1d_execution_timeout_seconds=config.iep1d_execution_timeout_seconds,
                 gate_config=gate_config,
+            )
+            logger.info(
+                "worker_loop: split normalization done job=%s page=%d "
+                "left_route=%s right_route=%s elapsed_ms=%.1f",
+                job.job_id,
+                page.page_number,
+                split_outcome.left.route,
+                split_outcome.right.route,
+                (time.monotonic() - split_started_at) * 1000.0,
             )
         except Exception as exc:
             raise RetryableTaskError(f"split normalization failed: {exc}") from exc
@@ -1516,10 +1612,19 @@ async def _run_preprocessing(
                     endpoint=config.iep1e_endpoint,
                     backend=config.backend,
                     cb=config.iep1e_circuit_breaker,
+                    ready_timeout_seconds=_iep1e_ready_timeout(config),
+                    ready_poll_interval_seconds=_iep1e_ready_poll_interval(config),
                 )
                 if _split_sem_result is not None and _split_sem_result.pages:
                     for _sp in _split_sem_result.pages:
                         _split_iep1e_uri_map[_sp.sub_page_index] = _sp.oriented_uri
+                else:
+                    logger.info(
+                        "worker_loop: split iep1e fallback job=%s page=%d; "
+                        "using split-normalized URIs",
+                        job.job_id,
+                        page.page_number,
+                    )
 
                     # ── Blank-page rotation inheritance ──────────────────────
                     # If exactly one page has no OCR text (blank page),
@@ -1813,14 +1918,26 @@ async def _run_preprocessing(
         _sync_job_summary(session, job)
         _update_job_reading_direction(job, _split_direction)
         _commit(session)
+        enqueued_children = 0
         for child_task in split_children_to_enqueue:
             try:
                 enqueue_page_task(redis_client, child_task)
+                enqueued_children += 1
             except redis_lib.RedisError:
                 logger.exception(
                     "worker_loop: failed to enqueue committed split child page_id=%s",
                     child_task.page_id,
                 )
+        logger.info(
+            "worker_loop: split complete job=%s page=%d children=%d enqueued=%d "
+            "reading_direction=%s elapsed_ms=%.1f",
+            job.job_id,
+            page.page_number,
+            2,
+            enqueued_children,
+            _split_direction,
+            (time.monotonic() - task_started_at) * 1000.0,
+        )
         return "ack"
 
     # ── Single-page normalization ──────────────────────────────────────────────
@@ -2063,12 +2180,21 @@ async def _run_preprocessing(
             endpoint=config.iep1e_endpoint,
             backend=config.backend,
             cb=config.iep1e_circuit_breaker,
+            ready_timeout_seconds=_iep1e_ready_timeout(config),
+            ready_poll_interval_seconds=_iep1e_ready_poll_interval(config),
         )
         if (
             _sem_norm_result is not None
             and _sem_norm_result.ordered_page_uris
         ):
             _sem_norm_uri = _sem_norm_result.ordered_page_uris[0]
+        else:
+            logger.info(
+                "worker_loop: iep1e fallback job=%s page=%d sub=%s; using original URI",
+                job.job_id,
+                page.page_number,
+                page.sub_page_index,
+            )
     except Exception:
         logger.exception(
             "worker_loop: iep1e call raised unexpectedly job=%s page=%d; "
@@ -2551,6 +2677,8 @@ async def _run_split_group_semantic_norm(
         endpoint=config.iep1e_endpoint,
         backend=config.backend,
         cb=config.iep1e_circuit_breaker,
+        ready_timeout_seconds=_iep1e_ready_timeout(config),
+        ready_poll_interval_seconds=_iep1e_ready_poll_interval(config),
     )
 
     direction = sem_result.reading_direction if sem_result is not None else "unresolved"
@@ -2761,6 +2889,8 @@ async def _run_semantic_norm(
         endpoint=config.iep1e_endpoint,
         backend=config.backend,
         cb=config.iep1e_circuit_breaker,
+        ready_timeout_seconds=_iep1e_ready_timeout(config),
+        ready_poll_interval_seconds=_iep1e_ready_poll_interval(config),
     )
 
     oriented_uri = image_uri
@@ -3307,6 +3437,7 @@ async def run_worker_loop(
                 claimed_stale.task.retry_count,
             )
             try:
+                clear_task_heartbeat(redis_client, task_id)
                 fail_task(redis_client, claimed_stale, max_retries=config.max_task_retries)
             except redis_lib.RedisError:
                 logger.exception(
@@ -3331,6 +3462,7 @@ async def run_worker_loop(
     try:
         while True:
             claimed: ClaimedTask | None = None
+            heartbeat_task: asyncio.Task[None] | None = None
             try:
                 async with WorkerSlotContext(redis_client):
                     try:
@@ -3354,6 +3486,29 @@ async def run_worker_loop(
                         watchdog.register(claimed.task.task_id)
                         _claimed_tasks[claimed.task.task_id] = claimed
 
+                    try:
+                        record_task_heartbeat(
+                            redis_client,
+                            claimed.task.task_id,
+                            claimed.worker_id,
+                            max(5, int(config.task_heartbeat_interval_seconds * 3)),
+                        )
+                    except redis_lib.RedisError:
+                        logger.exception(
+                            "worker_loop: initial task heartbeat failed task=%s page_id=%s",
+                            claimed.task.task_id,
+                            claimed.task.page_id,
+                        )
+                    heartbeat_task = asyncio.create_task(
+                        _run_task_heartbeat(
+                            redis_client,
+                            claimed,
+                            interval_seconds=config.task_heartbeat_interval_seconds,
+                            watchdog=watchdog,
+                        ),
+                        name=f"task-heartbeat-{claimed.task.task_id}",
+                    )
+
                     await process_page_task(
                         claimed,
                         config,
@@ -3361,9 +3516,27 @@ async def run_worker_loop(
                         session_factory=session_factory,
                     )
             finally:
+                if heartbeat_task is not None:
+                    heartbeat_task.cancel()
+                    try:
+                        await heartbeat_task
+                    except asyncio.CancelledError:
+                        pass
                 if watchdog is not None and "claimed" in locals() and claimed is not None:
                     watchdog.deregister(claimed.task.task_id)
                     _claimed_tasks.pop(claimed.task.task_id, None)
+                if "claimed" in locals() and claimed is not None:
+                    try:
+                        await asyncio.to_thread(
+                            clear_task_heartbeat,
+                            redis_client,
+                            claimed.task.task_id,
+                        )
+                    except redis_lib.RedisError:
+                        logger.exception(
+                            "worker_loop: could not clear task heartbeat task=%s",
+                            claimed.task.task_id,
+                        )
     finally:
         if watchdog_task is not None:
             watchdog_task.cancel()

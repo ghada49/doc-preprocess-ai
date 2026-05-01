@@ -354,14 +354,20 @@ jobs:
             --no-cli-pager
           echo "Started libraryai-eep-worker desired=$DESIRED (RunPod URLs injected)"
 
-          for SVC in eep-recovery shadow-worker; do
-            aws ecs update-service \
-              --cluster "$ECS_CLUSTER" \
-              --service "libraryai-${SVC}" \
-              --desired-count "$DESIRED" \
-              --no-cli-pager
-            echo "Started libraryai-${SVC} desired=$DESIRED"
-          done
+          # eep-recovery mutates Redis queues and must run as a singleton.
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service libraryai-eep-recovery \
+            --desired-count 1 \
+            --no-cli-pager
+          echo "Started libraryai-eep-recovery desired=1"
+
+          aws ecs update-service \
+            --cluster "$ECS_CLUSTER" \
+            --service libraryai-shadow-worker \
+            --desired-count "$DESIRED" \
+            --no-cli-pager
+          echo "Started libraryai-shadow-worker desired=$DESIRED"
 
       # NOTE: libraryai-iep1d is a rescue-path service — NOT started here.
       - name: Wait for workers to become healthy

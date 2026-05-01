@@ -252,9 +252,12 @@ def _do_scale_up() -> None:
                 raise RuntimeError(f"failed to update {svc}")
 
     # 4. Remaining worker services ─────────────────────────────────────────────
-        for svc in ("libraryai-eep-recovery", "libraryai-shadow-worker"):
-            if not _update_service(ecs_client, cluster, svc, worker_desired):
-                raise RuntimeError(f"failed to update {svc}")
+        # eep-recovery mutates Redis queues and must run as a singleton.  The
+        # reconciler also takes a Redis lock as a defense against mis-scaling.
+        if not _update_service(ecs_client, cluster, "libraryai-eep-recovery", 1):
+            raise RuntimeError("failed to update libraryai-eep-recovery")
+        if not _update_service(ecs_client, cluster, "libraryai-shadow-worker", worker_desired):
+            raise RuntimeError("failed to update libraryai-shadow-worker")
     except Exception as exc:  # noqa: BLE001
         logger.error("normal_scaler: AWS service startup failed: %s — rolling back scale-up.", exc)
         _rollback_aws_services(ecs_client, cluster)

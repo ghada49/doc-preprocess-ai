@@ -69,7 +69,7 @@ from services.eep.app.db.lineage import update_lineage_completion
 from services.eep.app.db.models import Job, JobPage, PageLineage
 from services.eep.app.db.page_state import advance_page_state
 from services.eep.app.jobs.summary import derive_job_status, leaf_pages_from_pages
-from services.eep.app.queue import CLAIMS_KEY, MAX_TASK_RETRIES
+from services.eep.app.queue import CLAIMS_KEY, MAX_TASK_RETRIES, has_live_task_heartbeat
 from shared.schemas.queue import (
     QUEUE_DEAD_LETTER,
     QUEUE_PAGE_TASKS,
@@ -85,6 +85,14 @@ __all__ = [
 ]
 
 logger = logging.getLogger(__name__)
+
+_RECONCILER_LOCK_KEY = "libraryai:recovery:reconciler_lock"
+_RECONCILER_UNLOCK_SCRIPT = """
+if redis.call("get", KEYS[1]) == ARGV[1] then
+    return redis.call("del", KEYS[1])
+end
+return 0
+"""
 
 # ── State classification ────────────────────────────────────────────────────────
 
@@ -546,6 +554,14 @@ def reconcile_once(
 
         # ── queued — worker crashed before CAS transition ─────────────────────
         elif page.status == "queued":
+            if has_live_task_heartbeat(r, task.task_id):
+                logger.debug(
+                    "reconciler: page %s still has live worker heartbeat (task=%s); skipping",
+                    task.page_id,
+                    task.task_id,
+                )
+                skipped_active += 1
+                continue
             logger.warning(
                 "reconciler: page %s stuck in 'queued' (task %s); requeuing",
                 task.page_id,
@@ -569,6 +585,16 @@ def reconcile_once(
 
         # ── Active states — stale detection ───────────────────────────────────
         elif page.status in _ACTIVE_STATES:
+            if has_live_task_heartbeat(r, task.task_id):
+                logger.debug(
+                    "reconciler: page %s active with live worker heartbeat "
+                    "(status=%s, task=%s); skipping",
+                    task.page_id,
+                    page.status,
+                    task.task_id,
+                )
+                skipped_active += 1
+                continue
             timeout_seconds = _timeout_seconds_for_page(page, cfg)
             if _is_stale(page, timeout_seconds):
                 logger.warning(
@@ -636,6 +662,23 @@ def reconcile_once(
     )
 
 
+# ── Distributed lock helpers ───────────────────────────────────────────────────
+
+
+def _try_acquire_reconciler_lock(
+    r: redis_lib.Redis,
+    token: str,
+    ttl_seconds: int,
+) -> bool:
+    """Acquire the cluster-wide reconciler lock for one reconciliation pass."""
+    return bool(r.set(_RECONCILER_LOCK_KEY, token, nx=True, ex=ttl_seconds))
+
+
+def _release_reconciler_lock(r: redis_lib.Redis, token: str) -> None:
+    """Release the reconciler lock only if this process still owns it."""
+    r.eval(_RECONCILER_UNLOCK_SCRIPT, 1, _RECONCILER_LOCK_KEY, token)
+
+
 # ── Async loop wrapper ─────────────────────────────────────────────────────────
 
 
@@ -668,6 +711,17 @@ async def run_reconciliation_loop(
     )
     while True:
         await asyncio.sleep(cfg.check_interval_seconds)
+        lock_token = str(uuid4())
+        lock_ttl = max(5, int(cfg.check_interval_seconds * 2))
+        try:
+            lock_acquired = _try_acquire_reconciler_lock(r, lock_token, lock_ttl)
+        except Exception:
+            logger.exception("reconciler: could not acquire distributed lock")
+            continue
+        if not lock_acquired:
+            logger.debug("reconciler: another instance holds the distributed lock; skipping cycle")
+            continue
+
         session = session_factory()
         try:
             result = reconcile_once(r, session, cfg)
@@ -689,3 +743,7 @@ async def run_reconciliation_loop(
             logger.exception("reconciler: error during reconciliation cycle")
         finally:
             session.close()
+            try:
+                _release_reconciler_lock(r, lock_token)
+            except Exception:
+                logger.exception("reconciler: could not release distributed lock")

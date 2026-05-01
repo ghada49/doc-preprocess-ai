@@ -33,6 +33,7 @@ def _make_redis(*, queued: list[str] | None = None, processing: list[str] | None
 
     r.lrange.side_effect = _lrange
     r.llen.return_value = len(dead or [])
+    r.exists.return_value = 0
     return r
 
 

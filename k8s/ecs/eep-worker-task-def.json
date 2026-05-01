@@ -27,6 +27,7 @@
         { "name": "GOOGLE_PROCESSOR_ID_LAYOUT",  "value": "GOOGLE_PROCESSOR_ID_LAYOUT_VALUE" },
         { "name": "S3_BUCKET_NAME", "value": "libraryai2" },
         { "name": "WORKER_TASK_TIMEOUT_SECONDS", "value": "900" },
+        { "name": "WORKER_TASK_HEARTBEAT_SECONDS", "value": "60" },
         { "name": "MAX_CONCURRENT_PAGES", "value": "4" },
         { "name": "GPU_BACKEND",   "value": "local" },
         { "name": "PROMETHEUS_MULTIPROC_DIR", "value": "/tmp/prometheus_multiproc" },
@@ -45,6 +46,8 @@
         { "name": "IEP1D_READY_TIMEOUT_SECONDS",         "value": "300" },
         { "name": "IEP1D_SCALE_DOWN_AFTER_IDLE_SECONDS", "value": "300" },
         { "name": "IEP1E_URL", "value": "IEP1E_URL_VALUE" },
+        { "name": "IEP1E_READY_TIMEOUT_SECONDS", "value": "120" },
+        { "name": "IEP1E_READY_POLL_INTERVAL_SECONDS", "value": "5" },
         { "name": "IEP2A_URL", "value": "IEP2A_URL_VALUE" },
         { "name": "IEP2B_URL", "value": "IEP2B_URL_VALUE" }
       ],

@@ -44,6 +44,7 @@ from services.eep_recovery.app.reconciler import (
     ReconcilerConfig,
     ReconciliationResult,
     reconcile_once,
+    run_reconciliation_loop,
 )
 from services.eep_worker.app.watchdog import StaleTaskReport, TaskWatchdog, WatchdogConfig
 from shared.schemas.queue import (
@@ -97,6 +98,7 @@ def _make_redis(
     r = MagicMock()
     r.lrange.return_value = processing_items or []
     r.llen.return_value = dlq_size
+    r.exists.return_value = 0
 
     # Pipeline mock that records calls and has .execute()
     pipe = MagicMock()
@@ -137,6 +139,14 @@ class TestTaskWatchdog:
         wdog = TaskWatchdog()
         wdog.deregister("nonexistent")  # must not raise
         assert wdog.active_count == 0
+
+    def test_refresh_updates_active_timestamp(self) -> None:
+        wdog = TaskWatchdog()
+        wdog.register("t1")
+        original = wdog._active["t1"]  # noqa: SLF001 - white-box watchdog timing test
+        time.sleep(0.001)
+        wdog.refresh("t1")
+        assert wdog._active["t1"] > original  # noqa: SLF001
 
     def test_check_stale_empty_when_no_tasks(self) -> None:
         wdog = TaskWatchdog()
@@ -306,6 +316,21 @@ class TestReconcileOnce:
         assert result.requeued_stale == 1
         assert result.skipped_active == 0
 
+    def test_stale_preprocessing_with_live_heartbeat_is_skipped(self) -> None:
+        """A live worker heartbeat prevents premature recovery requeue."""
+        old_ts = datetime.now(tz=timezone.utc) - timedelta(seconds=1000)
+        page = _make_page(status="preprocessing", status_updated_at=old_ts)
+        r = _make_redis(processing_items=[_TASK_JSON])
+        r.exists.return_value = 1
+        session = MagicMock()
+        session.get.return_value = page
+
+        result = reconcile_once(r, session, ReconcilerConfig(task_timeout_seconds=900.0))
+
+        assert result.requeued_stale == 0
+        assert result.skipped_active == 1
+        r.pipeline.assert_not_called()
+
     def test_stale_page_at_max_retries_is_dead_lettered(self) -> None:
         """Stale page with retry_count >= max_task_retries → dead-lettered."""
         old_ts = datetime.now(tz=timezone.utc) - timedelta(seconds=1000)
@@ -371,3 +396,22 @@ class TestReconcileOnce:
         """duration_ms is always >= 0."""
         result = _run_reconcile(processing_items=[])
         assert result.duration_ms >= 0.0
+
+
+class TestReconciliationLoop:
+    @pytest.mark.asyncio
+    async def test_loop_skips_cycle_when_lock_is_held(self) -> None:
+        """Only one recovery instance should mutate Redis queues per cycle."""
+        r = MagicMock()
+        r.set.return_value = None
+        session_factory = MagicMock()
+        config = ReconcilerConfig(check_interval_seconds=0.01)
+
+        task = asyncio.create_task(run_reconciliation_loop(r, session_factory, config))
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+
+        assert r.set.called
+        session_factory.assert_not_called()

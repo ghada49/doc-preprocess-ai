@@ -138,6 +138,17 @@ class TaskWatchdog:
         """
         self._active.pop(task_id, None)
 
+    def refresh(self, task_id: str) -> None:
+        """
+        Refresh the active timestamp for a live task.
+
+        Workers call this from their Redis heartbeat loop.  If the worker event
+        loop is blocked or the process dies, this timestamp stops moving and
+        the watchdog can still report the task as stale.
+        """
+        if task_id in self._active:
+            self._active[task_id] = time.monotonic()
+
     @property
     def active_count(self) -> int:
         """Number of tasks currently registered as active."""
