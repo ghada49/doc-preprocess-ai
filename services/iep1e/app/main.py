@@ -16,6 +16,7 @@ Endpoints:
 from __future__ import annotations
 
 import logging
+import threading
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
 
@@ -32,10 +33,15 @@ logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(_: FastAPI) -> AsyncGenerator[None, None]:
-    try:
-        initialize_model()
-    except Exception:
-        logger.exception("iep1e: unexpected error during OCR engine warmup")
+    # PaddleOCR init blocks the event loop and delays uvicorn from opening the
+    # port — ECS health checks see connection refused and kill the container.
+    # Running init in a daemon thread lets uvicorn reach yield immediately so
+    # /health responds while the model loads in the background.
+    # eep-worker polls /ready (which stays 503 until _loaded=True) before
+    # sending inference, so it waits for actual readiness independently.
+    thread = threading.Thread(target=initialize_model, daemon=True, name="iep1e-model-init")
+    thread.start()
+    logger.info("iep1e: model initialisation started in background thread")
     yield
 
 
