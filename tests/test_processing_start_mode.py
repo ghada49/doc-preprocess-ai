@@ -919,8 +919,11 @@ class TestDrainWaitsForActiveWork(unittest.TestCase):
         q["shadow_processing"] = 1
         self.assertFalse(self.dm._is_drained(q, 0, 0))
 
-    def test_not_drained_when_active_jobs_nonzero(self):
-        self.assertFalse(self.dm._is_drained(self._empty(), 2, 0))
+    def test_drained_when_active_jobs_nonzero_but_active_pages_zero(self):
+        # active_jobs is no longer a drain gate — job status rows lag behind page
+        # state transitions. active_pages=0 with empty queues is sufficient for
+        # drain. active_jobs is reported for visibility only.
+        self.assertTrue(self.dm._is_drained(self._empty(), 2, 0))
 
     def test_not_drained_when_active_pages_nonzero(self):
         """Active pages = pages in processable states (queued/preprocessing etc.)"""

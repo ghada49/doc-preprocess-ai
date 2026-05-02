@@ -39,7 +39,7 @@ jobs:
           - service: eep
             context: .
             dockerfile: services/eep/Dockerfile
-            paths: services/eep shared
+            paths: services/eep shared scripts
           - service: eep-worker
             context: .
             dockerfile: services/eep_worker/Dockerfile
