@@ -48,7 +48,7 @@ _DEFAULT_ASPECT_RATIO_BOUNDS: dict[str, tuple[float, float]] = {
 
 _DEFAULT_AREA_FRACTION_BOUNDS: dict[str, tuple[float, float]] = {
     "book": (0.15, 1.0),
-    "newspaper": (0.05, 1.0),
+    "newspaper": (0.10, 1.0),
     "archival_document": (0.15, 1.0),
     "microfilm": (0.15, 1.0),
 }
