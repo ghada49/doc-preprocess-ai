@@ -101,6 +101,7 @@ def configure_observability(
     *,
     service_name: str,
     health_checks: list[Callable[[], Any]] | None = None,
+    metrics_before_collect: Callable[[], Any] | None = None,
 ) -> None:
     """
     Wire shared observability onto a FastAPI app in one call.
@@ -115,10 +116,13 @@ def configure_observability(
                        async) passed to ``make_health_router``.  Services add
                        their own checks in later phases (e.g. DB ping, model
                        load check).
+        metrics_before_collect: Optional hook invoked immediately before
+                       rendering ``/metrics``. Services can use this to refresh
+                       DB-backed gauges.
     """
     from shared.health import make_health_router
     from shared.metrics import make_metrics_router
 
     app.include_router(make_health_router(checks=health_checks))
-    app.include_router(make_metrics_router())
+    app.include_router(make_metrics_router(before_collect=metrics_before_collect))
     app.add_middleware(RequestTracingMiddleware, service_name=service_name)

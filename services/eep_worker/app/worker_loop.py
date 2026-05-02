@@ -93,7 +93,7 @@ from services.eep_worker.app.rescue_step import RescueOutcome, run_rescue_flow
 from services.eep_worker.app.task import build_gate_config
 from services.eep_worker.app.watchdog import TaskWatchdog
 from shared.gpu.backend import BackendError, GPUBackend, LocalHTTPBackend, RunpodBackend
-from shared.metrics import EEP_RECTIFICATION_POLICY_SKIPS
+from shared.metrics import EEP_RECTIFICATION_POLICY_SKIPS, EEP_REQUESTS_TOTAL
 from shared.io.storage import get_backend
 from shared.schemas.iep0 import BatchClassifyResponse, ClassifyResponse
 from shared.schemas.layout import (
@@ -3440,6 +3440,7 @@ async def process_page_task(
         elif page.status in _ACK_ONLY_STATES:
             resolution = "ack"
         elif page.status in {"queued", "preprocessing", "rectification"}:
+            EEP_REQUESTS_TOTAL.inc()
             resolution = await _run_preprocessing(
                 session=session,
                 page=page,
@@ -3449,6 +3450,7 @@ async def process_page_task(
                 task_started_at=time.monotonic(),
             )
         elif page.status == "semantic_norm":
+            EEP_REQUESTS_TOTAL.inc()
             resolution = await _run_semantic_norm(
                 session=session,
                 page=page,
@@ -3458,6 +3460,7 @@ async def process_page_task(
                 task_started_at=time.monotonic(),
             )
         elif page.status == "layout_detection":
+            EEP_REQUESTS_TOTAL.inc()
             resolution = await _run_layout(
                 session=session,
                 page=page,

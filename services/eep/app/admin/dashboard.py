@@ -86,8 +86,9 @@ from services.eep.app.db.models import (
     ServiceInvocation,
     ShadowEvaluation,
 )
-from services.eep.app.db.session import get_session
+from services.eep.app.db.session import SessionLocal, get_session
 from services.eep.app.redis_client import get_redis
+from shared.metrics import EEP_AUTO_ACCEPT_RATE, EEP_STRUCTURAL_AGREEMENT_RATE
 from shared.schemas.queue import QUEUE_PAGE_TASKS_PROCESSING
 
 logger = logging.getLogger(__name__)
@@ -157,6 +158,60 @@ def _average_human_review_pages_per_hour(db: Session) -> float:
         .all()
     )
     return _average_timestamp_rows_per_active_hour(rows)
+
+
+def _dashboard_acceptance_rates(db: Session) -> tuple[float, float]:
+    """Return the same all-time rates shown on the admin overview page."""
+    total_terminal: int = (
+        db.query(func.count(JobPage.page_id)).filter(JobPage.status.in_(_TERMINAL_STATES)).scalar()
+        or 0
+    )
+    total_accepted: int = (
+        db.query(func.count(JobPage.page_id))
+        .filter(JobPage.acceptance_decision == "accepted")
+        .scalar()
+        or 0
+    )
+    auto_accept_rate = _safe_rate(total_accepted, total_terminal)
+
+    total_with_agreement: int = (
+        db.query(func.count(PageLineage.lineage_id))
+        .filter(PageLineage.structural_agreement.isnot(None))
+        .scalar()
+        or 0
+    )
+    total_agreed: int = (
+        db.query(func.count(PageLineage.lineage_id))
+        .filter(PageLineage.structural_agreement.is_(True))
+        .scalar()
+        or 0
+    )
+    structural_agreement_rate = _safe_rate(total_agreed, total_with_agreement)
+    return auto_accept_rate, structural_agreement_rate
+
+
+def update_dashboard_rate_metrics(db: Session) -> tuple[float, float]:
+    """
+    Refresh Prometheus gauges that mirror the admin overview rate tiles.
+
+    These gauges are observability-only; routing decisions continue to use the
+    persisted page and lineage records directly.
+    """
+    auto_accept_rate, structural_agreement_rate = _dashboard_acceptance_rates(db)
+    EEP_AUTO_ACCEPT_RATE.set(auto_accept_rate)
+    EEP_STRUCTURAL_AGREEMENT_RATE.set(structural_agreement_rate)
+    return auto_accept_rate, structural_agreement_rate
+
+
+def refresh_dashboard_rate_metrics() -> None:
+    """Refresh DB-backed EEP gauges before Prometheus scrapes /metrics."""
+    db = SessionLocal()
+    try:
+        update_dashboard_rate_metrics(db)
+    except Exception:
+        logger.exception("dashboard metrics refresh failed")
+    finally:
+        db.close()
 
 
 # ── Response schemas ─────────────────────────────────────────────────────────────
@@ -237,33 +292,7 @@ def get_dashboard_summary(
     """
     throughput_pages_per_hour = _average_terminal_pages_per_hour(db)
 
-    # auto_accept_rate: accepted / all terminal (all-time)
-    total_terminal: int = (
-        db.query(func.count(JobPage.page_id)).filter(JobPage.status.in_(_TERMINAL_STATES)).scalar()
-        or 0
-    )
-    total_accepted: int = (
-        db.query(func.count(JobPage.page_id))
-        .filter(JobPage.acceptance_decision == "accepted")
-        .scalar()
-        or 0
-    )
-    auto_accept_rate = _safe_rate(total_accepted, total_terminal)
-
-    # structural_agreement_rate: from page_lineage (all-time)
-    total_with_agreement: int = (
-        db.query(func.count(PageLineage.lineage_id))
-        .filter(PageLineage.structural_agreement.isnot(None))
-        .scalar()
-        or 0
-    )
-    total_agreed: int = (
-        db.query(func.count(PageLineage.lineage_id))
-        .filter(PageLineage.structural_agreement.is_(True))
-        .scalar()
-        or 0
-    )
-    structural_agreement_rate = _safe_rate(total_agreed, total_with_agreement)
+    auto_accept_rate, structural_agreement_rate = update_dashboard_rate_metrics(db)
 
     # pending corrections
     pending_corrections_count: int = (
