@@ -15,7 +15,6 @@ import {
   Server,
   Activity,
   Rocket,
-  TestTube2,
   Layers,
 } from "lucide-react";
 import { useAuth } from "@/lib/auth/auth-context";
@@ -35,7 +34,6 @@ const adminNavItems: NavItem[] = [
   { label: "Model Evaluation", href: "/admin/models", icon: FlaskConical },
   { label: "Retraining", href: "/admin/retraining", icon: RefreshCw },
   { label: "Deployment", href: "/admin/deployment", icon: Rocket },
-  { label: "Testing Evidence", href: "/admin/testing", icon: TestTube2 },
   { label: "Policy", href: "/admin/policy", icon: Settings },
   { label: "Users", href: "/admin/users", icon: Users },
 ];
