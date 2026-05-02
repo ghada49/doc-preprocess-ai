@@ -28,6 +28,7 @@ import {
   formatScore,
   hasActivePages,
   isJobActive,
+  jobDisplayStatusFromPages,
   reviewReasonLabel,
   truncateId,
 } from "@/lib/utils";
@@ -86,6 +87,7 @@ export default function AdminJobDetailPage() {
   const { summary, pages } = data;
   const operationalPages = filterOperationalPages(pages);
   const isActive = isJobActive(summary.status) || hasActivePages(operationalPages);
+  const displayStatus = jobDisplayStatusFromPages(summary.status, operationalPages);
 
   return (
     <AdminShell
@@ -121,7 +123,7 @@ export default function AdminJobDetailPage() {
           <PageHeader
             title={`Job ${truncateId(summary.job_id, 12)}...`}
             icon={FileSearch}
-            badge={<StatusBadge status={summary.status} type="job" />}
+            badge={<StatusBadge status={displayStatus} type="job" />}
             actions={
               summary.pending_human_correction_count > 0 ? (
                 <Button
@@ -140,7 +142,11 @@ export default function AdminJobDetailPage() {
             {[
               { label: "Total Pages", value: summary.page_count, color: "text-slate-900" },
               { label: "Accepted", value: summary.accepted_count, color: "text-emerald-600" },
-              { label: "Review", value: summary.review_count, color: "text-yellow-600" },
+              {
+                label: "Needs Review",
+                value: summary.pending_human_correction_count,
+                color: "text-yellow-600",
+              },
               { label: "Failed", value: summary.failed_count, color: "text-red-500" },
             ].map(({ label, value, color }) => (
               <div key={label} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">

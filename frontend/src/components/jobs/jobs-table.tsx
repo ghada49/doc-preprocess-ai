@@ -297,12 +297,20 @@ function JobCard({ job, onClick }: { job: JobSummary; onClick: () => void }) {
   const hasIssues = job.failed_count > 0;
   const activePages = Math.max(
     0,
-    job.page_count - job.accepted_count - job.pending_human_correction_count - job.failed_count
+    job.page_count -
+      job.accepted_count -
+      job.review_count -
+      job.pending_human_correction_count -
+      job.failed_count
   );
   const readyWidth = job.page_count > 0 ? (job.accepted_count / job.page_count) * 100 : 0;
   const reviewWidth =
     job.page_count > 0 ? (job.pending_human_correction_count / job.page_count) * 100 : 0;
   const issueWidth = job.page_count > 0 ? (job.failed_count / job.page_count) * 100 : 0;
+  const displayStatus =
+    job.status === "running" && activePages === 0 && job.pending_human_correction_count > 0
+      ? "waiting_review"
+      : job.status;
 
   return (
     <button
@@ -328,7 +336,7 @@ function JobCard({ job, onClick }: { job: JobSummary; onClick: () => void }) {
             </p>
           </div>
         </div>
-        <StatusBadge status={job.status} type="job" />
+        <StatusBadge status={displayStatus} type="job" />
       </div>
 
       <div className="mb-4">
@@ -367,7 +375,11 @@ function JobCard({ job, onClick }: { job: JobSummary; onClick: () => void }) {
       <div className="mt-auto flex items-center justify-between pt-4">
         <div className="flex items-center gap-1.5 text-xs text-slate-500">
           <Clock className="h-3.5 w-3.5 text-slate-400" />
-          {activePages > 0 ? `${activePages} processing` : "No pages processing"}
+          {activePages > 0
+            ? `${activePages} processing`
+            : job.pending_human_correction_count > 0
+              ? `${job.pending_human_correction_count} waiting review`
+              : "No pages processing"}
         </div>
         <span className="inline-flex items-center gap-1 text-xs font-semibold text-slate-700 transition-colors group-hover:text-slate-950">
           Open
@@ -411,6 +423,18 @@ function JobRow({
 }) {
   const hasPendingReview = job.pending_human_correction_count > 0;
   const hasIssues = job.failed_count > 0;
+  const activePages = Math.max(
+    0,
+    job.page_count -
+      job.accepted_count -
+      job.review_count -
+      job.pending_human_correction_count -
+      job.failed_count
+  );
+  const displayStatus =
+    job.status === "running" && activePages === 0 && hasPendingReview
+      ? "waiting_review"
+      : job.status;
 
   return (
     <tr
@@ -457,7 +481,7 @@ function JobRow({
       )}
 
       <td>
-        <StatusBadge status={job.status} type="job" />
+        <StatusBadge status={displayStatus} type="job" />
       </td>
 
       <td className="text-center">

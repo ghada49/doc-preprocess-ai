@@ -609,15 +609,15 @@ function InvocationCard({
       <div className="grid gap-3 mt-3 md:grid-cols-2 xl:grid-cols-4">
         <MetricCard
           label="Service Version"
-          value={invocation.service_version ?? "—"}
+          value={invocation.service_version ?? "Not recorded"}
         />
         <MetricCard
           label="Model Version"
-          value={invocation.model_version ?? "—"}
+          value={invocation.model_version ?? "Not recorded"}
         />
         <MetricCard
           label="Model Source"
-          value={invocation.model_source ?? "—"}
+          value={invocation.model_source ?? "Not recorded"}
         />
         <MetricCard
           label="Completed"
