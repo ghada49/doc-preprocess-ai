@@ -58,21 +58,33 @@ RUN if [ "$ENABLE_REAL_MODEL" = "true" ]; then \
         "paddleocr>=2.7.0,<3.0"; \
     fi
 
-# Bake Arabic OCR model weights into the image at build time so the container
+# Bake the PaddleOCR CLS (text-direction classifier) model at build time.
+# PaddleOCR 2.x initialises this model during startup even when use_angle_cls=False;
+# without a pre-baked path it re-downloads ~30 MB on every container restart.
+# build_ocr_engine() passes cls_model_dir=/opt/models/iep1e/cls so this is used.
+RUN if [ "$ENABLE_REAL_MODEL" = "true" ]; then \
+      mkdir -p /opt/models/iep1e/cls && \
+      curl -fL "https://paddleocr.bj.bcebos.com/dygraph_v2.0/ch/ch_ppocr_mobile_v2.0_cls_infer.tar" \
+        | tar -xf - -C /opt/models/iep1e/cls --strip-components=1; \
+    fi
+
+# Bake Arabic OCR det/rec model weights into the image at build time so the container
 # starts instantly with no runtime internet dependency — mirrors the iep2a
 # convention of COPYing pre-downloaded weights under /opt/models/<service>.
 #
-# To refresh the weights:
+# To refresh det/rec weights:
 #   1. Delete models/iep1e/det/ and models/iep1e/rec/
 #   2. Re-run the one-time download script:
 #        docker run --rm -v "$PWD/models/iep1e:/opt/models/iep1e" \
 #          python:3.11-slim-bookworm bash -c "
 #            apt-get update -qq && apt-get install -y -qq curl tar;
+#            mkdir -p /opt/models/iep1e/det /opt/models/iep1e/rec;
 #            curl -L https://paddleocr.bj.bcebos.com/PP-OCRv3/multilingual/Multilingual_PP-OCRv3_det_infer.tar \
 #              | tar -xf - -C /opt/models/iep1e/det --strip-components=1;
 #            curl -L https://paddleocr.bj.bcebos.com/PP-OCRv3/multilingual/arabic_PP-OCRv3_rec_infer.tar \
 #              | tar -xf - -C /opt/models/iep1e/rec --strip-components=1"
 #   3. Rebuild: ENABLE_REAL_MODEL=true docker compose build iep1e
+# (CLS weights are downloaded automatically during the build step above.)
 COPY models/iep1e/ /opt/models/iep1e/
 COPY shared/ ./shared/
 COPY services/iep1e/ ./services/iep1e/
