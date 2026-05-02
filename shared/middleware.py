@@ -101,6 +101,7 @@ def configure_observability(
     *,
     service_name: str,
     health_checks: list[Callable[[], Any]] | None = None,
+    readiness_failure_extras: Callable[[], dict[str, Any]] | None = None,
 ) -> None:
     """
     Wire shared observability onto a FastAPI app in one call.
@@ -115,10 +116,17 @@ def configure_observability(
                        async) passed to ``make_health_router``.  Services add
                        their own checks in later phases (e.g. DB ping, model
                        load check).
+        readiness_failure_extras: Optional callable merged into ``503`` JSON for
+                       ``/ready`` when a check fails (see ``make_health_router``).
     """
     from shared.health import make_health_router
     from shared.metrics import make_metrics_router
 
-    app.include_router(make_health_router(checks=health_checks))
+    app.include_router(
+        make_health_router(
+            checks=health_checks,
+            readiness_failure_extras=readiness_failure_extras,
+        )
+    )
     app.include_router(make_metrics_router())
     app.add_middleware(RequestTracingMiddleware, service_name=service_name)

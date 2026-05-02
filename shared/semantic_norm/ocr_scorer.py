@@ -42,6 +42,7 @@ Exported:
     CONF_RATIO_THRESHOLD
     CONF_DIFF_THRESHOLD
     build_ocr_engine        — initialise PaddleOCR once at service startup
+    warmup_ocr_engine       — one score_rotation before /ready (startup)
     score_rotation          — run OCR on four rotations, return score dict
     extract_script_evidence — parse raw OCR output into ScriptEvidence
     select_orientation      — apply confidence gate, return PageOrientationResult
@@ -320,6 +321,21 @@ def score_rotation(
         )
 
     return scores
+
+
+def warmup_ocr_engine(ocr: Any) -> None:
+    """
+    Run one full ``score_rotation`` before the process marks itself /ready.
+
+    ``build_ocr_engine()`` only constructs PaddleOCR; the first real ``ocr.ocr``
+    call still pays one-time Paddle/torch CPU setup.  Warm-up shifts much of that
+    cost to startup so the first HTTP semantic-norm request is less likely to
+    exceed tight worker inference timeouts.
+    """
+    # Large enough for det/rec to exercise real kernels; small enough for startup.
+    canvas = np.zeros((320, 320, 3), dtype=np.uint8)
+    score_rotation(canvas, ocr)
+    logger.info("iep1e: OCR inference warmup finished")
 
 
 # ── Orientation selection ─────────────────────────────────────────────────────

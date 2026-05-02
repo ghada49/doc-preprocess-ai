@@ -337,21 +337,31 @@ export default function ObservabilityPage() {
                 attached. History is lost on restart.
               </li>
               <li>
-                Grafana is <strong>not always running</strong>. Access is via the task&apos;s private
-                IP (see observability-up.yml output for the exact address and port-forward instructions).
+                Grafana is <strong>not always running</strong>. When you run{" "}
+                <code className="font-mono text-indigo-600">observability-up.yml</code>, the job
+                prints a <strong>public ALB URL</strong> for Grafana at path{" "}
+                <code className="font-mono">/grafana</code> (primary access) and the task&apos;s{" "}
+                <strong>private IP</strong> (VPC-only / debugging). The workflow does not rely on
+                ad-hoc port-forward docs; follow the printed URLs in the Actions log.
               </li>
               <li>
-                <strong>This admin dashboard and CloudWatch remain fully available</strong> when
-                Grafana is off. The metrics shown above are always served from the DB and Redis.
+                <strong>This admin page and CloudWatch remain fully available</strong> when Grafana
+                is off. The metrics shown above come from admin APIs backed by the{" "}
+                <strong>database</strong> (and <strong>Redis</strong> where noted, e.g. queue /
+                worker activity).
               </li>
             </ul>
             <p className="text-slate-400">
-              Prometheus scrapes the{" "}
-              <code className="font-mono">/metrics</code> endpoint on all active services (configured
-              via <code className="font-mono">shared/middleware.py</code>). Four pre-built Grafana
-              dashboards are provisioned from{" "}
-              <code className="font-mono">monitoring/grafana/dashboards/</code>:
-              api-service, gate-decisions, model-signals, workers-queue.
+              When Prometheus is running, it scrapes the{" "}
+              <code className="font-mono">/metrics</code> endpoint on each{" "}
+              <strong>configured</strong> Service Connect target in{" "}
+              <code className="font-mono">monitoring/prometheus/prometheus.ecs.yml</code> (eep,
+              eep-worker, IEP services, etc.) — not auto-discovery of every ECS task. Those apps
+              expose <code className="font-mono">/metrics</code> via{" "}
+              <code className="font-mono">shared/middleware.py</code>. Five dashboard JSON files are
+              baked into the Grafana image from{" "}
+              <code className="font-mono">monitoring/grafana/dashboards/</code>: api-service,
+              gate-decisions, model-signals, platform-baseline, workers-queue.
             </p>
           </div>
         </div>

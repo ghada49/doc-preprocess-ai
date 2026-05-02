@@ -24,6 +24,13 @@
         { "name": "IEP1E_MOCK_MODE",  "value": "false" },
         { "name": "IEP1E_MODEL_DIR",  "value": "/opt/models/iep1e" }
       ],
+      "healthCheck": {
+        "command": ["CMD-SHELL", "curl -sf http://127.0.0.1:8007/health || exit 1"],
+        "interval": 30,
+        "timeout": 5,
+        "retries": 3,
+        "startPeriod": 240
+      },
       "logConfiguration": {
         "logDriver": "awslogs",
         "options": {

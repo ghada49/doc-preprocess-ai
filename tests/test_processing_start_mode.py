@@ -1399,5 +1399,90 @@ class TestIep1dPreWarmInvariant(unittest.TestCase):
             _update_service(mock_ecs, "test-cluster", "libraryai-retraining-worker", 1)
 
 
+# ── Service Connect config regression ─────────────────────────────────────────
+
+class TestIep1dServiceConnectConfig(unittest.TestCase):
+    """
+    iep1d must be present in _SERVICE_CONNECT_CONFIGS so that every
+    update-service call for libraryai-iep1d includes the Service Connect
+    block that registers iep1d.libraryai.local in Cloud Map.
+    Without this entry the DNS name never resolves and all iep1d calls fail.
+    """
+
+    def _cfg(self):
+        from services.eep.app.scaling.normal_scaler import _SERVICE_CONNECT_CONFIGS
+        return _SERVICE_CONNECT_CONFIGS["libraryai-iep1d"]
+
+    def test_iep1d_in_service_connect_configs(self):
+        from services.eep.app.scaling.normal_scaler import _SERVICE_CONNECT_CONFIGS
+        self.assertIn("libraryai-iep1d", _SERVICE_CONNECT_CONFIGS)
+
+    def test_iep1d_service_connect_enabled(self):
+        self.assertTrue(self._cfg()["enabled"])
+
+    def test_iep1d_service_connect_namespace(self):
+        self.assertEqual(self._cfg()["namespace"], "libraryai.local")
+
+    def test_iep1d_service_connect_port_name(self):
+        svc = self._cfg()["services"][0]
+        self.assertEqual(svc["portName"], "http")
+
+    def test_iep1d_service_connect_discovery_name(self):
+        svc = self._cfg()["services"][0]
+        self.assertEqual(svc["discoveryName"], "iep1d")
+
+    def test_iep1d_service_connect_client_alias_port(self):
+        alias = self._cfg()["services"][0]["clientAliases"][0]
+        self.assertEqual(alias["port"], 8003)
+
+    def test_iep1d_service_connect_client_alias_dns(self):
+        alias = self._cfg()["services"][0]["clientAliases"][0]
+        self.assertEqual(alias["dnsName"], "iep1d")
+
+    def test_update_service_includes_service_connect_for_iep1d(self):
+        """_update_service must inject serviceConnectConfiguration for iep1d."""
+        from services.eep.app.scaling.normal_scaler import _update_service
+        mock_ecs = MagicMock()
+        _update_service(mock_ecs, "test-cluster", "libraryai-iep1d", 1)
+        call_kwargs = mock_ecs.update_service.call_args[1]
+        self.assertIn("serviceConnectConfiguration", call_kwargs)
+        sc = call_kwargs["serviceConnectConfiguration"]
+        self.assertTrue(sc["enabled"])
+        self.assertEqual(sc["namespace"], "libraryai.local")
+
+
+# ── iep1d task def port mapping regression ────────────────────────────────────
+
+class TestIep1dTaskDefPortMappings(unittest.TestCase):
+    """
+    iep1d-task-def.json must declare portMappings with name='http' and
+    containerPort=8003 to match the Service Connect portName='http' in
+    _SERVICE_CONNECT_CONFIGS.  If the names diverge ECS rejects the
+    update-service call with a validation error.
+    """
+
+    def _task_def(self):
+        import json, pathlib
+        path = pathlib.Path(__file__).parent.parent / "k8s" / "ecs" / "iep1d-task-def.json"
+        return json.loads(path.read_text())
+
+    def test_iep1d_task_def_has_port_mappings(self):
+        container = self._task_def()["containerDefinitions"][0]
+        self.assertIn("portMappings", container)
+        self.assertTrue(len(container["portMappings"]) > 0)
+
+    def test_iep1d_task_def_port_name_is_http(self):
+        container = self._task_def()["containerDefinitions"][0]
+        names = [pm.get("name") for pm in container["portMappings"]]
+        self.assertIn("http", names)
+
+    def test_iep1d_task_def_container_port_is_8003(self):
+        container = self._task_def()["containerDefinitions"][0]
+        http_pm = next(
+            pm for pm in container["portMappings"] if pm.get("name") == "http"
+        )
+        self.assertEqual(http_pm["containerPort"], 8003)
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -22,7 +22,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 
-from services.iep1e.app.model import initialize_model, is_model_ready
+from services.iep1e.app.model import initialize_model, is_model_ready, readiness_failure_extras
 from services.iep1e.app.semantic_norm_router import router as semantic_norm_router
 from shared.logging_config import setup_logging
 from shared.middleware import configure_observability
@@ -55,6 +55,11 @@ app = FastAPI(
     ),
 )
 
-configure_observability(app, service_name="iep1e", health_checks=[is_model_ready])
+configure_observability(
+    app,
+    service_name="iep1e",
+    health_checks=[is_model_ready],
+    readiness_failure_extras=readiness_failure_extras,
+)
 
 app.include_router(semantic_norm_router)

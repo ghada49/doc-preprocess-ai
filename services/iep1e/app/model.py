@@ -10,6 +10,7 @@ Environment variables:
 
 Exported:
     is_model_ready            — readiness check for /ready endpoint
+    readiness_failure_extras  — optional detail dict for 503 /ready responses
     get_ocr_engine            — returns the live PaddleOCR instance
     initialize_model          — called at startup; logs but does not raise
     reset_for_testing         — test-only teardown helper
@@ -45,6 +46,19 @@ def is_model_ready() -> bool:
     return _loaded and _load_error is None
 
 
+def readiness_failure_extras() -> dict[str, Any]:
+    """Extra JSON fields for GET /ready when returning 503 (loading or failed)."""
+    if _is_mock_mode():
+        return {}
+    details: dict[str, Any] = {}
+    if _load_error is not None:
+        details["error"] = str(_load_error)
+        details["error_type"] = type(_load_error).__name__
+    elif not _loaded:
+        details["phase"] = "loading"
+    return details
+
+
 def get_ocr_engine() -> Any:
     """
     Return the PaddleOCR engine.  Raises RuntimeError if not loaded.
@@ -70,9 +84,14 @@ def get_ocr_engine() -> Any:
             ) from _load_error
 
         try:
-            from shared.semantic_norm.ocr_scorer import build_ocr_engine
+            from shared.semantic_norm.ocr_scorer import build_ocr_engine, warmup_ocr_engine
 
             engine = build_ocr_engine(use_gpu=_use_gpu())
+            logger.info(
+                "iep1e: running OCR warmup before marking ready (use_gpu=%s)",
+                _use_gpu(),
+            )
+            warmup_ocr_engine(engine)
             _ocr_engine = engine
             _loaded = True
             _load_error = None
@@ -96,8 +115,11 @@ def initialize_model() -> None:
         get_ocr_engine()
     except RuntimeError as exc:
         logger.warning(
-            "iep1e: OCR engine warmup failed; readiness will remain not_ready: %s", exc
+            "iep1e: background model initialisation failed; /ready stays not_ready: %s",
+            exc,
         )
+    else:
+        logger.info("iep1e: background model initialisation completed successfully")
 
 
 def reset_for_testing() -> None:
