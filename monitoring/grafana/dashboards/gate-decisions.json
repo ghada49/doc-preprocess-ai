@@ -395,7 +395,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "sum by (route) (increase(eep_geometry_selection_route_total[$__range])) / sum(increase(eep_geometry_selection_route_total[$__range]))",
+                                           "expr":  "(sum by (route) (increase(eep_geometry_selection_route_total[$__range])) or on() vector(0)) / clamp_min((sum(increase(eep_geometry_selection_route_total[$__range])) or vector(0)), 1)",
                                            "legendFormat":  "{{route}}",
                                            "refId":  "A"
                                        }
@@ -451,7 +451,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "sum by (route) (increase(eep_artifact_validation_route_total[$__range])) / sum(increase(eep_artifact_validation_route_total[$__range]))",
+                                           "expr":  "(sum by (route) (increase(eep_artifact_validation_route_total[$__range])) or on() vector(0)) / clamp_min((sum(increase(eep_artifact_validation_route_total[$__range])) or vector(0)), 1)",
                                            "legendFormat":  "{{route}}",
                                            "refId":  "A"
                                        }
