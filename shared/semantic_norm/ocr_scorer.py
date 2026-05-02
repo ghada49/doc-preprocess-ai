@@ -107,7 +107,9 @@ def build_ocr_engine(*, use_gpu: bool = True) -> Any:
     model_dir = os.environ.get("IEP1E_MODEL_DIR", "/opt/models/iep1e")
     det_model_dir = os.path.join(model_dir, "det")
     rec_model_dir = os.path.join(model_dir, "rec")
-    cls_model_dir = os.path.join(model_dir, "cls")
+    # cls_model_dir is intentionally omitted: PaddleOCR 2.x ignores it when
+    # use_angle_cls=False and still downloads cls to its default cache path.
+    # The Dockerfile pre-populates /root/.paddleocr/whl/cls/... to skip the download.
 
     ocr = PaddleOCR(
         use_angle_cls=False,
@@ -118,7 +120,6 @@ def build_ocr_engine(*, use_gpu: bool = True) -> Any:
         show_log=False,
         det_model_dir=det_model_dir,
         rec_model_dir=rec_model_dir,
-        cls_model_dir=cls_model_dir,
     )
     logger.info(
         "iep1e: PaddleOCR engine initialised (lang=arabic, use_gpu=%s, model_dir=%s)",

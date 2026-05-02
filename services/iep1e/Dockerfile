@@ -59,13 +59,14 @@ RUN if [ "$ENABLE_REAL_MODEL" = "true" ]; then \
     fi
 
 # Bake the PaddleOCR CLS (text-direction classifier) model at build time.
-# PaddleOCR 2.x initialises this model during startup even when use_angle_cls=False;
-# without a pre-baked path it re-downloads ~30 MB on every container restart.
-# build_ocr_engine() passes cls_model_dir=/opt/models/iep1e/cls so this is used.
+# PaddleOCR 2.x downloads cls to its default cache (/root/.paddleocr/whl/cls/...)
+# even when use_angle_cls=False and cls_model_dir is specified — the cls_model_dir
+# kwarg is only honoured when use_angle_cls=True. We populate the exact cache path
+# PaddleOCR checks so it finds the files and skips the ~30 MB runtime download.
 RUN if [ "$ENABLE_REAL_MODEL" = "true" ]; then \
-      mkdir -p /opt/models/iep1e/cls && \
+      mkdir -p /root/.paddleocr/whl/cls/ch_ppocr_mobile_v2.0_cls_infer && \
       curl -fL "https://paddleocr.bj.bcebos.com/dygraph_v2.0/ch/ch_ppocr_mobile_v2.0_cls_infer.tar" \
-        | tar -xf - -C /opt/models/iep1e/cls --strip-components=1; \
+        | tar -xf - -C /root/.paddleocr/whl/cls/ch_ppocr_mobile_v2.0_cls_infer --strip-components=1; \
     fi
 
 # Bake Arabic OCR det/rec model weights into the image at build time so the container
@@ -84,7 +85,7 @@ RUN if [ "$ENABLE_REAL_MODEL" = "true" ]; then \
 #            curl -L https://paddleocr.bj.bcebos.com/PP-OCRv3/multilingual/arabic_PP-OCRv3_rec_infer.tar \
 #              | tar -xf - -C /opt/models/iep1e/rec --strip-components=1"
 #   3. Rebuild: ENABLE_REAL_MODEL=true docker compose build iep1e
-# (CLS weights are downloaded automatically during the build step above.)
+# (CLS weights are baked into /root/.paddleocr/whl/cls/ in the build step above.)
 COPY models/iep1e/ /opt/models/iep1e/
 COPY shared/ ./shared/
 COPY services/iep1e/ ./services/iep1e/
