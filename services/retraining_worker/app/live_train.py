@@ -89,8 +89,9 @@ def _resolve_train_paths(
 
     Manifest keys (if using JSON file):
       iep0.data_root
-      iep1a.book | newspaper | microfilm  (paths to data.yaml; at least one)
-      iep1b.book | newspaper | microfilm  (paths to data.yaml; at least one)
+      iep1a.book | newspaper | microfilm  (paths to data.yaml; optional)
+      iep1b.book | newspaper | microfilm  (paths to data.yaml; optional)
+      At least one IEP1A/IEP1B material must be present.
     """
     manifest = _load_train_manifest(manifest_path)
     iep0: Path | None = None
@@ -109,10 +110,10 @@ def _resolve_train_paths(
             p2 = (manifest.get("iep1b") or {}).get(m)
             if p2:
                 iep1b[m] = Path(p2)
-        if not iep1a:
-            raise RetrainingTrainConfigError("manifest.iep1a must include at least one material data.yaml")
-        if not iep1b:
-            raise RetrainingTrainConfigError("manifest.iep1b must include at least one material data.yaml")
+        if not iep1a and not iep1b:
+            raise RetrainingTrainConfigError(
+                "manifest must include at least one IEP1A or IEP1B material data.yaml"
+            )
     else:
         iep0_env = os.getenv("RETRAINING_IEP0_DATA_ROOT", "").strip()
         if not iep0_env:

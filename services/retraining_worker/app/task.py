@@ -431,6 +431,13 @@ def execute_retraining_task(trigger: RetrainingTrigger, db: Session) -> None:
         )
 
     services = _PREPROCESSING_SERVICES if pipeline_type == "preprocessing" else ()
+    if trained_weights is not None:
+        trained_services: list[str] = []
+        if trained_weights.iep1a_weights:
+            trained_services.append("iep1a")
+        if trained_weights.iep1b_weights:
+            trained_services.append("iep1b")
+        services = tuple(trained_services)
     created_version_tags: list[str] = []
 
     for service_name in services:

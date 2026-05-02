@@ -91,3 +91,27 @@ def test_resolve_train_paths_accepts_corrected_export_partial_manifest(tmp_path:
     assert resolved_iep0 == iep0_root
     assert set(iep1a) == {"book"}
     assert set(iep1b) == {"newspaper", "microfilm"}
+
+
+def test_resolve_train_paths_accepts_single_service_material_manifest(tmp_path: Path) -> None:
+    iep0_root = tmp_path / "iep0_placeholder"
+    iep0_root.mkdir()
+
+    iep1a_book = tmp_path / "iep1a" / "book"
+    iep1a_book.mkdir(parents=True)
+    data_yaml = _write_data_yaml(iep1a_book)
+
+    manifest = tmp_path / "retraining_train_manifest.json"
+    manifest.write_text(
+        "{\n"
+        f'  "iep0": {{"data_root": "{iep0_root.as_posix()}"}},\n'
+        f'  "iep1a": {{"book": "{data_yaml.as_posix()}"}},\n'
+        '  "iep1b": {}\n'
+        "}\n",
+        encoding="utf-8",
+    )
+
+    _, iep1a, iep1b = _resolve_train_paths(manifest_path=manifest)
+
+    assert set(iep1a) == {"book"}
+    assert iep1b == {}
