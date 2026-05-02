@@ -109,7 +109,7 @@ jobs:
             --task-definition "${{ steps.register_drain.outputs.task_def_arn }}" \
             --launch-type FARGATE \
             --network-configuration "awsvpcConfiguration={subnets=[$DRAIN_SUBNET],securityGroups=[$DRAIN_SG],assignPublicIp=DISABLED}" \
-            --overrides '{"containerOverrides":[{"name":"drain-monitor","command":["python","/app/scripts/ecs_scaler/drain_monitor.py","--assert-drained"]}]}' \
+            --overrides "{\"containerOverrides\":[{\"name\":\"drain-monitor\",\"command\":[\"python\",\"/app/scripts/ecs_scaler/drain_monitor.py\",\"--assert-drained\"],\"environment\":[{\"name\":\"ECS_CLUSTER\",\"value\":\"$ECS_CLUSTER\"},{\"name\":\"AWS_REGION\",\"value\":\"$AWS_REGION\"}]}]}" \
             --query 'tasks[0].taskArn' --output text)
           echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
           echo "Drain check task started: $TASK_ARN"
@@ -134,9 +134,12 @@ jobs:
           if [ "$EXIT_CODE" = "0" ]; then
             echo "is_drained=true" >> "$GITHUB_OUTPUT"
             echo "Drain confirmed — will trigger scale-down."
-          else
+          elif [ "$EXIT_CODE" = "1" ]; then
             echo "is_drained=false" >> "$GITHUB_OUTPUT"
             echo "Active work remains — skipping scale-down this cycle."
+          else
+            echo "ERROR: drain_monitor failed before producing a drain decision (exit_code=$EXIT_CODE)."
+            exit 1
           fi
 
       # ── Step 4: Trigger scale-down workflow ───────────────────────────────

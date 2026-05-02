@@ -71,13 +71,49 @@ _last_reload_wall: float | None = None
 _last_version_tag: str | None = None
 
 
+def _service_version() -> str:
+    return os.environ.get("IEP1A_SERVICE_VERSION", "0.1.0")
+
+
 def _models_dir() -> Path:
     return Path(os.environ.get("IEP1A_MODELS_DIR", "models/iep1a"))
 
 
+def _model_file_for(material_type: str) -> str:
+    return _MODEL_FILES.get(material_type, _MODEL_FILES["book"])
+
+
+def _model_version_for(material_type: str) -> str:
+    env_version = os.environ.get("IEP1A_MODEL_VERSION", "").strip()
+    if env_version:
+        return env_version
+    if _last_version_tag:
+        return _last_version_tag
+    return f"{material_type}:{_model_file_for(material_type)}"
+
+
+def _model_source_for(material_type: str) -> str:
+    env_source = os.environ.get("IEP1A_MODEL_SOURCE", "").strip()
+    if env_source:
+        return env_source
+    if _is_mock_mode():
+        return "mock"
+    return str(_models_dir() / _model_file_for(material_type))
+
+
+def _with_model_metadata(resp: GeometryResponse, material_type: str) -> GeometryResponse:
+    return resp.model_copy(
+        update={
+            "service_version": _service_version(),
+            "model_version": _model_version_for(material_type),
+            "model_source": _model_source_for(material_type),
+        }
+    )
+
+
 def _load_model(material_type: str) -> object:
     """Load and cache a YOLO segmentation model for the given material type."""
-    model_file = _MODEL_FILES.get(material_type, _MODEL_FILES["book"])
+    model_file = _model_file_for(material_type)
     if model_file in _loaded_models:
         return _loaded_models[model_file]
 
@@ -414,7 +450,10 @@ def run_inference(req: GeometryRequest) -> GeometryResponse:
     tta_stats = compute_real_tta_stats(model, image, conf_threshold, tta_passes)
 
     elapsed_ms = (time.monotonic() - t0) * 1000.0
-    resp = _detections_to_response(detections, tta_stats, elapsed_ms)
+    resp = _with_model_metadata(
+        _detections_to_response(detections, tta_stats, elapsed_ms),
+        req.material_type,
+    )
     IEP1A_GPU_INFERENCE_SECONDS.observe(elapsed_ms / 1000.0)
     IEP1A_GEOMETRY_CONFIDENCE.observe(resp.geometry_confidence)
     IEP1A_TTA_STRUCTURAL_AGREEMENT_RATE.observe(resp.tta_structural_agreement_rate)
@@ -495,7 +534,7 @@ def run_mock_inference(req: GeometryRequest) -> GeometryResponse:
     tta = compute_mock_tta_stats(tta_passes)
     elapsed_ms = (time.monotonic() - t0) * 1000.0
 
-    resp = GeometryResponse(
+    resp = _with_model_metadata(GeometryResponse(
         page_count=page_count,
         pages=pages,
         split_required=split_required,
@@ -507,7 +546,7 @@ def run_mock_inference(req: GeometryRequest) -> GeometryResponse:
         uncertainty_flags=tta.uncertainty_flags,
         warnings=[],
         processing_time_ms=elapsed_ms,
-    )
+    ), req.material_type)
     IEP1A_GPU_INFERENCE_SECONDS.observe(elapsed_ms / 1000.0)
     IEP1A_GEOMETRY_CONFIDENCE.observe(resp.geometry_confidence)
     IEP1A_TTA_STRUCTURAL_AGREEMENT_RATE.observe(resp.tta_structural_agreement_rate)

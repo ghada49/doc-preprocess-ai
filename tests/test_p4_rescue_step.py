@@ -298,6 +298,7 @@ async def _run(
     storage: MagicMock | None = None,
     is_split_child: bool = False,
     iep1d_cb_open: bool = False,
+    material_type: str = "book",
 ) -> RescueOutcome:
     """
     Run run_rescue_flow with patched invoke_geometry_services and
@@ -346,7 +347,7 @@ async def _run(
             job_id="job-1",
             page_number=1,
             lineage_id="lin-1",
-            material_type="book",
+            material_type=material_type,
             rectified_proxy_uri=_PROXY_URI,
             rescue_output_uri=_OUTPUT_URI,
             iep1d_endpoint=_IEP1D_ENDPOINT,
@@ -579,6 +580,67 @@ class TestSplitChildGuard:
         outcome = await _run(inv_result=inv, norm_outcome=norm, is_split_child=False)
         # Should NOT be "geometry_unexpected_split_on_child"
         assert outcome.review_reason != "geometry_unexpected_split_on_child"
+
+    @pytest.mark.asyncio
+    async def test_newspaper_split_child_with_secondary_sliver_can_accept(self) -> None:
+        main = PageRegion(
+            region_id="main",
+            geometry_type="bbox",
+            bbox=(5, 5, 95, 95),
+            corners=None,
+            confidence=0.92,
+            page_area_fraction=0.80,
+        )
+        sliver = PageRegion(
+            region_id="sliver",
+            geometry_type="bbox",
+            bbox=(95, 5, 100, 95),
+            corners=None,
+            confidence=0.40,
+            page_area_fraction=0.04,
+        )
+        split_geo = GeometryResponse(
+            page_count=2,
+            pages=[main, sliver],
+            split_required=True,
+            split_x=95,
+            geometry_confidence=0.92,
+            tta_structural_agreement_rate=0.95,
+            tta_prediction_variance=0.01,
+            tta_passes=3,
+            uncertainty_flags=[],
+            warnings=[],
+            processing_time_ms=80.0,
+        )
+        inv = GeometryInvocationResult(
+            iep1a_result=split_geo,
+            iep1b_result=_make_geometry_response(),
+            iep1a_error=None,
+            iep1b_error=None,
+            iep1a_skipped=False,
+            iep1b_skipped=False,
+            iep1a_duration_ms=50.0,
+            iep1b_duration_ms=50.0,
+            selection_result=_make_selection_result(
+                route_decision="rectification",
+                structural_agreement=False,
+            ),
+        )
+        outcome = await _run(
+            inv_result=inv,
+            norm_outcome=_make_norm_outcome("accept_now"),
+            is_split_child=True,
+            material_type="newspaper",
+        )
+        assert outcome.route == "accept_now"
+        assert outcome.review_reason is None
+
+    @pytest.mark.asyncio
+    async def test_book_split_child_guard_remains_strict(self) -> None:
+        inv = _make_invocation_result(iep1a_split=True)
+        outcome = await _run(inv_result=inv, is_split_child=True, material_type="book")
+        assert outcome.route == "pending_human_correction"
+        assert outcome.review_reason == "geometry_unexpected_split_on_child"
 
 
 # ── 4. Final validation routing ─────────────────────────────────────────────────

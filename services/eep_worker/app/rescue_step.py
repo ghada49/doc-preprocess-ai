@@ -67,12 +67,15 @@ from services.eep.app.db.models import ServiceInvocation
 from services.eep.app.gates.artifact_validation import (
     ArtifactImageDimensions,
     ArtifactValidationResult,
+    build_artifact_gate_log_record,
 )
 from services.eep.app.db.quality_gate import log_gate
 from services.eep.app.gates.geometry_selection import (
+    GeometryCandidate,
     GeometrySelectionResult,
     PreprocessingGateConfig,
     build_geometry_gate_log_record,
+    check_sanity,
 )
 from services.eep_worker.app.circuit_breaker import CircuitBreaker
 from services.eep_worker.app.geometry_invocation import (
@@ -363,6 +366,92 @@ def _any_model_reports_split(
     return False
 
 
+def _largest_region_single_page_candidate(
+    *,
+    model: Literal["iep1a", "iep1b"],
+    response: GeometryResponse,
+    material_type: str,
+    proxy_width: int,
+    proxy_height: int,
+    config: PreprocessingGateConfig,
+) -> GeometryCandidate | None:
+    """
+    Convert a newspaper split-child split prediction into one main-page candidate.
+
+    Newspaper columns, gutters, borders, and torn slivers can make an already-split
+    child look like two regions.  For newspaper children only, keep the largest
+    region if it is sane as a single-page geometry. This does not apply to books.
+    """
+    if material_type != "newspaper" or not response.pages:
+        return None
+
+    if response.page_count == 1 and not response.split_required and len(response.pages) == 1:
+        single = response
+    else:
+        largest = max(response.pages, key=lambda region: region.page_area_fraction)
+        smaller = [
+            region.page_area_fraction
+            for region in response.pages
+            if region.region_id != largest.region_id
+        ]
+        if smaller and max(smaller) > config.newspaper_split_child_sliver_max_area_fraction:
+            return None
+        single = response.model_copy(
+            update={
+                "page_count": 1,
+                "pages": [largest],
+                "split_required": False,
+                "split_x": None,
+                "warnings": [
+                    *response.warnings,
+                    "newspaper_split_child_largest_region_fallback",
+                ],
+            }
+        )
+
+    sanity = check_sanity(
+        single,
+        "newspaper",
+        proxy_width,
+        proxy_height,
+        config,
+    )
+    if not sanity.passed:
+        return None
+    return GeometryCandidate(model=model, response=single)
+
+
+def _newspaper_split_child_candidate(
+    *,
+    iep1a_result: GeometryResponse | None,
+    iep1b_result: GeometryResponse | None,
+    material_type: str,
+    proxy_width: int,
+    proxy_height: int,
+    gate_config: PreprocessingGateConfig | None,
+) -> GeometryCandidate | None:
+    if material_type != "newspaper":
+        return None
+    config = gate_config or PreprocessingGateConfig()
+    candidates: list[GeometryCandidate] = []
+    for model, response in (("iep1a", iep1a_result), ("iep1b", iep1b_result)):
+        if response is None:
+            continue
+        candidate = _largest_region_single_page_candidate(
+            model=model,  # type: ignore[arg-type]
+            response=response,
+            material_type=material_type,
+            proxy_width=proxy_width,
+            proxy_height=proxy_height,
+            config=config,
+        )
+        if candidate is not None:
+            candidates.append(candidate)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda candidate: candidate.response.geometry_confidence)
+
+
 # ── Route helpers ──────────────────────────────────────────────────────────────
 
 
@@ -519,24 +608,43 @@ async def _run_google_third_pass(
         )
 
     third_selection = third_invocation.selection_result
+    newspaper_child_candidate: GeometryCandidate | None = None
 
     # ── Unexpected split guard (split children only) ──────────────────────────
     if is_split_child and _any_model_reports_split(
         third_invocation.iep1a_result, third_invocation.iep1b_result
     ):
-        return _pending(
-            "geometry_unexpected_split_on_child",
-            rectify_response=rectify_response,
-            second_selection_result=second_selection_result,
-            branch_response=None,
-            validation_result=None,
-            t0=t0,
-            google_cleanup_used=True,
-            third_selection_result=third_selection,
+        newspaper_child_candidate = _newspaper_split_child_candidate(
+            iep1a_result=third_invocation.iep1a_result,
+            iep1b_result=third_invocation.iep1b_result,
+            material_type=material_type,
+            proxy_width=proxy_w3,
+            proxy_height=proxy_h3,
+            gate_config=gate_config,
         )
+        if newspaper_child_candidate is not None:
+            logger.info(
+                {
+                    "event": "newspaper_split_child_split_tolerated",
+                    "job_id": job_id,
+                    "page_number": page_number,
+                    "selected_model": newspaper_child_candidate.model,
+                }
+            )
+        else:
+            return _pending(
+                "geometry_unexpected_split_on_child",
+                rectify_response=rectify_response,
+                second_selection_result=second_selection_result,
+                branch_response=None,
+                validation_result=None,
+                t0=t0,
+                google_cleanup_used=True,
+                third_selection_result=third_selection,
+            )
 
     # ── Route check on third-pass selection ──────────────────────────────────
-    if third_selection.route_decision != "accepted":
+    if third_selection.route_decision != "accepted" and newspaper_child_candidate is None:
         if third_selection.structural_agreement is False:
             third_reason = "structural_disagreement_post_google_cleanup"
         elif third_selection.route_decision == "pending_human_correction":
@@ -555,26 +663,38 @@ async def _run_google_third_pass(
         )
 
     # ── Third-pass IEP1C normalization ────────────────────────────────────────
-    assert (
-        third_selection.selected is not None
-    ), "route_decision=='accepted' guarantees a selected candidate"
+    selected_candidate = newspaper_child_candidate or third_selection.selected
+    assert selected_candidate is not None, "accepted/fallback route guarantees a selected candidate"
     # Google cleanup also produces a single-page output (cleaned version of
     # the IEP1D-rectified single-page image).  Use page_index=0 to index the
     # third-pass geometry response — see comment at the second IEP1C
     # normalization site for full reasoning.
     third_norm: NormalizationOutcome = run_normalization_and_first_validation(
         full_res_image=cleaned_image,
-        selected_geometry=third_selection.selected.response,
-        selected_model=third_selection.selected.model,
-        geometry_route_decision=third_selection.route_decision,
+        selected_geometry=selected_candidate.response,
+        selected_model=selected_candidate.model,
+        geometry_route_decision="accepted",
         proxy_width=proxy_w3,
         proxy_height=proxy_h3,
         output_uri=rescue_output_uri,
         storage=storage,
         image_loader=image_loader,
         page_index=0,
+        material_type=material_type,  # type: ignore[arg-type]
         gate_config=gate_config,
         session=session,
+    )
+    log_gate(
+        session,
+        **build_artifact_gate_log_record(
+            third_norm.validation_result,
+            job_id,
+            page_number,
+            "artifact_validation_final",
+            "accepted" if third_norm.route == "accept_now" else "pending_human_correction",
+            None if third_norm.route == "accept_now" else "artifact_validation_failed",
+            third_norm.duration_ms,
+        ),
     )
 
     if third_norm.route == "accept_now":
@@ -842,6 +962,7 @@ async def run_rescue_flow(
         )
 
     selection_result = invocation_result.selection_result
+    newspaper_child_candidate: GeometryCandidate | None = None
 
     # ── Log post-rectification geometry gate ──────────────────────────────────
     post_gate_record = build_geometry_gate_log_record(
@@ -859,17 +980,35 @@ async def run_rescue_flow(
     if is_split_child and _any_model_reports_split(
         invocation_result.iep1a_result, invocation_result.iep1b_result
     ):
-        return _pending(
-            "geometry_unexpected_split_on_child",
-            rectify_response=rectify_response,
-            second_selection_result=selection_result,
-            branch_response=None,
-            validation_result=None,
-            t0=t0,
+        newspaper_child_candidate = _newspaper_split_child_candidate(
+            iep1a_result=invocation_result.iep1a_result,
+            iep1b_result=invocation_result.iep1b_result,
+            material_type=material_type,
+            proxy_width=proxy_w,
+            proxy_height=proxy_h,
+            gate_config=gate_config,
         )
+        if newspaper_child_candidate is not None:
+            logger.info(
+                {
+                    "event": "newspaper_split_child_split_tolerated",
+                    "job_id": job_id,
+                    "page_number": page_number,
+                    "selected_model": newspaper_child_candidate.model,
+                }
+            )
+        else:
+            return _pending(
+                "geometry_unexpected_split_on_child",
+                rectify_response=rectify_response,
+                second_selection_result=selection_result,
+                branch_response=None,
+                validation_result=None,
+                t0=t0,
+            )
 
     # ── Step 6.5 — Route check on second-pass selection ───────────────────────
-    if selection_result.route_decision != "accepted":
+    if selection_result.route_decision != "accepted" and newspaper_child_candidate is None:
         if selection_result.structural_agreement is False:
             reason = "structural_disagreement_post_rectification"
         elif selection_result.route_decision == "pending_human_correction":
@@ -921,9 +1060,8 @@ async def run_rescue_flow(
         )
 
     # ── Step 6.5 — Second IEP1C normalization ─────────────────────────────────
-    assert (
-        selection_result.selected is not None
-    ), "route_decision=='accepted' guarantees a selected candidate"
+    selected_candidate = newspaper_child_candidate or selection_result.selected
+    assert selected_candidate is not None, "accepted/fallback route guarantees a selected candidate"
     # IEP1D rectifies a single-page input into a single-page output (one
     # de-warped rectangle).  The post-rescue geometry response from
     # IEP1A/IEP1B therefore describes ONE page region regardless of whether
@@ -935,17 +1073,30 @@ async def run_rescue_flow(
     rescued_page_index = 0
     norm_outcome: NormalizationOutcome = run_normalization_and_first_validation(
         full_res_image=rectified_image,
-        selected_geometry=selection_result.selected.response,
-        selected_model=selection_result.selected.model,
-        geometry_route_decision=selection_result.route_decision,
+        selected_geometry=selected_candidate.response,
+        selected_model=selected_candidate.model,
+        geometry_route_decision="accepted",
         proxy_width=proxy_w,
         proxy_height=proxy_h,
         output_uri=rescue_output_uri,
         storage=storage,
         image_loader=image_loader,
         page_index=rescued_page_index,
+        material_type=material_type,  # type: ignore[arg-type]
         gate_config=gate_config,
         session=session,
+    )
+    log_gate(
+        session,
+        **build_artifact_gate_log_record(
+            norm_outcome.validation_result,
+            job_id,
+            page_number,
+            "artifact_validation_final",
+            "accepted" if norm_outcome.route == "accept_now" else "pending_human_correction",
+            None if norm_outcome.route == "accept_now" else "artifact_validation_failed",
+            norm_outcome.duration_ms,
+        ),
     )
 
     logger.info(

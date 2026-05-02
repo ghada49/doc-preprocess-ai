@@ -41,7 +41,7 @@ from shared.schemas.geometry import GeometryResponse, PageRegion
 
 _DEFAULT_ASPECT_RATIO_BOUNDS: dict[str, tuple[float, float]] = {
     "book": (0.5, 2.5),
-    "newspaper": (0.3, 5.0),
+    "newspaper": (0.2, 8.0),
     "archival_document": (0.5, 3.0),
     "microfilm": (0.3, 5.0),
 }
@@ -51,6 +51,13 @@ _DEFAULT_AREA_FRACTION_BOUNDS: dict[str, tuple[float, float]] = {
     "newspaper": (0.10, 1.0),
     "archival_document": (0.15, 1.0),
     "microfilm": (0.15, 1.0),
+}
+
+_DEFAULT_ARTIFACT_VALIDATION_THRESHOLDS: dict[str, float] = {
+    "book": 0.60,
+    "newspaper": 0.50,
+    "archival_document": 0.60,
+    "microfilm": 0.60,
 }
 
 
@@ -108,12 +115,16 @@ class PreprocessingGateConfig:
     newspaper_iep1b_mild_area_min_fraction: float = 0.08
     newspaper_strong_iep1a_geometry_confidence_min: float = 0.90
     newspaper_strong_iep1a_tta_agreement_min: float = 0.90
+    newspaper_split_child_sliver_max_area_fraction: float = 0.12
     # Packet 3.2 fields — declared here so config is a single object.
     split_confidence_threshold: float = 0.75
     tta_variance_ceiling: float = 0.15
     page_area_preference_threshold: float = 0.30
     # Packet 3.5 fields — artifact soft signal scoring (spec Section 6.9 + 8.4).
     artifact_validation_threshold: float = 0.60
+    artifact_validation_thresholds: dict[str, float] = field(
+        default_factory=lambda: dict(_DEFAULT_ARTIFACT_VALIDATION_THRESHOLDS)
+    )
     # Rectification routing policy (spec Section 8.4).
     # "conditional"            — attempt IEP1D whenever first pass is not acceptable (default).
     # "disabled_direct_review" — skip IEP1D; route first-pass non-acceptable pages directly
@@ -125,14 +136,21 @@ class PreprocessingGateConfig:
     blur_score_bad_min: float = 0.7
     border_score_bad_max: float = 0.3
     border_score_good_min: float = 0.5
+    newspaper_border_score_bad_max: float = 0.2
+    newspaper_border_score_good_min: float = 0.4
     foreground_good_lo: float = 0.2
     foreground_good_hi: float = 0.9
     foreground_bad_lo: float = 0.1
     foreground_bad_hi: float = 0.95
+    newspaper_foreground_good_lo: float = 0.08
+    newspaper_foreground_good_hi: float = 0.95
+    newspaper_foreground_bad_lo: float = 0.03
+    newspaper_foreground_bad_hi: float = 0.99
     geometry_confidence_good_min: float = 0.8
     geometry_confidence_bad_max: float = 0.5
     tta_agreement_good_min: float = 0.9
     tta_agreement_bad_max: float = 0.7
+    newspaper_soft_signal_floor: float = 0.5
     weight_skew_residual: float = 1.0
     weight_blur_score: float = 1.0
     weight_border_score: float = 1.0

@@ -14,8 +14,9 @@ import type { ServiceInventoryItem } from "@/types/api";
 const EEP_SERVICES = ["eep", "eep_worker", "eep_recovery", "shadow_worker", "retraining_worker", "dataset_builder"];
 
 function deploymentBadgeVariant(type: string): "danger" | "warning" | "muted" {
-  if (type.toLowerCase().includes("disabled") || type.toLowerCase().includes("not implemented")) return "danger";
-  if (type.toLowerCase().includes("gpu")) return "warning";
+  const normalizedType = type.toLowerCase();
+  if (normalizedType.includes("disabled") || normalizedType.includes("not implemented")) return "danger";
+  if (normalizedType.includes("runpod") || normalizedType.includes("gpu")) return "warning";
   return "muted";
 }
 

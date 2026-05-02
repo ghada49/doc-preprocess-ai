@@ -50,8 +50,10 @@ from sqlalchemy.orm import Session
 from services.eep.app.gates.artifact_validation import (
     ArtifactImageDimensions,
     ArtifactValidationResult,
+    build_artifact_gate_log_record,
 )
 from services.eep.app.gates.geometry_selection import PreprocessingGateConfig
+from services.eep.app.db.quality_gate import log_gate
 from services.eep_worker.app.circuit_breaker import CircuitBreaker
 from services.eep_worker.app.intake import ProxyConfig
 from services.eep_worker.app.normalization_step import (
@@ -312,8 +314,21 @@ async def run_split_normalization(
         storage=storage,
         image_loader=image_loader,
         page_index=0,
+        material_type=material_type,  # type: ignore[arg-type]
         gate_config=gate_config,
         session=session,
+    )
+    log_gate(
+        session,
+        **build_artifact_gate_log_record(
+            left_norm.validation_result,
+            job_id,
+            page_number,
+            "artifact_validation",
+            "accepted" if left_norm.route == "accept_now" else "rectification",
+            None if left_norm.validation_result.passed else "artifact_validation_failed",
+            left_norm.duration_ms,
+        ),
     )
 
     if left_norm.route == "accept_now":
@@ -377,8 +392,21 @@ async def run_split_normalization(
         storage=storage,
         image_loader=image_loader,
         page_index=1,
+        material_type=material_type,  # type: ignore[arg-type]
         gate_config=gate_config,
         session=session,
+    )
+    log_gate(
+        session,
+        **build_artifact_gate_log_record(
+            right_norm.validation_result,
+            job_id,
+            page_number,
+            "artifact_validation",
+            "accepted" if right_norm.route == "accept_now" else "rectification",
+            None if right_norm.validation_result.passed else "artifact_validation_failed",
+            right_norm.duration_ms,
+        ),
     )
 
     if right_norm.route == "accept_now":
