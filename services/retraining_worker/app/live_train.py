@@ -89,8 +89,8 @@ def _resolve_train_paths(
 
     Manifest keys (if using JSON file):
       iep0.data_root
-      iep1a.book | newspaper | microfilm  (paths to data.yaml)
-      iep1b.book | newspaper | microfilm
+      iep1a.book | newspaper | microfilm  (paths to data.yaml; at least one)
+      iep1b.book | newspaper | microfilm  (paths to data.yaml; at least one)
     """
     manifest = _load_train_manifest(manifest_path)
     iep0: Path | None = None
@@ -104,13 +104,15 @@ def _resolve_train_paths(
         iep0 = Path(iep0_raw)
         for m in _MATERIALS:
             p = (manifest.get("iep1a") or {}).get(m)
-            if not p:
-                raise RetrainingTrainConfigError(f"manifest.iep1a.{m} (data.yaml path) is required")
-            iep1a[m] = Path(p)
+            if p:
+                iep1a[m] = Path(p)
             p2 = (manifest.get("iep1b") or {}).get(m)
-            if not p2:
-                raise RetrainingTrainConfigError(f"manifest.iep1b.{m} (data.yaml path) is required")
-            iep1b[m] = Path(p2)
+            if p2:
+                iep1b[m] = Path(p2)
+        if not iep1a:
+            raise RetrainingTrainConfigError("manifest.iep1a must include at least one material data.yaml")
+        if not iep1b:
+            raise RetrainingTrainConfigError("manifest.iep1b must include at least one material data.yaml")
     else:
         iep0_env = os.getenv("RETRAINING_IEP0_DATA_ROOT", "").strip()
         if not iep0_env:
@@ -442,7 +444,7 @@ def run_live_preprocessing_training(
     iep1a_weights: dict[str, Path] = {}
     iep1b_weights: dict[str, Path] = {}
 
-    for mat in _MATERIALS:
+    for mat, data_yaml in iep1a_yamls.items():
         proj_a = base_project / "iep1a" / mat
         argv_a = [
             py,
@@ -450,7 +452,7 @@ def run_live_preprocessing_training(
             "--material",
             mat,
             "--data",
-            str(iep1a_yamls[mat]),
+            str(data_yaml),
             "--project",
             str(proj_a.parent),
             "--name",
@@ -471,6 +473,7 @@ def run_live_preprocessing_training(
         if u_a:
             s3_uris.append(u_a)
 
+    for mat, data_yaml in iep1b_yamls.items():
         proj_b = base_project / "iep1b" / mat
         argv_b = [
             py,
@@ -478,7 +481,7 @@ def run_live_preprocessing_training(
             "--material",
             mat,
             "--data",
-            str(iep1b_yamls[mat]),
+            str(data_yaml),
             "--project",
             str(proj_b.parent),
             "--name",

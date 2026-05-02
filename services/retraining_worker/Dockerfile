@@ -44,7 +44,10 @@ RUN uv pip install --system \
 
 COPY shared/ ./shared/
 COPY services/eep/ ./services/eep/
+COPY services/dataset_builder/ ./services/dataset_builder/
 COPY services/retraining_worker/ ./services/retraining_worker/
+COPY training/scripts/ ./training/scripts/
+COPY training/preprocessing/ ./training/preprocessing/
 
 RUN mkdir -p /tmp/prometheus_multiproc
 

@@ -19,6 +19,8 @@ import argparse
 import hashlib
 from pathlib import Path
 
+from yolo_rgb_sanitizer import ensure_yolo_dataset_rgb
+
 SHARED_CONFIG = dict(
     model="yolov8m-pose.pt",
     imgsz=1024,
@@ -88,6 +90,10 @@ def main() -> int:
 
     if not args.data.is_file():
         raise SystemExit(f"data.yaml not found: {args.data}")
+
+    rgb_stats = ensure_yolo_dataset_rgb(args.data)
+    print(f"LIBRARYAI_RGB_SANITIZER_CHECKED={rgb_stats['checked']}", flush=True)
+    print(f"LIBRARYAI_RGB_SANITIZER_CONVERTED={rgb_stats['converted']}", flush=True)
 
     try:
         from ultralytics import YOLO
