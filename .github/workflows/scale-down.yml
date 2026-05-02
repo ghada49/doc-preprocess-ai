@@ -60,7 +60,7 @@ jobs:
             --task-definition "${{ steps.register_drain.outputs.task_def_arn }}" \
             --launch-type FARGATE \
             --network-configuration "awsvpcConfiguration={subnets=[$DRAIN_SUBNET],securityGroups=[$DRAIN_SG],assignPublicIp=DISABLED}" \
-            --overrides "{\"containerOverrides\":[{\"name\":\"drain-monitor\",\"environment\":[{\"name\":\"DRAIN_TIMEOUT_MINUTES\",\"value\":\"$DRAIN_TIMEOUT_MINUTES\"},{\"name\":\"DRAIN_FORCE\",\"value\":\"$FORCE\"}]}]}" \
+            --overrides "{\"containerOverrides\":[{\"name\":\"drain-monitor\",\"environment\":[{\"name\":\"DRAIN_TIMEOUT_MINUTES\",\"value\":\"$DRAIN_TIMEOUT_MINUTES\"},{\"name\":\"DRAIN_FORCE\",\"value\":\"$FORCE\"},{\"name\":\"ECS_CLUSTER\",\"value\":\"$ECS_CLUSTER\"},{\"name\":\"AWS_REGION\",\"value\":\"$AWS_REGION\"}]}]}" \
             --query 'tasks[0].taskArn' --output text)
           echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
           echo "Drain monitor task started: $TASK_ARN"

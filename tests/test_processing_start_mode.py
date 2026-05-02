@@ -17,6 +17,7 @@ boto3 is patched via unittest.mock; Redis is replaced with a FakeRedis dict.
 
 from __future__ import annotations
 
+import json
 import os
 import threading
 import time
@@ -1061,6 +1062,159 @@ class TestDrainMonitorSingleShotModes(unittest.TestCase):
 
 
 # ── correction re-enqueue triggers scale-up ───────────────────────────────────
+
+class TestDrainMonitorActiveWorkDiagnostics(unittest.TestCase):
+    """Drain snapshot classification for DB, Redis, human-review, and stale work."""
+
+    class FakeDrainRedis:
+        def __init__(
+            self,
+            dm,
+            *,
+            queued: list[str] | None = None,
+            processing: list[str] | None = None,
+            shadow_pending: int = 0,
+            shadow_processing: int = 0,
+            dead_letter: int = 0,
+            heartbeats: set[str] | None = None,
+        ) -> None:
+            self._lists = {
+                dm.QUEUE_PAGE_TASKS: queued or [],
+                dm.QUEUE_PAGE_TASKS_PROCESSING: processing or [],
+                dm.QUEUE_SHADOW_TASKS: ["{}"] * shadow_pending,
+                dm.QUEUE_SHADOW_TASKS_PROCESSING: ["{}"] * shadow_processing,
+                dm.QUEUE_DEAD_LETTER: ["{}"] * dead_letter,
+            }
+            self._heartbeats = heartbeats or set()
+
+        def llen(self, key: str) -> int:
+            return len(self._lists.get(key, []))
+
+        def lrange(self, key: str, start: int, end: int) -> list[str]:
+            values = self._lists.get(key, [])
+            if end == -1:
+                return values[start:]
+            return values[start : end + 1]
+
+        def exists(self, key: str) -> bool:
+            return key in self._heartbeats
+
+        def hget(self, key: str, field: str) -> None:
+            return None
+
+    def setUp(self):
+        import importlib
+        import scripts.ecs_scaler.drain_monitor as dm
+        importlib.reload(dm)
+        self.dm = dm
+
+    def _task(self, *, task_id: str = "t1", page_id: str = "p1", job_id: str = "j1") -> str:
+        return json.dumps(
+            {
+                "task_id": task_id,
+                "job_id": job_id,
+                "page_id": page_id,
+                "page_number": 1,
+                "retry_count": 0,
+            }
+        )
+
+    def _snapshot(self, *, active_pages: int, active_redis: int) -> dict:
+        return {
+            "active_pages_count": active_pages,
+            "active_redis_items_count": active_redis,
+        }
+
+    def test_only_pending_human_correction_pages_drained(self):
+        snapshot = self._snapshot(active_pages=0, active_redis=0)
+        self.assertTrue(self.dm._is_snapshot_drained(snapshot))
+        self.assertFalse(self.dm._is_automatable_page_status("pending_human_correction"))
+        self.assertTrue(self.dm._is_human_review_only_status("pending_human_correction"))
+
+    def test_split_parent_with_children_pending_human_correction_drained(self):
+        snapshot = self._snapshot(active_pages=0, active_redis=0)
+        self.assertTrue(self.dm._is_snapshot_drained(snapshot))
+        self.assertFalse(self.dm._is_automatable_page_status("split"))
+        self.assertFalse(self.dm._is_automatable_page_status("pending_human_correction"))
+
+    def test_real_processing_page_blocks_drain(self):
+        snapshot = self._snapshot(active_pages=1, active_redis=0)
+        self.assertFalse(self.dm._is_snapshot_drained(snapshot))
+        self.assertTrue(self.dm._is_automatable_page_status("preprocessing"))
+
+    def test_queued_redis_item_with_active_db_page_blocks_drain(self):
+        r = self.FakeDrainRedis(self.dm, queued=[self._task()])
+        queues = self.dm._check_queues(r)
+        lookup = {
+            "p1": {
+                "job_id": "j1",
+                "page_id": "p1",
+                "page_number": 1,
+                "sub_page_index": None,
+                "status": "queued",
+                "review_reasons": None,
+                "age_seconds": 2,
+            }
+        }
+        with patch.object(self.dm, "_lookup_page_details", return_value=lookup):
+            details = self.dm._check_redis_details(r, object(), queues, sample_limit=10)
+
+        self.assertEqual(details["active_redis_items_count"], 1)
+        self.assertEqual(details["redis_blocker_samples"][0]["reason"], "redis_item_with_automatable_db_page")
+        self.assertFalse(
+            self.dm._is_snapshot_drained(
+                self._snapshot(active_pages=0, active_redis=details["active_redis_items_count"])
+            )
+        )
+
+    def test_pending_human_correction_redis_item_is_reported_nonblocking(self):
+        r = self.FakeDrainRedis(self.dm, processing=[self._task()])
+        queues = self.dm._check_queues(r)
+        lookup = {
+            "p1": {
+                "job_id": "j1",
+                "page_id": "p1",
+                "page_number": 1,
+                "sub_page_index": None,
+                "status": "pending_human_correction",
+                "review_reasons": ["needs_human_crop"],
+                "age_seconds": 1200,
+            }
+        }
+        with patch.object(self.dm, "_lookup_page_details", return_value=lookup):
+            details = self.dm._check_redis_details(r, object(), queues, sample_limit=10)
+
+        self.assertEqual(details["active_redis_items_count"], 0)
+        self.assertEqual(
+            details["redis_nonblocking_samples"][0]["reason"],
+            "redis_item_for_human_review_only_page",
+        )
+        self.assertTrue(details["redis_nonblocking_samples"][0]["human_review_only_work"])
+
+    def test_stale_processing_page_without_heartbeat_is_reported_as_blocker(self):
+        r = self.FakeDrainRedis(self.dm, processing=[self._task(task_id="stale-task")])
+        queues = self.dm._check_queues(r)
+        lookup = {
+            "p1": {
+                "job_id": "j1",
+                "page_id": "p1",
+                "page_number": 1,
+                "sub_page_index": None,
+                "status": "preprocessing",
+                "review_reasons": None,
+                "age_seconds": self.dm.DEFAULT_STALE_SECONDS + 1,
+            }
+        }
+        with patch.object(self.dm, "_lookup_page_details", return_value=lookup):
+            details = self.dm._check_redis_details(r, object(), queues, sample_limit=10)
+
+        self.assertEqual(details["active_redis_items_count"], 1)
+        blocker = details["redis_blocker_samples"][0]
+        self.assertEqual(blocker["reason"], "stale_processing_item_no_live_worker_claim")
+        self.assertFalse(blocker["live_heartbeat"])
+        self.assertFalse(blocker["live_claim"])
+        self.assertTrue(blocker["automatable_work"])
+
 
 class TestCorrectionScaleUpTrigger(unittest.TestCase):
     """

@@ -117,6 +117,15 @@ class TestParseGateConfig:
         cfg = parse_gate_config({"preprocessing": {"artifact_validation_threshold": 0.70}})
         assert cfg.artifact_validation_threshold == pytest.approx(0.70)
 
+    def test_material_artifact_validation_thresholds(self):
+        cfg = parse_gate_config(
+            {"preprocessing": {"artifact_validation_thresholds": {"newspaper": 0.42}}}
+        )
+        assert cfg.artifact_validation_thresholds["newspaper"] == pytest.approx(0.42)
+        assert cfg.artifact_validation_thresholds["book"] == pytest.approx(
+            _DEFAULTS.artifact_validation_thresholds["book"]
+        )
+
     # ── Spec YAML aliases ──────────────────────────────────────────────────────
 
     def test_alias_quality_blur_score_max_maps_to_blur_score_bad_min(self):

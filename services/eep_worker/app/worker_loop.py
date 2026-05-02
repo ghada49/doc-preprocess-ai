@@ -35,7 +35,11 @@ from services.eep.app.db.lineage import (
 from services.eep.app.db.models import Job, JobPage, PageLineage, ShadowEvaluation
 from services.eep.app.db.page_state import advance_page_state
 from services.eep.app.db.session import SessionLocal
-from services.eep.app.gates.artifact_validation import make_cv2_image_loader
+from services.eep.app.gates.artifact_validation import (
+    ArtifactValidationResult,
+    build_artifact_gate_log_record,
+    make_cv2_image_loader,
+)
 from services.eep.app.jobs.status import _derive_job_status
 from services.eep.app.queue import (
     MAX_TASK_RETRIES,
@@ -380,6 +384,20 @@ def _quality_summary_dict(branch: PreprocessBranchResponse) -> dict[str, float |
         "skew_residual": branch.quality.skew_residual,
         "foreground_coverage": branch.quality.foreground_coverage,
     }
+
+
+def _newspaper_iep1d_unavailable_fallback_allowed(
+    material_type: str,
+    validation_result: ArtifactValidationResult,
+) -> bool:
+    """
+    IEP1D availability is operational, not visual evidence.
+
+    For newspapers only, if the already-normalized artifact passed validation,
+    keep the page moving when rectification capacity is unavailable. Hard
+    artifact failures still block every material type.
+    """
+    return material_type == "newspaper" and validation_result.passed
 
 
 def _find_lineage(
@@ -1976,6 +1994,7 @@ async def _run_preprocessing(
             output_uri=output_uri,
             storage=output_backend,
             image_loader=output_loader,
+            material_type=material_type,
             gate_config=gate_config,
             session=session,
         )
@@ -1984,6 +2003,18 @@ async def _run_preprocessing(
 
     branch_response = norm_outcome.branch_response
     quality_summary = _quality_summary_dict(branch_response)
+    log_gate(
+        session,
+        **build_artifact_gate_log_record(
+            norm_outcome.validation_result,
+            job.job_id,
+            page.page_number,
+            "artifact_validation",
+            "accepted" if norm_outcome.route == "accept_now" else "rectification",
+            None if norm_outcome.validation_result.passed else "artifact_validation_failed",
+            norm_outcome.duration_ms,
+        ),
+    )
 
     if page.status == "preprocessing" and norm_outcome.route == "rescue_required":
         if gate_config.rectification_policy == "disabled_direct_review":
@@ -2079,27 +2110,101 @@ async def _run_preprocessing(
         # Starts libraryai-iep1d if IEP1D_SCALER_MODE=ecs, or assumes it is
         # already running if mode=noop. In disabled mode (default) this raises
         # Iep1dUnavailableError and the page routes to pending_human_correction.
+        iep1d_fallback_accepted = False
         try:
             await config.iep1d_scaler.ensure_iep1d_ready()
         except Iep1dUnavailableError as _iep1d_exc:
-            logger.warning(
-                "worker_loop: iep1d unavailable — routing to pending_human_correction "
-                "job=%s page_id=%s reason=%s",
-                job.job_id,
-                page.page_id,
-                _iep1d_exc,
-            )
-            _complete_pending_human_correction(
+            if _newspaper_iep1d_unavailable_fallback_allowed(
+                material_type,
+                norm_outcome.validation_result,
+            ):
+                logger.warning(
+                    "worker_loop: iep1d unavailable but newspaper first-pass artifact "
+                    "validated; accepting fallback job=%s page_id=%s reason=%s",
+                    job.job_id,
+                    page.page_id,
+                    _iep1d_exc,
+                )
+                iep1d_fallback_accepted = True
+            else:
+                logger.warning(
+                    "worker_loop: iep1d unavailable - routing to pending_human_correction "
+                    "job=%s page_id=%s reason=%s",
+                    job.job_id,
+                    page.page_id,
+                    _iep1d_exc,
+                )
+                _complete_pending_human_correction(
+                    session,
+                    page=page,
+                    job=job,
+                    lineage=lineage,
+                    from_state="rectification",
+                    review_reason="iep1d_unavailable",
+                    total_processing_ms=(time.monotonic() - task_started_at) * 1000.0,
+                    output_image_uri=page.output_image_uri,
+                    quality_summary=page.quality_summary,
+                )
+                return "ack"
+
+        if iep1d_fallback_accepted:
+            confirm_preprocessed_artifact(session, lineage.lineage_id)
+            total_processing_ms = (time.monotonic() - task_started_at) * 1000.0
+            if job.ptiff_qa_mode == "manual":
+                to_state = "ptiff_qa_pending"
+            elif job.pipeline_mode in {"layout", "layout_with_ocr"}:
+                to_state = "layout_detection"
+            else:
+                to_state = "accepted"
+
+            advanced = advance_page_state(
                 session,
-                page=page,
-                job=job,
-                lineage=lineage,
+                page.page_id,
                 from_state="rectification",
-                review_reason="iep1d_unavailable",
-                total_processing_ms=(time.monotonic() - task_started_at) * 1000.0,
-                output_image_uri=page.output_image_uri,
-                quality_summary=page.quality_summary,
+                to_state=to_state,
+                output_image_uri=branch_response.processed_image_uri,
+                quality_summary=quality_summary,
+                processing_time_ms=total_processing_ms,
             )
+            if not advanced:
+                logger.warning(
+                    "worker_loop: newspaper iep1d fallback CAS miss job=%s page_id=%s",
+                    job.job_id,
+                    page.page_id,
+                )
+                return "ack"
+
+            page.status = to_state
+            page.output_image_uri = branch_response.processed_image_uri
+            page.quality_summary = quality_summary
+            page.processing_time_ms = total_processing_ms
+            page.review_reasons = None
+            task_after_commit: PageTask | None = None
+            if to_state == "accepted":
+                page.acceptance_decision = "accepted"
+                page.routing_path = "preprocessing_only"
+                update_lineage_completion(
+                    session,
+                    lineage.lineage_id,
+                    acceptance_decision="accepted",
+                    acceptance_reason="newspaper iep1d unavailable fallback accepted",
+                    routing_path="preprocessing_only",
+                    total_processing_ms=total_processing_ms,
+                    output_image_uri=branch_response.processed_image_uri,
+                )
+            elif to_state == "layout_detection":
+                task_after_commit = _page_task_for(page)
+
+            _sync_job_summary(session, job)
+            _commit(session)
+            if task_after_commit is not None:
+                try:
+                    enqueue_page_task(redis_client, task_after_commit)
+                except redis_lib.RedisError:
+                    logger.exception(
+                        "worker_loop: failed to enqueue newspaper fallback layout page_id=%s",
+                        task_after_commit.page_id,
+                    )
             return "ack"
 
         try:

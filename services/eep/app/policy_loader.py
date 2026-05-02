@@ -164,6 +164,21 @@ def _parse_area_fraction_bounds(
     return result
 
 
+def _parse_material_float_map(
+    raw: Any,
+    default: dict[str, float],
+) -> dict[str, float]:
+    if not isinstance(raw, dict):
+        return dict(default)
+    result = dict(default)
+    for material_type, value in raw.items():
+        try:
+            result[str(material_type)] = float(value)
+        except (TypeError, ValueError):
+            pass
+    return result
+
+
 # ── Public API ────────────────────────────────────────────────────────────────
 
 
@@ -210,6 +225,10 @@ def parse_gate_config(
         pre.get("artifact_validation_threshold"),
         defaults.artifact_validation_threshold,
     )
+    artifact_validation_thresholds = _parse_material_float_map(
+        pre.get("artifact_validation_thresholds"),
+        defaults.artifact_validation_thresholds,
+    )
     aspect_ratio_bounds = _parse_aspect_ratio_bounds(
         pre.get("aspect_ratio_bounds"),
         _DEFAULT_ASPECT_RATIO_BOUNDS,
@@ -229,6 +248,10 @@ def parse_gate_config(
     newspaper_strong_iep1a_tta_agreement_min = _safe_float(
         pre.get("newspaper_strong_iep1a_tta_agreement_min"),
         defaults.newspaper_strong_iep1a_tta_agreement_min,
+    )
+    newspaper_split_child_sliver_max_area_fraction = _safe_float(
+        pre.get("newspaper_split_child_sliver_max_area_fraction"),
+        defaults.newspaper_split_child_sliver_max_area_fraction,
     )
 
     # ── Spec YAML aliases (spec key ≠ dataclass field name) ──────────────────
@@ -256,10 +279,34 @@ def parse_gate_config(
     border_score_good_min = _safe_float(
         pre.get("border_score_good_min"), defaults.border_score_good_min
     )
+    newspaper_border_score_bad_max = _safe_float(
+        pre.get("newspaper_border_score_bad_max"),
+        defaults.newspaper_border_score_bad_max,
+    )
+    newspaper_border_score_good_min = _safe_float(
+        pre.get("newspaper_border_score_good_min"),
+        defaults.newspaper_border_score_good_min,
+    )
     foreground_good_lo = _safe_float(pre.get("foreground_good_lo"), defaults.foreground_good_lo)
     foreground_good_hi = _safe_float(pre.get("foreground_good_hi"), defaults.foreground_good_hi)
     foreground_bad_lo = _safe_float(pre.get("foreground_bad_lo"), defaults.foreground_bad_lo)
     foreground_bad_hi = _safe_float(pre.get("foreground_bad_hi"), defaults.foreground_bad_hi)
+    newspaper_foreground_good_lo = _safe_float(
+        pre.get("newspaper_foreground_good_lo"),
+        defaults.newspaper_foreground_good_lo,
+    )
+    newspaper_foreground_good_hi = _safe_float(
+        pre.get("newspaper_foreground_good_hi"),
+        defaults.newspaper_foreground_good_hi,
+    )
+    newspaper_foreground_bad_lo = _safe_float(
+        pre.get("newspaper_foreground_bad_lo"),
+        defaults.newspaper_foreground_bad_lo,
+    )
+    newspaper_foreground_bad_hi = _safe_float(
+        pre.get("newspaper_foreground_bad_hi"),
+        defaults.newspaper_foreground_bad_hi,
+    )
     geometry_confidence_good_min = _safe_float(
         pre.get("geometry_confidence_good_min"), defaults.geometry_confidence_good_min
     )
@@ -271,6 +318,10 @@ def parse_gate_config(
     )
     tta_agreement_bad_max = _safe_float(
         pre.get("tta_agreement_bad_max"), defaults.tta_agreement_bad_max
+    )
+    newspaper_soft_signal_floor = _safe_float(
+        pre.get("newspaper_soft_signal_floor"),
+        defaults.newspaper_soft_signal_floor,
     )
     weight_skew_residual = _safe_float(
         pre.get("weight_skew_residual"), defaults.weight_skew_residual
@@ -306,24 +357,35 @@ def parse_gate_config(
             newspaper_strong_iep1a_geometry_confidence_min
         ),
         newspaper_strong_iep1a_tta_agreement_min=newspaper_strong_iep1a_tta_agreement_min,
+        newspaper_split_child_sliver_max_area_fraction=(
+            newspaper_split_child_sliver_max_area_fraction
+        ),
         split_confidence_threshold=split_confidence_threshold,
         tta_variance_ceiling=tta_variance_ceiling,
         page_area_preference_threshold=page_area_preference_threshold,
         artifact_validation_threshold=artifact_validation_threshold,
+        artifact_validation_thresholds=artifact_validation_thresholds,
         skew_residual_good_max=skew_residual_good_max,
         skew_residual_bad_min=skew_residual_bad_min,
         blur_score_good_max=blur_score_good_max,
         blur_score_bad_min=blur_score_bad_min,
         border_score_bad_max=border_score_bad_max,
         border_score_good_min=border_score_good_min,
+        newspaper_border_score_bad_max=newspaper_border_score_bad_max,
+        newspaper_border_score_good_min=newspaper_border_score_good_min,
         foreground_good_lo=foreground_good_lo,
         foreground_good_hi=foreground_good_hi,
         foreground_bad_lo=foreground_bad_lo,
         foreground_bad_hi=foreground_bad_hi,
+        newspaper_foreground_good_lo=newspaper_foreground_good_lo,
+        newspaper_foreground_good_hi=newspaper_foreground_good_hi,
+        newspaper_foreground_bad_lo=newspaper_foreground_bad_lo,
+        newspaper_foreground_bad_hi=newspaper_foreground_bad_hi,
         geometry_confidence_good_min=geometry_confidence_good_min,
         geometry_confidence_bad_max=geometry_confidence_bad_max,
         tta_agreement_good_min=tta_agreement_good_min,
         tta_agreement_bad_max=tta_agreement_bad_max,
+        newspaper_soft_signal_floor=newspaper_soft_signal_floor,
         weight_skew_residual=weight_skew_residual,
         weight_blur_score=weight_blur_score,
         weight_border_score=weight_border_score,

@@ -56,6 +56,7 @@ from services.eep.app.gates.artifact_validation import (
     run_artifact_validation,
 )
 from services.eep.app.gates.geometry_selection import PreprocessingGateConfig
+from shared.schemas.eep import MaterialType
 from monitoring.drift_observer import observe_and_check
 from shared.io.storage import StorageBackend
 from shared.metrics import EEP_ARTIFACT_VALIDATION_ROUTE
@@ -241,6 +242,7 @@ def run_normalization_and_first_validation(
     storage: StorageBackend,
     image_loader: Callable[[str], ArtifactImageDimensions],
     page_index: int = 0,
+    material_type: MaterialType = "book",
     gate_config: PreprocessingGateConfig | None = None,
     session: Session | None = None,
 ) -> NormalizationOutcome:
@@ -354,6 +356,7 @@ def run_normalization_and_first_validation(
         geometry=full_res_geometry,
         image_loader=image_loader,
         config=gate_config,
+        material_type=material_type,
     )
 
     # Combined routing decision

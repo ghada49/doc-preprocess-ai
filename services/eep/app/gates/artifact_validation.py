@@ -28,7 +28,11 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
-from services.eep.app.gates.geometry_selection import PreprocessingGateConfig
+from shared.schemas.eep import MaterialType
+from services.eep.app.gates.geometry_selection import (
+    _DEFAULT_ARTIFACT_VALIDATION_THRESHOLDS,
+    PreprocessingGateConfig,
+)
 from shared.schemas.geometry import GeometryResponse
 from shared.schemas.preprocessing import PreprocessBranchResponse, QualityMetrics
 
@@ -289,6 +293,7 @@ def compute_artifact_soft_score(
     quality: QualityMetrics,
     geometry: GeometryResponse | None,
     config: PreprocessingGateConfig,
+    material_type: MaterialType = "book",
 ) -> tuple[float, dict[str, float]]:
     """
     Compute the weighted soft validation score for a normalized artifact.
@@ -328,19 +333,49 @@ def compute_artifact_soft_score(
     )
     weights["blur_score"] = cfg.weight_blur_score
 
+    border_bad_max = (
+        cfg.newspaper_border_score_bad_max
+        if material_type == "newspaper"
+        else cfg.border_score_bad_max
+    )
+    border_good_min = (
+        cfg.newspaper_border_score_good_min
+        if material_type == "newspaper"
+        else cfg.border_score_good_min
+    )
     signal_scores["border_score"] = _normalize_increasing(
         quality.border_score,
-        cfg.border_score_bad_max,
-        cfg.border_score_good_min,
+        border_bad_max,
+        border_good_min,
     )
     weights["border_score"] = cfg.weight_border_score
 
+    foreground_bad_lo = (
+        cfg.newspaper_foreground_bad_lo
+        if material_type == "newspaper"
+        else cfg.foreground_bad_lo
+    )
+    foreground_good_lo = (
+        cfg.newspaper_foreground_good_lo
+        if material_type == "newspaper"
+        else cfg.foreground_good_lo
+    )
+    foreground_good_hi = (
+        cfg.newspaper_foreground_good_hi
+        if material_type == "newspaper"
+        else cfg.foreground_good_hi
+    )
+    foreground_bad_hi = (
+        cfg.newspaper_foreground_bad_hi
+        if material_type == "newspaper"
+        else cfg.foreground_bad_hi
+    )
     signal_scores["foreground_coverage"] = _normalize_range(
         quality.foreground_coverage,
-        cfg.foreground_bad_lo,
-        cfg.foreground_good_lo,
-        cfg.foreground_good_hi,
-        cfg.foreground_bad_hi,
+        foreground_bad_lo,
+        foreground_good_lo,
+        foreground_good_hi,
+        foreground_bad_hi,
     )
     weights["foreground_coverage"] = cfg.weight_foreground_coverage
 
@@ -366,6 +401,33 @@ def compute_artifact_soft_score(
         combined_score = sum(weights[k] * signal_scores[k] for k in signal_scores) / total_weight
 
     return combined_score, signal_scores
+
+
+def _artifact_threshold_for_material(
+    material_type: MaterialType,
+    config: PreprocessingGateConfig,
+) -> float:
+    if (
+        config.artifact_validation_threshold != _DEFAULT_ARTIFACT_VALIDATION_THRESHOLDS["book"]
+        and config.artifact_validation_thresholds == _DEFAULT_ARTIFACT_VALIDATION_THRESHOLDS
+    ):
+        return config.artifact_validation_threshold
+    return config.artifact_validation_thresholds.get(
+        material_type,
+        config.artifact_validation_threshold,
+    )
+
+
+def _newspaper_soft_geometry_only_failure(
+    signal_scores: dict[str, float],
+    config: PreprocessingGateConfig,
+) -> bool:
+    low_signals = {
+        name
+        for name, score in signal_scores.items()
+        if score < config.newspaper_soft_signal_floor
+    }
+    return bool(low_signals) and low_signals <= {"geometry_confidence", "tta_agreement"}
 
 
 @dataclass
@@ -394,6 +456,7 @@ def run_artifact_validation(
     image_loader: Callable[[str], ArtifactImageDimensions],
     config: PreprocessingGateConfig | None = None,
     dimension_tolerance: int = 2,
+    material_type: MaterialType = "book",
 ) -> ArtifactValidationResult:
     """
     Orchestrate artifact validation: hard requirements then soft scoring.
@@ -425,8 +488,20 @@ def run_artifact_validation(
             passed=False,
         )
 
-    soft_score, signal_scores = compute_artifact_soft_score(response.quality, geometry, config)
-    soft_passed = soft_score >= config.artifact_validation_threshold
+    soft_score, signal_scores = compute_artifact_soft_score(
+        response.quality,
+        geometry,
+        config,
+        material_type,
+    )
+    threshold = _artifact_threshold_for_material(material_type, config)
+    soft_passed = soft_score >= threshold
+    if (
+        not soft_passed
+        and material_type == "newspaper"
+        and _newspaper_soft_geometry_only_failure(signal_scores, config)
+    ):
+        soft_passed = True
 
     return ArtifactValidationResult(
         hard_result=hard_result,
@@ -471,7 +546,14 @@ def build_artifact_gate_log_record(
         "structural_agreement": None,
         "selected_model": None,
         "selection_reason": None,
-        "sanity_check_results": result.hard_result.as_dict(),
+        "sanity_check_results": {
+            **result.hard_result.as_dict(),
+            "hard_checks": result.hard_result.as_dict(),
+            "soft_score": result.soft_score,
+            "signal_scores": result.signal_scores,
+            "soft_passed": result.soft_passed,
+            "route_decision": route_decision,
+        },
         "split_confidence": None,
         "tta_variance": None,
         "artifact_validation_score": result.soft_score,

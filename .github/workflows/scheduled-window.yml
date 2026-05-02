@@ -100,7 +100,7 @@ jobs:
             --task-definition "${{ steps.register_drain.outputs.task_def_arn }}" \
             --launch-type FARGATE \
             --network-configuration "awsvpcConfiguration={subnets=[$DRAIN_SUBNET],securityGroups=[$DRAIN_SG],assignPublicIp=DISABLED}" \
-            --overrides '{"containerOverrides":[{"name":"drain-monitor","command":["python","/app/scripts/ecs_scaler/drain_monitor.py","--assert-has-work"]}]}' \
+            --overrides "{\"containerOverrides\":[{\"name\":\"drain-monitor\",\"command\":[\"python\",\"/app/scripts/ecs_scaler/drain_monitor.py\",\"--assert-has-work\"],\"environment\":[{\"name\":\"ECS_CLUSTER\",\"value\":\"$ECS_CLUSTER\"},{\"name\":\"AWS_REGION\",\"value\":\"$AWS_REGION\"}]}]}" \
             --query 'tasks[0].taskArn' --output text)
           echo "task_arn=$TASK_ARN" >> "$GITHUB_OUTPUT"
           echo "Check task started: $TASK_ARN"
@@ -125,9 +125,12 @@ jobs:
           if [ "$EXIT_CODE" = "0" ]; then
             echo "has_work=true" >> "$GITHUB_OUTPUT"
             echo "Processable work found — will trigger scale-up."
-          else
+          elif [ "$EXIT_CODE" = "1" ]; then
             echo "has_work=false" >> "$GITHUB_OUTPUT"
             echo "No processable work — scale-up skipped."
+          else
+            echo "ERROR: drain_monitor failed before producing a work decision (exit_code=$EXIT_CODE)."
+            exit 1
           fi
 
       # ── Step 4: Trigger scale-up if work exists ───────────────────────────

@@ -735,6 +735,61 @@ class TestRunArtifactValidation:
         assert result.soft_score is not None
         assert result.soft_score < _CONFIG.artifact_validation_threshold
 
+    def test_newspaper_low_soft_geometry_only_can_pass(self) -> None:
+        resp = _make_response()
+        cfg = PreprocessingGateConfig(
+            artifact_validation_threshold=0.9,
+            artifact_validation_thresholds={"book": 0.9, "newspaper": 0.9},
+        )
+        low_geometry = _make_geometry(
+            geometry_confidence=0.2,
+            tta_structural_agreement_rate=0.95,
+        )
+        result = run_artifact_validation(
+            resp,
+            low_geometry,  # type: ignore[arg-type]
+            _loader_ok(),
+            cfg,
+            material_type="newspaper",
+        )
+        assert result.hard_result.passed is True
+        assert result.soft_score is not None
+        assert result.soft_passed is True
+        assert result.passed is True
+
+    def test_book_low_soft_geometry_remains_strict(self) -> None:
+        resp = _make_response()
+        cfg = PreprocessingGateConfig(
+            artifact_validation_threshold=0.9,
+            artifact_validation_thresholds={"book": 0.9, "newspaper": 0.9},
+        )
+        low_geometry = _make_geometry(
+            geometry_confidence=0.2,
+            tta_structural_agreement_rate=0.95,
+        )
+        result = run_artifact_validation(
+            resp,
+            low_geometry,  # type: ignore[arg-type]
+            _loader_ok(),
+            cfg,
+            material_type="book",
+        )
+        assert result.hard_result.passed is True
+        assert result.soft_passed is False
+        assert result.passed is False
+
+    def test_newspaper_hard_failure_still_fails(self) -> None:
+        resp = _make_response()
+        result = run_artifact_validation(
+            resp,
+            _make_geometry(),  # type: ignore[arg-type]
+            _loader_missing(),
+            _CONFIG,
+            material_type="newspaper",
+        )
+        assert result.hard_result.passed is False
+        assert result.passed is False
+
     def test_custom_threshold_zero_always_passes(self) -> None:
         cfg = PreprocessingGateConfig(artifact_validation_threshold=0.0)
         resp = _make_response()
@@ -881,3 +936,7 @@ class TestBuildArtifactGateLogRecord:
         sr = record["sanity_check_results"]
         assert isinstance(sr, dict)
         assert sr["passed"] is True
+        assert sr["hard_checks"]["passed"] is True
+        assert "soft_score" in sr
+        assert "signal_scores" in sr
+        assert sr["route_decision"] == "accepted"
