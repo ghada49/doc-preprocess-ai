@@ -43,42 +43,42 @@ jobs:
           - service: eep-worker
             context: .
             dockerfile: services/eep_worker/Dockerfile
-            paths: services/eep_worker shared
+            paths: services/eep_worker services/eep shared monitoring
           - service: eep-recovery
             context: .
             dockerfile: services/eep_recovery/Dockerfile
-            paths: services/eep_recovery shared
+            paths: services/eep_recovery services/eep shared
           - service: shadow-worker
             context: .
             dockerfile: services/shadow_worker/Dockerfile
-            paths: services/shadow_worker shared
+            paths: services/shadow_worker services/eep shared
           - service: retraining-worker
             context: .
             dockerfile: services/retraining_worker/Dockerfile
-            paths: services/retraining_worker
+            paths: services/retraining_worker services/eep shared
           - service: iep0
             context: .
             dockerfile: services/iep0/Dockerfile
-            paths: services/iep0
+            paths: services/iep0 shared
             push_dockerhub: true
           - service: iep1a
             context: .
             dockerfile: services/iep1a/Dockerfile
-            paths: services/iep1a
+            paths: services/iep1a shared
             push_dockerhub: true
           - service: iep1b
             context: .
             dockerfile: services/iep1b/Dockerfile
-            paths: services/iep1b
+            paths: services/iep1b shared
             push_dockerhub: true
           - service: iep1d
             context: .
             dockerfile: services/iep1d/Dockerfile
-            paths: services/iep1d
+            paths: services/iep1d shared
           - service: iep1e
             context: .
             dockerfile: services/iep1e/Dockerfile
-            paths: services/iep1e
+            paths: services/iep1e shared
             push_dockerhub: true
             build-args: |
               ENABLE_REAL_MODEL=true
@@ -89,7 +89,7 @@ jobs:
           - service: iep2a
             context: .
             dockerfile: services/iep2a/Dockerfile
-            paths: services/iep2a
+            paths: services/iep2a shared
             push_dockerhub: true
             build-args: |
               ENABLE_REAL_MODEL=true
@@ -97,7 +97,7 @@ jobs:
           - service: iep2b
             context: .
             dockerfile: services/iep2b/Dockerfile
-            paths: services/iep2b
+            paths: services/iep2b shared
             push_dockerhub: true
             build-args: |
               ENABLE_REAL_MODEL=true
