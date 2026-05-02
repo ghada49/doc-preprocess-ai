@@ -86,6 +86,7 @@ export function jobStatusLabel(status: string): string {
   const labels: Record<string, string> = {
     queued: "Waiting",
     running: "Processing",
+    waiting_review: "Waiting review",
     done: "Ready",
     failed: "Issue found",
   };
@@ -113,6 +114,7 @@ export function jobStatusClass(status: string): string {
   const classes: Record<string, string> = {
     queued: "job-queued",
     running: "job-running",
+    waiting_review: "border border-amber-200 bg-amber-50 text-amber-800",
     done: "job-done",
     failed: "job-failed",
   };
@@ -126,6 +128,30 @@ export function isJobActive(status: string): boolean {
 export function hasActivePages(pages: { status: string }[]): boolean {
   const terminalStates = new Set(["accepted", "review", "failed"]);
   return pages.some((p) => !terminalStates.has(p.status));
+}
+
+export function isAutomatedPageState(status: string): boolean {
+  return [
+    "queued",
+    "preprocessing",
+    "rectification",
+    "layout_detection",
+    "semantic_norm",
+  ].includes(status);
+}
+
+export function isHumanWaitPageState(status: string): boolean {
+  return status === "pending_human_correction" || status === "ptiff_qa_pending";
+}
+
+export function jobDisplayStatusFromPages(
+  jobStatus: string,
+  pages: { status: string }[]
+): string {
+  if (jobStatus !== "running") return jobStatus;
+  if (pages.some((page) => isAutomatedPageState(page.status))) return "running";
+  if (pages.some((page) => isHumanWaitPageState(page.status))) return "waiting_review";
+  return jobStatus;
 }
 
 export function reviewReasonLabel(reason: string): string {

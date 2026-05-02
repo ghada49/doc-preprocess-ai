@@ -70,6 +70,9 @@ def _valid_response_dict(page_count: int = 1) -> dict[str, Any]:
         "uncertainty_flags": [],
         "warnings": [],
         "processing_time_ms": 120.0,
+        "service_version": "test-service-v1",
+        "model_version": "test-model-v1",
+        "model_source": "test-model-source",
     }
 
 
@@ -200,6 +203,17 @@ class TestHappyPath:
         assert result.iep1b_duration_ms is not None
         assert result.iep1a_duration_ms >= 0.0
         assert result.iep1b_duration_ms >= 0.0
+
+    @pytest.mark.asyncio
+    async def test_service_invocation_model_metadata_stored(
+        self, backend: AsyncMock, session: MagicMock
+    ) -> None:
+        await _invoke(backend, session)
+        records = _added_records(session)
+        for record in records:
+            assert record.service_version == "test-service-v1"
+            assert record.model_version == "test-model-v1"
+            assert record.model_source == "test-model-source"
 
 
 # ── 2. Partial failure A — IEP1A fails, IEP1B succeeds ────────────────────────

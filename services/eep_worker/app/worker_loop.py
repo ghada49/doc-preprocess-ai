@@ -40,7 +40,10 @@ from services.eep.app.gates.artifact_validation import (
     build_artifact_gate_log_record,
     make_cv2_image_loader,
 )
-from services.eep.app.jobs.status import _derive_job_status
+from services.eep.app.jobs.summary import (
+    derive_job_status as _derive_job_status,
+    leaf_pages_from_pages,
+)
 from services.eep.app.queue import (
     MAX_TASK_RETRIES,
     ClaimedTask,
@@ -419,7 +422,7 @@ def _find_lineage(
 
 def _sync_job_summary(session: Session, job: Job) -> None:
     pages = session.query(JobPage).filter_by(job_id=job.job_id).all()
-    leaf_pages = [page for page in pages if page.status != "split"]
+    leaf_pages = leaf_pages_from_pages(pages)
     now = datetime.now(timezone.utc)
 
     job.accepted_count = sum(1 for page in leaf_pages if page.status == "accepted")

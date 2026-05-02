@@ -40,6 +40,7 @@ import {
   truncateId,
   hasActivePages,
   isJobActive,
+  jobDisplayStatusFromPages,
   reviewReasonLabel,
 } from "@/lib/utils";
 import { cn } from "@/lib/utils";
@@ -126,6 +127,7 @@ export default function JobDetailPage() {
   const summary = data.summary;
   const isActive = isJobActive(summary.status) || hasActivePages(operationalPages);
   const hasSplitPages = operationalPages.some((page) => page.sub_page_index != null);
+  const displayStatus = jobDisplayStatusFromPages(summary.status, operationalPages);
 
   return (
     <UserShell
@@ -155,7 +157,7 @@ export default function JobDetailPage() {
                 : "Review progress, open finished pages, and download results when they are ready."
             }
             icon={FileSearch}
-            badge={<StatusBadge status={summary.status} type="job" />}
+            badge={<StatusBadge status={displayStatus} type="job" />}
             actions={
               <div className="flex flex-wrap items-center gap-2">
                 {summary.pending_human_correction_count > 0 && (
@@ -500,6 +502,9 @@ function pageMessage(page: JobPage): string {
     return page.review_reasons?.length
       ? page.review_reasons.map(reviewReasonLabel).join(", ")
       : "Please review this page.";
+  }
+  if (page.status === "ptiff_qa_pending") {
+    return "Waiting for review.";
   }
   if (page.status === "accepted") {
     return "Ready to use.";

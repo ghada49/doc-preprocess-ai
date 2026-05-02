@@ -162,6 +162,10 @@ def _log_invocation(
     status: str,
     error_message: str | None,
     metrics: dict[str, Any] | None,
+    service_version: str | None = None,
+    model_version: str | None = None,
+    model_source: str | None = None,
+    config_snapshot: dict[str, Any] | None = None,
 ) -> None:
     """
     Write a ServiceInvocation row to *session*.
@@ -184,12 +188,16 @@ def _log_invocation(
     record = ServiceInvocation(
         lineage_id=lineage_id,
         service_name=service_name,
+        service_version=service_version,
+        model_version=model_version,
+        model_source=model_source,
         invoked_at=invoked_at,
         completed_at=completed_at,
         processing_time_ms=duration_ms,
         status=status,
         error_message=error_message,
         metrics=metrics,
+        config_snapshot=config_snapshot,
     )
     session.add(record)
 
@@ -272,6 +280,13 @@ async def _invoke_one(
                 "geometry_confidence": response.geometry_confidence,
                 "tta_structural_agreement_rate": response.tta_structural_agreement_rate,
                 "tta_prediction_variance": response.tta_prediction_variance,
+            },
+            response.service_version,
+            response.model_version,
+            response.model_source,
+            {
+                "endpoint": endpoint,
+                "material_type": payload.get("material_type"),
             },
         )
         return _ServiceCallOutcome(

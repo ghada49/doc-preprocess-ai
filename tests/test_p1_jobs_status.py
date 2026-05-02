@@ -384,6 +384,10 @@ class TestDeriveJobStatusUnit:
         pages = [_page(status="semantic_norm")]
         assert _derive_job_status(pages) == "running"
 
+    def test_ptiff_qa_pending_returns_running(self) -> None:
+        pages = [_page(status="ptiff_qa_pending")]
+        assert _derive_job_status(pages) == "running"
+
     def test_all_failed_returns_failed(self) -> None:
         pages = [_page(status="failed"), _page(page_id="p2", status="failed")]
         assert _derive_job_status(pages) == "failed"
@@ -434,6 +438,11 @@ class TestJobStatusDerivationViaEndpoint:
 
     def test_semantic_norm_page_returns_running(self, client_for: Any) -> None:
         pages = [_page(status="semantic_norm")]
+        r = client_for(_job(), pages).get("/v1/jobs/job-001")
+        assert r.json()["summary"]["status"] == "running"
+
+    def test_ptiff_qa_pending_page_returns_running(self, client_for: Any) -> None:
+        pages = [_page(status="ptiff_qa_pending")]
         r = client_for(_job(), pages).get("/v1/jobs/job-001")
         assert r.json()["summary"]["status"] == "running"
 

@@ -25,6 +25,7 @@ _NON_TERMINAL: frozenset[str] = frozenset(
         "rectification",
         "layout_detection",
         "semantic_norm",
+        "ptiff_qa_pending",
         "pending_human_correction",
         "split",
     }
