@@ -33,11 +33,11 @@
         }
       },
       "healthCheck": {
-        "command": ["CMD-SHELL", "curl -sf http://localhost:8007/ready || exit 1"],
+        "command": ["CMD-SHELL", "curl -sf http://localhost:8007/health || exit 1"],
         "interval": 15,
         "timeout": 5,
         "retries": 3,
-        "startPeriod": 300
+        "startPeriod": 30
       }
     }
   ]
