@@ -51,6 +51,7 @@ import os
 import sys
 import time
 from datetime import datetime, timezone
+from decimal import Decimal
 from typing import Any
 
 
@@ -137,6 +138,8 @@ def _fetch_all_dicts(cur) -> list[dict[str, Any]]:
 def _json_safe(value: Any) -> Any:
     if isinstance(value, datetime):
         return value.isoformat()
+    if isinstance(value, Decimal):
+        return float(value)
     if isinstance(value, (list, tuple)):
         return [_json_safe(item) for item in value]
     if isinstance(value, dict):

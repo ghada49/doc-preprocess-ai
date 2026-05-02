@@ -837,6 +837,84 @@ class TestNormalProcessingAlreadyActive(unittest.TestCase):
         self.assertIn("libraryai-iep1e", started)
         self.assertIn("libraryai-eep-recovery", started)
 
+    def test_in_progress_eep_worker_reuses_existing_runpod_urls(self):
+        """A second trigger during ECS warm-up must not create a second
+        RunPod triplet. It should reuse the URLs already baked into the
+        started eep-worker task definition while continuing to heal ECS."""
+        env = {
+            "ECS_CLUSTER": "test-cluster",
+            "WORKER_DESIRED_COUNT": "2",
+            "AWS_REGION": "us-east-1",
+            "RUNPOD_API_KEY": "test-key",
+        }
+        existing_urls = {
+            "IEP0_URL": "https://osv6r3kq1rrurd-8006.proxy.runpod.net",
+            "IEP1A_URL": "https://mhj2pxxpp4ux5j-8001.proxy.runpod.net",
+            "IEP1B_URL": "https://gzk6wgz1n72cjl-8002.proxy.runpod.net",
+        }
+        mock_ecs = MagicMock()
+        mock_ecs.describe_services.return_value = self._response_with_overrides(
+            {
+                "libraryai-eep-worker": {
+                    "desiredCount": 2,
+                    "runningCount": 0,
+                    "pendingCount": 2,
+                    "taskDefinition": "arn:aws:ecs:task-definition/libraryai-eep-worker:42",
+                },
+                "libraryai-iep1e": {"desiredCount": 0, "runningCount": 0},
+                "libraryai-iep2a-v2": {"desiredCount": 0, "runningCount": 0},
+                "libraryai-iep2b": {"desiredCount": 0, "runningCount": 0},
+                "libraryai-eep-recovery": {"desiredCount": 0, "runningCount": 0},
+                "libraryai-shadow-worker": {"desiredCount": 0, "runningCount": 0},
+            }
+        )
+        mock_ecs.describe_task_definition.return_value = {
+            "taskDefinition": {
+                "family": "libraryai-eep-worker",
+                "containerDefinitions": [
+                    {
+                        "name": "eep-worker",
+                        "environment": [
+                            {"name": name, "value": value}
+                            for name, value in existing_urls.items()
+                        ],
+                    }
+                ],
+            }
+        }
+        mock_ecs.register_task_definition.return_value = {
+            "taskDefinition": {
+                "taskDefinitionArn": "arn:aws:ecs:us-east-1:123:task-definition/libraryai-eep-worker:99"
+            }
+        }
+
+        with patch.dict(os.environ, env, clear=False):
+            with patch("boto3.client", return_value=mock_ecs):
+                with patch.object(
+                    self.normal_scaler,
+                    "_create_runpod_pods",
+                    return_value=(
+                        "https://new1-8006.proxy.runpod.net",
+                        "https://new2-8001.proxy.runpod.net",
+                        "https://new3-8002.proxy.runpod.net",
+                    ),
+                ) as mock_create_pods:
+                    self.normal_scaler._do_scale_up()
+
+        mock_create_pods.assert_not_called()
+        registered_env = {
+            item["name"]: item["value"]
+            for item in mock_ecs.register_task_definition.call_args.kwargs[
+                "containerDefinitions"
+            ][0]["environment"]
+        }
+        self.assertEqual(registered_env["IEP0_URL"], existing_urls["IEP0_URL"])
+        self.assertEqual(registered_env["IEP1A_URL"], existing_urls["IEP1A_URL"])
+        self.assertEqual(registered_env["IEP1B_URL"], existing_urls["IEP1B_URL"])
+        started = {c.kwargs["service"] for c in mock_ecs.update_service.call_args_list}
+        self.assertIn("libraryai-eep-worker", started)
+        self.assertIn("libraryai-iep1e", started)
+
 
 # ── 3: drain ignores human-review states ──────────────────────────────────────
 
