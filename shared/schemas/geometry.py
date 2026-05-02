@@ -91,6 +91,9 @@ class GeometryResponse(BaseModel):
         uncertainty_flags           — advisory flags; empty list if none
         warnings                    — advisory messages; empty list if none
         processing_time_ms          — wall-clock elapsed time in ms (>= 0)
+        service_version             — serving code/API version when reported
+        model_version               — model artifact/version identity when reported
+        model_source                — source/path/registry for the model artifact
 
     Validator:
         len(pages) must equal page_count.
@@ -107,6 +110,9 @@ class GeometryResponse(BaseModel):
     uncertainty_flags: list[str]
     warnings: list[str]
     processing_time_ms: Annotated[float, Field(ge=0.0)]
+    service_version: str | None = None
+    model_version: str | None = None
+    model_source: str | None = None
 
     @model_validator(mode="after")
     def pages_match_page_count(self) -> GeometryResponse:
