@@ -93,7 +93,7 @@ from services.eep_worker.app.rescue_step import RescueOutcome, run_rescue_flow
 from services.eep_worker.app.task import build_gate_config
 from services.eep_worker.app.watchdog import TaskWatchdog
 from shared.gpu.backend import BackendError, GPUBackend, LocalHTTPBackend, RunpodBackend
-from shared.metrics import EEP_RECTIFICATION_POLICY_SKIPS
+from shared.metrics import EEP_RECTIFICATION_POLICY_SKIPS, EEP_REQUESTS_TOTAL
 from shared.io.storage import get_backend
 from shared.schemas.iep0 import BatchClassifyResponse, ClassifyResponse
 from shared.schemas.layout import (
@@ -166,6 +166,7 @@ class WorkerConfig:
     iep1e_circuit_breaker: CircuitBreaker
     iep1e_ready_timeout_seconds: float
     iep1e_ready_poll_interval_seconds: float
+    iep1e_execution_timeout_seconds: float
     iep1d_scaler: Iep1dScaler
 
 
@@ -207,6 +208,10 @@ def build_worker_config(
     execution_timeout = _env_float("EXECUTION_TIMEOUT_SECONDS", 30.0)
     iep1d_execution_timeout = _env_float(
         "IEP1D_EXECUTION_TIMEOUT_SECONDS",
+        max(execution_timeout, 180.0),
+    )
+    iep1e_execution_timeout = _env_float(
+        "IEP1E_EXECUTION_TIMEOUT_SECONDS",
         max(execution_timeout, 180.0),
     )
 
@@ -268,6 +273,7 @@ def build_worker_config(
         iep1e_circuit_breaker=CircuitBreaker("iep1e", cb_cfg),
         iep1e_ready_timeout_seconds=_env_float("IEP1E_READY_TIMEOUT_SECONDS", 120.0),
         iep1e_ready_poll_interval_seconds=_env_float("IEP1E_READY_POLL_INTERVAL_SECONDS", 5.0),
+        iep1e_execution_timeout_seconds=iep1e_execution_timeout,
         iep1d_scaler=build_iep1d_scaler(redis_client),
     )
 
@@ -857,6 +863,10 @@ def _iep1e_ready_poll_interval(config: Any) -> float:
     return float(getattr(config, "iep1e_ready_poll_interval_seconds", 5.0))
 
 
+def _iep1e_execution_timeout(config: Any) -> float:
+    return float(getattr(config, "iep1e_execution_timeout_seconds", 180.0))
+
+
 async def _run_task_heartbeat(
     redis_client: redis_lib.Redis,
     claimed: ClaimedTask,
@@ -1160,14 +1170,13 @@ async def _wait_for_iep1e_ready(
     """
     Poll iep1e /ready until it returns HTTP 200 or the timeout expires.
 
-    Background: iep1e's /health returns 200 as soon as FastAPI starts (~3 s),
-    but PaddlePaddle model loading takes another 60-120 s.  The shared
-    LocalHTTPBackend._wait_for_warm polls /health and passes too early,
-    causing the first inference request to hang until execution_timeout fires.
+    Background: iep1e's /health returns 200 as soon as FastAPI starts (~3 s).
+    /ready stays 503 until the background thread finishes PaddleOCR construction
+    plus a small inference warmup (``warmup_ocr_engine``). That absorbs load
+    before we POST semantic-norm.
 
-    By polling /ready here (which returns 503 until is_model_ready() == True),
-    we absorb the model-loading wait as a cold-start grace period instead of
-    burning the inference timeout.
+    The shared LocalHTTPBackend still probes /health before POST with its own
+    cold-start budget; this poll aligns worker-side grace with iep1e readiness.
 
     Returns:
         True  — iep1e is ready to serve inference
@@ -1215,6 +1224,7 @@ async def _call_iep1e(
     cb: CircuitBreaker,
     ready_timeout_seconds: float,
     ready_poll_interval_seconds: float,
+    execution_timeout_seconds: float,
 ) -> SemanticNormResponse | None:
     """
     Call IEP1E POST /v1/semantic-norm.  Never raises — all failures return None.
@@ -1244,10 +1254,7 @@ async def _call_iep1e(
         )
         return None
 
-    # Wait for iep1e to finish model initialisation before sending inference.
-    # /health returns 200 immediately (FastAPI up), but /ready returns 503 until
-    # PaddlePaddle models are loaded.  Waiting here prevents warm_inference_timeout
-    # from firing on the first request after a container restart.
+    # Wait for iep1e load + warmup (/ready) before sending inference.
     logger.info(
         "worker_loop: iep1e readiness wait started job=%s page=%d timeout=%.0fs",
         job_id,
@@ -1278,7 +1285,11 @@ async def _call_iep1e(
     }
 
     try:
-        raw = await backend.call(endpoint, payload)
+        raw = await backend.call(
+            endpoint,
+            payload,
+            execution_timeout_seconds=execution_timeout_seconds,
+        )
         response = SemanticNormResponse.model_validate(raw)
         cb.record_success()
         logger.info(
@@ -1644,6 +1655,7 @@ async def _run_preprocessing(
                     cb=config.iep1e_circuit_breaker,
                     ready_timeout_seconds=_iep1e_ready_timeout(config),
                     ready_poll_interval_seconds=_iep1e_ready_poll_interval(config),
+                    execution_timeout_seconds=_iep1e_execution_timeout(config),
                 )
                 if _split_sem_result is not None and _split_sem_result.pages:
                     for _sp in _split_sem_result.pages:
@@ -2152,6 +2164,36 @@ async def _run_preprocessing(
 
         if iep1d_fallback_accepted:
             confirm_preprocessed_artifact(session, lineage.lineage_id)
+            # ── IEP1E — semantic normalization (orientation) ──────────────────
+            _fallback_iep1e_x_center = (
+                branch_response.crop.crop_box.x_min + branch_response.crop.crop_box.x_max
+            ) / 2.0
+            _fallback_iep1e_sub_idx = page.sub_page_index if page.sub_page_index is not None else 0
+            _fallback_sem_norm_uri = branch_response.processed_image_uri
+            try:
+                _fallback_sem_result = await _call_iep1e(
+                    page_uris=[branch_response.processed_image_uri],
+                    x_centers=[_fallback_iep1e_x_center],
+                    sub_page_indices=[_fallback_iep1e_sub_idx],
+                    job_id=job.job_id,
+                    page_number=page.page_number,
+                    material_type=material_type,
+                    endpoint=config.iep1e_endpoint,
+                    backend=config.backend,
+                    cb=config.iep1e_circuit_breaker,
+                    ready_timeout_seconds=_iep1e_ready_timeout(config),
+                    ready_poll_interval_seconds=_iep1e_ready_poll_interval(config),
+                    execution_timeout_seconds=_iep1e_execution_timeout(config),
+                )
+                if _fallback_sem_result is not None and _fallback_sem_result.ordered_page_uris:
+                    _fallback_sem_norm_uri = _fallback_sem_result.ordered_page_uris[0]
+            except Exception:
+                logger.exception(
+                    "worker_loop: iep1e call raised in newspaper iep1d fallback "
+                    "job=%s page=%d; using original URI",
+                    job.job_id,
+                    page.page_number,
+                )
             total_processing_ms = (time.monotonic() - task_started_at) * 1000.0
             if job.ptiff_qa_mode == "manual":
                 to_state = "ptiff_qa_pending"
@@ -2165,7 +2207,7 @@ async def _run_preprocessing(
                 page.page_id,
                 from_state="rectification",
                 to_state=to_state,
-                output_image_uri=branch_response.processed_image_uri,
+                output_image_uri=_fallback_sem_norm_uri,
                 quality_summary=quality_summary,
                 processing_time_ms=total_processing_ms,
             )
@@ -2178,7 +2220,7 @@ async def _run_preprocessing(
                 return "ack"
 
             page.status = to_state
-            page.output_image_uri = branch_response.processed_image_uri
+            page.output_image_uri = _fallback_sem_norm_uri
             page.quality_summary = quality_summary
             page.processing_time_ms = total_processing_ms
             page.review_reasons = None
@@ -2193,7 +2235,7 @@ async def _run_preprocessing(
                     acceptance_reason="newspaper iep1d unavailable fallback accepted",
                     routing_path="preprocessing_only",
                     total_processing_ms=total_processing_ms,
-                    output_image_uri=branch_response.processed_image_uri,
+                    output_image_uri=_fallback_sem_norm_uri,
                 )
             elif to_state == "layout_detection":
                 task_after_commit = _page_task_for(page)
@@ -2302,6 +2344,7 @@ async def _run_preprocessing(
             cb=config.iep1e_circuit_breaker,
             ready_timeout_seconds=_iep1e_ready_timeout(config),
             ready_poll_interval_seconds=_iep1e_ready_poll_interval(config),
+            execution_timeout_seconds=_iep1e_execution_timeout(config),
         )
         if (
             _sem_norm_result is not None
@@ -2799,6 +2842,7 @@ async def _run_split_group_semantic_norm(
         cb=config.iep1e_circuit_breaker,
         ready_timeout_seconds=_iep1e_ready_timeout(config),
         ready_poll_interval_seconds=_iep1e_ready_poll_interval(config),
+        execution_timeout_seconds=_iep1e_execution_timeout(config),
     )
 
     direction = sem_result.reading_direction if sem_result is not None else "unresolved"
@@ -3011,6 +3055,7 @@ async def _run_semantic_norm(
         cb=config.iep1e_circuit_breaker,
         ready_timeout_seconds=_iep1e_ready_timeout(config),
         ready_poll_interval_seconds=_iep1e_ready_poll_interval(config),
+        execution_timeout_seconds=_iep1e_execution_timeout(config),
     )
 
     oriented_uri = image_uri
@@ -3440,6 +3485,7 @@ async def process_page_task(
         elif page.status in _ACK_ONLY_STATES:
             resolution = "ack"
         elif page.status in {"queued", "preprocessing", "rectification"}:
+            EEP_REQUESTS_TOTAL.inc()
             resolution = await _run_preprocessing(
                 session=session,
                 page=page,
@@ -3449,6 +3495,7 @@ async def process_page_task(
                 task_started_at=time.monotonic(),
             )
         elif page.status == "semantic_norm":
+            EEP_REQUESTS_TOTAL.inc()
             resolution = await _run_semantic_norm(
                 session=session,
                 page=page,
@@ -3458,6 +3505,7 @@ async def process_page_task(
                 task_started_at=time.monotonic(),
             )
         elif page.status == "layout_detection":
+            EEP_REQUESTS_TOTAL.inc()
             resolution = await _run_layout(
                 session=session,
                 page=page,

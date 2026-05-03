@@ -21,6 +21,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
@@ -32,6 +33,12 @@ from services.eep.app.db.session import SessionLocal
 from services.retraining_worker.app.reconcile import ReconcileConfig, run_reconciliation_loop
 from services.retraining_worker.app.task import execute_retraining_task
 from shared.logging_config import setup_logging
+from shared.metrics import (
+    RETRAINING_JOB_DURATION_SECONDS,
+    RETRAINING_JOBS_COMPLETED,
+    RETRAINING_JOBS_FAILED,
+    RETRAINING_JOBS_STARTED,
+)
 from shared.middleware import configure_observability
 
 setup_logging(service_name="retraining_worker")
@@ -74,6 +81,7 @@ async def _poll_loop() -> None:
 
         for trigger_id in pending_ids:
             task_db: Session = SessionLocal()
+            started_at: float | None = None
             try:
                 trigger = task_db.get(RetrainingTrigger, trigger_id)
                 if trigger is None or trigger.status != "pending":
@@ -84,12 +92,19 @@ async def _poll_loop() -> None:
                 trigger.status = "processing"
                 task_db.commit()
 
+                started_at = time.monotonic()
+                RETRAINING_JOBS_STARTED.inc()
                 execute_retraining_task(trigger, task_db)
+                RETRAINING_JOBS_COMPLETED.inc()
+                RETRAINING_JOB_DURATION_SECONDS.observe(time.monotonic() - started_at)
 
             except Exception:
                 logger.exception(
                     "retraining_worker: task failed for trigger_id=%s", trigger_id
                 )
+                if started_at is not None:
+                    RETRAINING_JOBS_FAILED.inc()
+                    RETRAINING_JOB_DURATION_SECONDS.observe(time.monotonic() - started_at)
                 try:
                     task_db.rollback()
                     failed_trigger = task_db.get(RetrainingTrigger, trigger_id)

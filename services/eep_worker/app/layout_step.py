@@ -25,7 +25,16 @@ from sqlalchemy.orm import Session
 
 from monitoring.drift_observer import observe_and_check
 from services.eep.app.db.lineage import confirm_layout_artifact, update_lineage_completion
-from shared.metrics import EEP_CONSENSUS_ROUTE, EEP_LAYOUT_CONSENSUS_CONFIDENCE
+from shared.metrics import (
+    EEP_CONSENSUS_ROUTE,
+    EEP_LAYOUT_CONSENSUS_CONFIDENCE,
+    IEP2A_MEAN_PAGE_CONFIDENCE,
+    IEP2A_REGION_CONFIDENCE,
+    IEP2A_REGIONS_PER_PAGE,
+    IEP2B_MEAN_PAGE_CONFIDENCE,
+    IEP2B_REGION_CONFIDENCE,
+    IEP2B_REGIONS_PER_PAGE,
+)
 from services.eep.app.db.models import JobPage, PageLineage
 from services.eep.app.db.page_state import advance_page_state
 from services.eep.app.gates.layout_gate import evaluate_layout_adjudication
@@ -73,6 +82,19 @@ _LAYOUT_CLASS_METRICS = {
     "caption": "caption",
 }
 
+_LAYOUT_PROMETHEUS_METRICS = {
+    "iep2a": (
+        IEP2A_MEAN_PAGE_CONFIDENCE,
+        IEP2A_REGIONS_PER_PAGE,
+        IEP2A_REGION_CONFIDENCE,
+    ),
+    "iep2b": (
+        IEP2B_MEAN_PAGE_CONFIDENCE,
+        IEP2B_REGIONS_PER_PAGE,
+        IEP2B_REGION_CONFIDENCE,
+    ),
+}
+
 
 def _observe_layout_detector_metrics(
     prefix: str,
@@ -81,6 +103,14 @@ def _observe_layout_detector_metrics(
 ) -> None:
     if response is None:
         return
+
+    prometheus_metrics = _LAYOUT_PROMETHEUS_METRICS.get(prefix)
+    if prometheus_metrics is not None:
+        mean_page_confidence, regions_per_page, region_confidence = prometheus_metrics
+        mean_page_confidence.observe(response.layout_conf_summary.mean_conf)
+        regions_per_page.observe(float(len(response.regions)))
+        for region in response.regions:
+            region_confidence.observe(region.confidence)
 
     observe_and_check(f"{prefix}.mean_page_confidence", response.layout_conf_summary.mean_conf, session)
     observe_and_check(f"{prefix}.region_count", float(len(response.regions)), session)

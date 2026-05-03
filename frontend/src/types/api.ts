@@ -453,32 +453,6 @@ export interface QueueStatusResponse {
   as_of: string;
 }
 
-// ---- Admin — Service Inventory -------------------------------------------------------
-
-export interface ServiceHealthSignal {
-  total_invocations: number;
-  success_count: number;
-  error_count: number;
-  success_rate: number | null;
-  last_invoked_at: string | null;
-  p95_latency_ms: number | null;
-}
-
-export interface ServiceInventoryItem {
-  service_name: string;
-  role: string;
-  deployment_type: string;
-  port: number | null;
-  model_applicable: boolean;
-  health_signal: ServiceHealthSignal | null;
-}
-
-export interface ServiceInventoryResponse {
-  items: ServiceInventoryItem[];
-  window_hours: number;
-  as_of: string;
-}
-
 // ---- Admin — Deployment Status -------------------------------------------------------
 
 export interface FeatureFlags {

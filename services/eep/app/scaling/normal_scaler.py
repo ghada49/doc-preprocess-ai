@@ -100,6 +100,17 @@ _WORKER_SERVICES: list[str] = [
 ]
 
 _SERVICE_CONNECT_CONFIGS: dict[str, dict] = {
+    "libraryai-iep1d": {
+        "enabled": True,
+        "namespace": "libraryai.local",
+        "services": [
+            {
+                "portName": "http",
+                "discoveryName": "iep1d",
+                "clientAliases": [{"port": 8003, "dnsName": "iep1d"}],
+            }
+        ],
+    },
     "libraryai-iep1e": {
         "enabled": True,
         "namespace": "libraryai.local",

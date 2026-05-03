@@ -44,7 +44,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from services.eep.app.admin.dashboard import router as admin_dashboard_router
+from services.eep.app.admin.dashboard import (
+    refresh_dashboard_rate_metrics,
+    router as admin_dashboard_router,
+)
 from services.eep.app.admin.infra import router as admin_infra_router
 from services.eep.app.admin.users import router as admin_users_router
 from services.eep.app.artifacts_api import router as artifacts_router
@@ -124,7 +127,11 @@ if cors_allow_origins:
         ],
     )
 
-configure_observability(app, service_name="eep")
+configure_observability(
+    app,
+    service_name="eep",
+    metrics_before_collect=refresh_dashboard_rate_metrics,
+)
 
 
 @app.get("/v1/status", include_in_schema=True, tags=["meta"])

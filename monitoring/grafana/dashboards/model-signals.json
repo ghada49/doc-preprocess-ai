@@ -1,1397 +1,750 @@
 {
-    "annotations":  {
-                        "list":  [
-                                     {
-                                         "builtIn":  1,
-                                         "datasource":  {
-                                                            "type":  "grafana",
-                                                            "uid":  "-- Grafana --"
-                                                        },
-                                         "enable":  true,
-                                         "hide":  true,
-                                         "iconColor":  "rgba(0, 211, 255, 1)",
-                                         "name":  "Annotations \u0026 Alerts",
-                                         "type":  "dashboard"
-                                     }
-                                 ]
+    "annotations": {
+        "list": [
+            {
+                "builtIn": 1,
+                "datasource": {"type": "grafana", "uid": "-- Grafana --"},
+                "enable": true,
+                "hide": true,
+                "iconColor": "rgba(0, 211, 255, 1)",
+                "name": "Annotations \u0026 Alerts",
+                "type": "dashboard"
+            }
+        ]
+    },
+    "editable": true,
+    "fiscalYearStartMonth": 0,
+    "graphTooltip": 1,
+    "id": null,
+    "links": [],
+    "panels": [
+        {
+            "collapsed": false,
+            "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
+            "id": 30,
+            "title": "Live Sample Presence",
+            "type": "row"
+        },
+        {
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "fieldConfig": {
+                "defaults": {
+                    "color": {"mode": "thresholds"},
+                    "decimals": 0,
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {"color": "#9DA0A6", "value": null},
+                            {"color": "green", "value": 1}
+                        ]
                     },
-    "editable":  true,
-    "fiscalYearStartMonth":  0,
-    "graphTooltip":  1,
-    "id":  null,
-    "links":  [
-
-              ],
-    "panels":  [
-                   {
-                       "collapsed":  false,
-                       "gridPos":  {
-                                       "h":  1,
-                                       "w":  24,
-                                       "x":  0,
-                                       "y":  0
-                                   },
-                       "id":  30,
-                       "title":  "Live Sample Presence",
-                       "type":  "row"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "color":  {
-                                                                          "mode":  "thresholds"
-                                                                      },
-                                                            "mappings":  [
-                                                                             {
-                                                                                 "type":  "value",
-                                                                                 "options":  {
-                                                                                                 "0":  {
-                                                                                                           "text":  "NO DATA",
-                                                                                                           "color":  "red",
-                                                                                                           "index":  0
-                                                                                                       }
-                                                                                             }
-                                                                             }
-                                                                         ],
-                                                            "thresholds":  {
-                                                                               "mode":  "absolute",
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "color":  "red",
-                                                                                                 "value":  null
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "green",
-                                                                                                 "value":  1
-                                                                                             }
-                                                                                         ]
-                                                                           },
-                                                            "unit":  "short",
-                                                            "decimals":  0
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "gridPos":  {
-                                       "h":  4,
-                                       "w":  4,
-                                       "x":  0,
-                                       "y":  1
-                                   },
-                       "id":  31,
-                       "options":  {
-                                       "colorMode":  "background",
-                                       "graphMode":  "none",
-                                       "justifyMode":  "auto",
-                                       "orientation":  "horizontal",
-                                       "reduceOptions":  {
-                                                             "calcs":  [
-                                                                           "lastNotNull"
-                                                                       ],
-                                                             "fields":  "",
-                                                             "values":  false
-                                                         },
-                                       "textMode":  "value_and_name",
-                                       "noValue":  "NO DATA"
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "sum(increase(iep1a_geometry_confidence_count[$__range])) OR on() vector(0)",
-                                           "legendFormat":  "IEP1A samples",
-                                           "refId":  "A"
-                                       }
-                                   ],
-                       "title":  "IEP1A samples",
-                       "type":  "stat"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "color":  {
-                                                                          "mode":  "thresholds"
-                                                                      },
-                                                            "mappings":  [
-                                                                             {
-                                                                                 "type":  "value",
-                                                                                 "options":  {
-                                                                                                 "0":  {
-                                                                                                           "text":  "NO DATA",
-                                                                                                           "color":  "red",
-                                                                                                           "index":  0
-                                                                                                       }
-                                                                                             }
-                                                                             }
-                                                                         ],
-                                                            "thresholds":  {
-                                                                               "mode":  "absolute",
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "color":  "red",
-                                                                                                 "value":  null
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "green",
-                                                                                                 "value":  1
-                                                                                             }
-                                                                                         ]
-                                                                           },
-                                                            "unit":  "short",
-                                                            "decimals":  0
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "gridPos":  {
-                                       "h":  4,
-                                       "w":  4,
-                                       "x":  4,
-                                       "y":  1
-                                   },
-                       "id":  32,
-                       "options":  {
-                                       "colorMode":  "background",
-                                       "graphMode":  "none",
-                                       "justifyMode":  "auto",
-                                       "orientation":  "horizontal",
-                                       "reduceOptions":  {
-                                                             "calcs":  [
-                                                                           "lastNotNull"
-                                                                       ],
-                                                             "fields":  "",
-                                                             "values":  false
-                                                         },
-                                       "textMode":  "value_and_name",
-                                       "noValue":  "NO DATA"
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "sum(increase(iep1b_geometry_confidence_count[$__range])) OR on() vector(0)",
-                                           "legendFormat":  "IEP1B samples",
-                                           "refId":  "A"
-                                       }
-                                   ],
-                       "title":  "IEP1B samples",
-                       "type":  "stat"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "color":  {
-                                                                          "mode":  "thresholds"
-                                                                      },
-                                                            "mappings":  [
-                                                                             {
-                                                                                 "type":  "value",
-                                                                                 "options":  {
-                                                                                                 "0":  {
-                                                                                                           "text":  "NO DATA",
-                                                                                                           "color":  "red",
-                                                                                                           "index":  0
-                                                                                                       }
-                                                                                             }
-                                                                             }
-                                                                         ],
-                                                            "thresholds":  {
-                                                                               "mode":  "absolute",
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "color":  "red",
-                                                                                                 "value":  null
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "green",
-                                                                                                 "value":  1
-                                                                                             }
-                                                                                         ]
-                                                                           },
-                                                            "unit":  "short",
-                                                            "decimals":  0
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "gridPos":  {
-                                       "h":  4,
-                                       "w":  4,
-                                       "x":  8,
-                                       "y":  1
-                                   },
-                       "id":  33,
-                       "options":  {
-                                       "colorMode":  "background",
-                                       "graphMode":  "none",
-                                       "justifyMode":  "auto",
-                                       "orientation":  "horizontal",
-                                       "reduceOptions":  {
-                                                             "calcs":  [
-                                                                           "lastNotNull"
-                                                                       ],
-                                                             "fields":  "",
-                                                             "values":  false
-                                                         },
-                                       "textMode":  "value_and_name",
-                                       "noValue":  "NO DATA"
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "sum(increase(iep2a_mean_page_confidence_count[$__range])) OR on() vector(0)",
-                                           "legendFormat":  "IEP2A samples",
-                                           "refId":  "A"
-                                       }
-                                   ],
-                       "title":  "IEP2A samples",
-                       "type":  "stat"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "color":  {
-                                                                          "mode":  "thresholds"
-                                                                      },
-                                                            "mappings":  [
-                                                                             {
-                                                                                 "type":  "value",
-                                                                                 "options":  {
-                                                                                                 "0":  {
-                                                                                                           "text":  "NO DATA",
-                                                                                                           "color":  "red",
-                                                                                                           "index":  0
-                                                                                                       }
-                                                                                             }
-                                                                             }
-                                                                         ],
-                                                            "thresholds":  {
-                                                                               "mode":  "absolute",
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "color":  "red",
-                                                                                                 "value":  null
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "green",
-                                                                                                 "value":  1
-                                                                                             }
-                                                                                         ]
-                                                                           },
-                                                            "unit":  "short",
-                                                            "decimals":  0
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "gridPos":  {
-                                       "h":  4,
-                                       "w":  4,
-                                       "x":  12,
-                                       "y":  1
-                                   },
-                       "id":  34,
-                       "options":  {
-                                       "colorMode":  "background",
-                                       "graphMode":  "none",
-                                       "justifyMode":  "auto",
-                                       "orientation":  "horizontal",
-                                       "reduceOptions":  {
-                                                             "calcs":  [
-                                                                           "lastNotNull"
-                                                                       ],
-                                                             "fields":  "",
-                                                             "values":  false
-                                                         },
-                                       "textMode":  "value_and_name",
-                                       "noValue":  "NO DATA"
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "sum(increase(iep2b_mean_page_confidence_count[$__range])) OR on() vector(0)",
-                                           "legendFormat":  "IEP2B samples",
-                                           "refId":  "A"
-                                       }
-                                   ],
-                       "title":  "IEP2B samples",
-                       "type":  "stat"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "color":  {
-                                                                          "mode":  "thresholds"
-                                                                      },
-                                                            "mappings":  [
-                                                                             {
-                                                                                 "type":  "value",
-                                                                                 "options":  {
-                                                                                                 "0":  {
-                                                                                                           "text":  "NO DATA",
-                                                                                                           "color":  "red",
-                                                                                                           "index":  0
-                                                                                                       }
-                                                                                             }
-                                                                             }
-                                                                         ],
-                                                            "thresholds":  {
-                                                                               "mode":  "absolute",
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "color":  "red",
-                                                                                                 "value":  null
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "green",
-                                                                                                 "value":  1
-                                                                                             }
-                                                                                         ]
-                                                                           },
-                                                            "unit":  "short",
-                                                            "decimals":  0
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "gridPos":  {
-                                       "h":  4,
-                                       "w":  4,
-                                       "x":  16,
-                                       "y":  1
-                                   },
-                       "id":  35,
-                       "options":  {
-                                       "colorMode":  "background",
-                                       "graphMode":  "none",
-                                       "justifyMode":  "auto",
-                                       "orientation":  "horizontal",
-                                       "reduceOptions":  {
-                                                             "calcs":  [
-                                                                           "lastNotNull"
-                                                                       ],
-                                                             "fields":  "",
-                                                             "values":  false
-                                                         },
-                                       "textMode":  "value_and_name",
-                                       "noValue":  "NO DATA"
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "sum(drift_window_observations) OR on() vector(0)",
-                                           "legendFormat":  "Drift observations",
-                                           "refId":  "A"
-                                       }
-                                   ],
-                       "title":  "Drift observations",
-                       "type":  "stat"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "color":  {
-                                                                          "mode":  "thresholds"
-                                                                      },
-                                                            "mappings":  [
-                                                                             {
-                                                                                 "type":  "value",
-                                                                                 "options":  {
-                                                                                                 "0":  {
-                                                                                                           "text":  "NO DATA",
-                                                                                                           "color":  "red",
-                                                                                                           "index":  0
-                                                                                                       }
-                                                                                             }
-                                                                             }
-                                                                         ],
-                                                            "thresholds":  {
-                                                                               "mode":  "absolute",
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "color":  "red",
-                                                                                                 "value":  null
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "green",
-                                                                                                 "value":  1
-                                                                                             }
-                                                                                         ]
-                                                                           },
-                                                            "unit":  "short",
-                                                            "decimals":  0
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "gridPos":  {
-                                       "h":  4,
-                                       "w":  4,
-                                       "x":  20,
-                                       "y":  1
-                                   },
-                       "id":  36,
-                       "options":  {
-                                       "colorMode":  "background",
-                                       "graphMode":  "none",
-                                       "justifyMode":  "auto",
-                                       "orientation":  "horizontal",
-                                       "reduceOptions":  {
-                                                             "calcs":  [
-                                                                           "lastNotNull"
-                                                                       ],
-                                                             "fields":  "",
-                                                             "values":  false
-                                                         },
-                                       "textMode":  "value_and_name",
-                                       "noValue":  "NO DATA"
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "sum(increase(iep1d_rectification_confidence_count[$__range])) OR on() vector(0)",
-                                           "legendFormat":  "IEP1D samples",
-                                           "refId":  "A"
-                                       }
-                                   ],
-                       "title":  "IEP1D samples",
-                       "type":  "stat"
-                   },
-                   {
-                       "collapsed":  false,
-                       "gridPos":  {
-                                       "h":  1,
-                                       "w":  24,
-                                       "x":  0,
-                                       "y":  5
-                                   },
-                       "id":  1,
-                       "title":  "IEP1A / IEP1B - Geometry Confidence",
-                       "type":  "row"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "custom":  {
-                                                                           "fillOpacity":  10,
-                                                                           "lineInterpolation":  "linear",
-                                                                           "lineWidth":  1,
-                                                                           "showPoints":  "never"
-                                                                       },
-                                                            "unit":  "short",
-                                                            "max":  1,
-                                                            "min":  0,
-                                                            "thresholds":  {
-                                                                               "mode":  "absolute",
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "color":  "red",
-                                                                                                 "value":  null
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "yellow",
-                                                                                                 "value":  0.70
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "green",
-                                                                                                 "value":  0.80
-                                                                                             }
-                                                                                         ]
-                                                                           }
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "gridPos":  {
-                                       "h":  8,
-                                       "w":  12,
-                                       "x":  0,
-                                       "y":  6
-                                   },
-                       "id":  2,
-                       "options":  {
-                                       "legend":  {
-                                                      "calcs":  [
-                                                                    "mean",
-                                                                    "last",
-                                                                    "min"
-                                                                ],
-                                                      "displayMode":  "table",
-                                                      "placement":  "bottom"
-                                                  },
-                                       "tooltip":  {
-                                                       "mode":  "multi",
-                                                       "sort":  "desc"
-                                                   }
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "histogram_quantile(0.50, rate(iep1a_geometry_confidence_bucket[6h]))",
-                                           "legendFormat":  "IEP1A p50 (6h)",
-                                           "refId":  "A"
-                                       },
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "histogram_quantile(0.50, rate(iep1b_geometry_confidence_bucket[6h]))",
-                                           "legendFormat":  "IEP1B p50 (6h)",
-                                           "refId":  "B"
-                                       },
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "histogram_quantile(0.95, rate(iep1a_geometry_confidence_bucket[6h]))",
-                                           "legendFormat":  "IEP1A p95 (6h)",
-                                           "refId":  "C"
-                                       },
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "histogram_quantile(0.95, rate(iep1b_geometry_confidence_bucket[6h]))",
-                                           "legendFormat":  "IEP1B p95 (6h)",
-                                           "refId":  "D"
-                                       }
-                                   ],
-                       "title":  "IEP1A/B Geometry Confidence (p50 / p95)",
-                       "type":  "timeseries"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "custom":  {
-                                                                           "fillOpacity":  10,
-                                                                           "lineInterpolation":  "linear",
-                                                                           "lineWidth":  1,
-                                                                           "showPoints":  "never"
-                                                                       },
-                                                            "unit":  "short",
-                                                            "max":  1,
-                                                            "min":  0,
-                                                            "thresholds":  {
-                                                                               "mode":  "absolute",
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "color":  "red",
-                                                                                                 "value":  null
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "yellow",
-                                                                                                 "value":  0.85
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "green",
-                                                                                                 "value":  0.90
-                                                                                             }
-                                                                                         ]
-                                                                           }
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "gridPos":  {
-                                       "h":  8,
-                                       "w":  12,
-                                       "x":  12,
-                                       "y":  6
-                                   },
-                       "id":  3,
-                       "options":  {
-                                       "legend":  {
-                                                      "calcs":  [
-                                                                    "mean",
-                                                                    "last",
-                                                                    "min"
-                                                                ],
-                                                      "displayMode":  "table",
-                                                      "placement":  "bottom"
-                                                  },
-                                       "tooltip":  {
-                                                       "mode":  "multi",
-                                                       "sort":  "desc"
-                                                   }
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "histogram_quantile(0.50, rate(iep1a_tta_structural_agreement_rate_bucket[5m]))",
-                                           "legendFormat":  "IEP1A TTA agreement p50",
-                                           "refId":  "A"
-                                       },
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "histogram_quantile(0.50, rate(iep1b_tta_structural_agreement_rate_bucket[5m]))",
-                                           "legendFormat":  "IEP1B TTA agreement p50",
-                                           "refId":  "B"
-                                       }
-                                   ],
-                       "title":  "IEP1A/B TTA Structural Agreement Rate",
-                       "type":  "timeseries"
-                   },
-                   {
-                       "collapsed":  false,
-                       "gridPos":  {
-                                       "h":  1,
-                                       "w":  24,
-                                       "x":  0,
-                                       "y":  14
-                                   },
-                       "id":  4,
-                       "title":  "IEP1A / IEP1B - TTA Prediction Variance",
-                       "type":  "row"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "custom":  {
-                                                                           "fillOpacity":  10,
-                                                                           "lineInterpolation":  "linear",
-                                                                           "lineWidth":  1,
-                                                                           "showPoints":  "never"
-                                                                       },
-                                                            "unit":  "short",
-                                                            "min":  0,
-                                                            "thresholds":  {
-                                                                               "mode":  "absolute",
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "color":  "green",
-                                                                                                 "value":  null
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "yellow",
-                                                                                                 "value":  0.03
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "red",
-                                                                                                 "value":  0.05
-                                                                                             }
-                                                                                         ]
-                                                                           }
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "gridPos":  {
-                                       "h":  8,
-                                       "w":  24,
-                                       "x":  0,
-                                       "y":  15
-                                   },
-                       "id":  5,
-                       "options":  {
-                                       "legend":  {
-                                                      "calcs":  [
-                                                                    "mean",
-                                                                    "max"
-                                                                ],
-                                                      "displayMode":  "table",
-                                                      "placement":  "bottom"
-                                                  },
-                                       "tooltip":  {
-                                                       "mode":  "multi",
-                                                       "sort":  "desc"
-                                                   }
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "histogram_quantile(0.50, rate(iep1a_tta_prediction_variance_bucket[5m]))",
-                                           "legendFormat":  "IEP1A variance p50",
-                                           "refId":  "A"
-                                       },
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "histogram_quantile(0.95, rate(iep1a_tta_prediction_variance_bucket[5m]))",
-                                           "legendFormat":  "IEP1A variance p95",
-                                           "refId":  "B"
-                                       },
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "histogram_quantile(0.50, rate(iep1b_tta_prediction_variance_bucket[5m]))",
-                                           "legendFormat":  "IEP1B variance p50",
-                                           "refId":  "C"
-                                       },
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "histogram_quantile(0.95, rate(iep1b_tta_prediction_variance_bucket[5m]))",
-                                           "legendFormat":  "IEP1B variance p95",
-                                           "refId":  "D"
-                                       }
-                                   ],
-                       "title":  "IEP1A/B TTA Prediction Variance (p50 / p95)",
-                       "type":  "timeseries"
-                   },
-                   {
-                       "collapsed":  false,
-                       "gridPos":  {
-                                       "h":  1,
-                                       "w":  24,
-                                       "x":  0,
-                                       "y":  23
-                                   },
-                       "id":  6,
-                       "title":  "IEP2A / IEP2B - Layout Confidence",
-                       "type":  "row"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "custom":  {
-                                                                           "fillOpacity":  10,
-                                                                           "lineInterpolation":  "linear",
-                                                                           "lineWidth":  1,
-                                                                           "showPoints":  "never"
-                                                                       },
-                                                            "unit":  "short",
-                                                            "max":  1,
-                                                            "min":  0,
-                                                            "thresholds":  {
-                                                                               "mode":  "absolute",
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "color":  "red",
-                                                                                                 "value":  null
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "yellow",
-                                                                                                 "value":  0.70
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "green",
-                                                                                                 "value":  0.80
-                                                                                             }
-                                                                                         ]
-                                                                           }
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "gridPos":  {
-                                       "h":  8,
-                                       "w":  12,
-                                       "x":  0,
-                                       "y":  24
-                                   },
-                       "id":  7,
-                       "options":  {
-                                       "legend":  {
-                                                      "calcs":  [
-                                                                    "mean",
-                                                                    "last",
-                                                                    "min"
-                                                                ],
-                                                      "displayMode":  "table",
-                                                      "placement":  "bottom"
-                                                  },
-                                       "tooltip":  {
-                                                       "mode":  "multi",
-                                                       "sort":  "desc"
-                                                   }
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "histogram_quantile(0.50, rate(iep2a_mean_page_confidence_bucket[1h]))",
-                                           "legendFormat":  "IEP2A p50 (1h)",
-                                           "refId":  "A"
-                                       },
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "histogram_quantile(0.50, rate(iep2b_mean_page_confidence_bucket[1h]))",
-                                           "legendFormat":  "IEP2B p50 (1h)",
-                                           "refId":  "B"
-                                       },
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "histogram_quantile(0.95, rate(iep2a_mean_page_confidence_bucket[1h]))",
-                                           "legendFormat":  "IEP2A p95 (1h)",
-                                           "refId":  "C"
-                                       },
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "histogram_quantile(0.95, rate(iep2b_mean_page_confidence_bucket[1h]))",
-                                           "legendFormat":  "IEP2B p95 (1h)",
-                                           "refId":  "D"
-                                       }
-                                   ],
-                       "title":  "IEP2A/B Mean Page Confidence (p50 / p95)",
-                       "type":  "timeseries"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "custom":  {
-                                                                           "fillOpacity":  10,
-                                                                           "lineInterpolation":  "linear",
-                                                                           "lineWidth":  1,
-                                                                           "showPoints":  "never"
-                                                                       },
-                                                            "unit":  "short",
-                                                            "min":  0
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "gridPos":  {
-                                       "h":  8,
-                                       "w":  12,
-                                       "x":  12,
-                                       "y":  24
-                                   },
-                       "id":  8,
-                       "options":  {
-                                       "legend":  {
-                                                      "calcs":  [
-                                                                    "mean",
-                                                                    "last"
-                                                                ],
-                                                      "displayMode":  "table",
-                                                      "placement":  "bottom"
-                                                  },
-                                       "tooltip":  {
-                                                       "mode":  "multi",
-                                                       "sort":  "desc"
-                                                   }
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "histogram_quantile(0.50, rate(iep2a_regions_per_page_bucket[5m]))",
-                                           "legendFormat":  "IEP2A region count p50",
-                                           "refId":  "A"
-                                       },
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "histogram_quantile(0.50, rate(iep2b_regions_per_page_bucket[5m]))",
-                                           "legendFormat":  "IEP2B region count p50",
-                                           "refId":  "B"
-                                       }
-                                   ],
-                       "title":  "IEP2A/B Region Count (p50)",
-                       "type":  "timeseries"
-                   },
-                   {
-                       "collapsed":  false,
-                       "gridPos":  {
-                                       "h":  1,
-                                       "w":  24,
-                                       "x":  0,
-                                       "y":  32
-                                   },
-                       "id":  9,
-                       "title":  "IEP1D - Rectification Signals",
-                       "type":  "row"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "custom":  {
-                                                                           "fillOpacity":  10,
-                                                                           "lineInterpolation":  "linear",
-                                                                           "lineWidth":  1,
-                                                                           "showPoints":  "never"
-                                                                       },
-                                                            "unit":  "ops"
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "gridPos":  {
-                                       "h":  8,
-                                       "w":  12,
-                                       "x":  0,
-                                       "y":  33
-                                   },
-                       "id":  10,
-                       "options":  {
-                                       "legend":  {
-                                                      "calcs":  [
-                                                                    "mean",
-                                                                    "last"
-                                                                ],
-                                                      "displayMode":  "table",
-                                                      "placement":  "bottom"
-                                                  },
-                                       "tooltip":  {
-                                                       "mode":  "multi",
-                                                       "sort":  "desc"
-                                                   }
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "rate(iep1d_rectification_triggered_total[5m])",
-                                           "legendFormat":  "rectification triggers/s",
-                                           "refId":  "A"
-                                       }
-                                   ],
-                       "title":  "IEP1D Rectification Trigger Rate",
-                       "type":  "timeseries"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "custom":  {
-                                                                           "fillOpacity":  5,
-                                                                           "lineInterpolation":  "linear",
-                                                                           "lineWidth":  1,
-                                                                           "showPoints":  "never"
-                                                                       },
-                                                            "unit":  "s"
-                                                        },
-                                           "overrides":  [
-
-                                                         ]
-                                       },
-                       "gridPos":  {
-                                       "h":  8,
-                                       "w":  12,
-                                       "x":  12,
-                                       "y":  33
-                                   },
-                       "id":  11,
-                       "options":  {
-                                       "legend":  {
-                                                      "calcs":  [
-                                                                    "mean",
-                                                                    "max"
-                                                                ],
-                                                      "displayMode":  "table",
-                                                      "placement":  "bottom"
-                                                  },
-                                       "tooltip":  {
-                                                       "mode":  "multi",
-                                                       "sort":  "desc"
-                                                   }
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "histogram_quantile(0.50, rate(iep1d_gpu_inference_seconds_bucket[5m]))",
-                                           "legendFormat":  "IEP1D p50",
-                                           "refId":  "A"
-                                       },
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "histogram_quantile(0.95, rate(iep1d_gpu_inference_seconds_bucket[5m]))",
-                                           "legendFormat":  "IEP1D p95",
-                                           "refId":  "B"
-                                       }
-                                   ],
-                       "title":  "IEP1D Rectification Latency (p50 / p95)",
-                       "type":  "timeseries"
-                   },
-                   {
-                       "collapsed":  false,
-                       "gridPos":  {
-                                       "h":  1,
-                                       "w":  24,
-                                       "x":  0,
-                                       "y":  41
-                                   },
-                       "id":  20,
-                       "title":  "Drift Detector - Window State vs Baseline",
-                       "type":  "row"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "color":  {
-                                                                          "mode":  "palette-classic"
-                                                                      },
-                                                            "custom":  {
-                                                                           "lineWidth":  2
-                                                                       },
-                                                            "unit":  "short",
-                                                            "min":  0,
-                                                            "max":  1
-                                                        }
-                                       },
-                       "gridPos":  {
-                                       "h":  8,
-                                       "w":  12,
-                                       "x":  0,
-                                       "y":  42
-                                   },
-                       "id":  21,
-                       "options":  {
-                                       "legend":  {
-                                                      "calcs":  [
-                                                                    "lastNotNull"
-                                                                ],
-                                                      "displayMode":  "table",
-                                                      "placement":  "right"
-                                                  },
-                                       "tooltip":  {
-                                                       "mode":  "multi",
-                                                       "sort":  "desc"
-                                                   }
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "drift_window_mean{metric=~\"iep1a.*|iep1b.*\"}",
-                                           "legendFormat":  "{{metric}} (window mean)",
-                                           "refId":  "A"
-                                       },
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "drift_baseline_mean{metric=~\"iep1a.*|iep1b.*\"}",
-                                           "legendFormat":  "{{metric}} (baseline)",
-                                           "refId":  "B"
-                                       }
-                                   ],
-                       "title":  "IEP1A / IEP1B - Window Mean vs Baseline",
-                       "type":  "timeseries"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "color":  {
-                                                                          "mode":  "palette-classic"
-                                                                      },
-                                                            "custom":  {
-                                                                           "lineWidth":  2
-                                                                       },
-                                                            "unit":  "short",
-                                                            "min":  0,
-                                                            "max":  1
-                                                        }
-                                       },
-                       "gridPos":  {
-                                       "h":  8,
-                                       "w":  12,
-                                       "x":  12,
-                                       "y":  42
-                                   },
-                       "id":  22,
-                       "options":  {
-                                       "legend":  {
-                                                      "calcs":  [
-                                                                    "lastNotNull"
-                                                                ],
-                                                      "displayMode":  "table",
-                                                      "placement":  "right"
-                                                  },
-                                       "tooltip":  {
-                                                       "mode":  "multi",
-                                                       "sort":  "desc"
-                                                   }
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "drift_window_mean{metric=~\"iep2a.*|iep2b.*|eep.*\"}",
-                                           "legendFormat":  "{{metric}} (window mean)",
-                                           "refId":  "A"
-                                       },
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "drift_baseline_mean{metric=~\"iep2a.*|iep2b.*|eep.*\"}",
-                                           "legendFormat":  "{{metric}} (baseline)",
-                                           "refId":  "B"
-                                       }
-                                   ],
-                       "title":  "IEP2A / IEP2B / EEP - Window Mean vs Baseline",
-                       "type":  "timeseries"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "color":  {
-                                                                          "mode":  "thresholds"
-                                                                      },
-                                                            "thresholds":  {
-                                                                               "mode":  "absolute",
-                                                                               "steps":  [
-                                                                                             {
-                                                                                                 "color":  "red",
-                                                                                                 "value":  null
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "green",
-                                                                                                 "value":  0
-                                                                                             },
-                                                                                             {
-                                                                                                 "color":  "red",
-                                                                                                 "value":  1
-                                                                                             }
-                                                                                         ]
-                                                                           },
-                                                            "mappings":  [
-                                                                             {
-                                                                                 "options":  {
-                                                                                                 "0":  {
-                                                                                                           "text":  "OK"
-                                                                                                       },
-                                                                                                 "1":  {
-                                                                                                           "text":  "DRIFTING"
-                                                                                                       }
-                                                                                             },
-                                                                                 "type":  "value"
-                                                                             }
-                                                                         ],
-                                                            "unit":  "short"
-                                                        }
-                                       },
-                       "gridPos":  {
-                                       "h":  8,
-                                       "w":  12,
-                                       "x":  0,
-                                       "y":  50
-                                   },
-                       "id":  23,
-                       "options":  {
-                                       "reduceOptions":  {
-                                                             "calcs":  [
-                                                                           "lastNotNull"
-                                                                       ]
-                                                         },
-                                       "orientation":  "auto",
-                                       "textMode":  "auto",
-                                       "colorMode":  "background",
-                                       "graphMode":  "none",
-                                       "noValue":  "NO DATA"
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "drift_is_drifting",
-                                           "legendFormat":  "{{metric}}",
-                                           "refId":  "A"
-                                       }
-                                   ],
-                       "title":  "Drift Status - All Metrics (green = OK, red = DRIFTING)",
-                       "type":  "stat"
-                   },
-                   {
-                       "datasource":  {
-                                          "type":  "prometheus",
-                                          "uid":  "prometheus"
-                                      },
-                       "fieldConfig":  {
-                                           "defaults":  {
-                                                            "color":  {
-                                                                          "mode":  "palette-classic"
-                                                                      },
-                                                            "custom":  {
-                                                                           "lineWidth":  2
-                                                                       },
-                                                            "unit":  "short",
-                                                            "min":  0
-                                                        }
-                                       },
-                       "gridPos":  {
-                                       "h":  8,
-                                       "w":  12,
-                                       "x":  12,
-                                       "y":  50
-                                   },
-                       "id":  24,
-                       "options":  {
-                                       "legend":  {
-                                                      "calcs":  [
-                                                                    "lastNotNull"
-                                                                ],
-                                                      "displayMode":  "table",
-                                                      "placement":  "right"
-                                                  },
-                                       "tooltip":  {
-                                                       "mode":  "multi",
-                                                       "sort":  "desc"
-                                                   }
-                                   },
-                       "targets":  [
-                                       {
-                                           "datasource":  {
-                                                              "type":  "prometheus",
-                                                              "uid":  "prometheus"
-                                                          },
-                                           "expr":  "drift_window_observations",
-                                           "legendFormat":  "{{metric}}",
-                                           "refId":  "A"
-                                       }
-                                   ],
-                       "title":  "Drift Window Fill (observations per metric, max 200)",
-                       "type":  "timeseries"
-                   }
-               ],
-    "refresh":  "5m",
-    "schemaVersion":  38,
-    "tags":  [
-                 "libraryai"
-             ],
-    "time":  {
-                 "from":  "now-1h",
-                 "to":  "now"
-             },
-    "timepicker":  {
-
-                   },
-    "timezone":  "browser",
-    "title":  "LibraryAI - Model Signals",
-    "uid":  "libraryai-signals",
-    "version":  1
+                    "unit": "short"
+                },
+                "overrides": []
+            },
+            "gridPos": {"h": 4, "w": 4, "x": 0, "y": 1},
+            "id": 31,
+            "options": {
+                "colorMode": "value",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "horizontal",
+                "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+                "textMode": "value_and_name",
+                "noValue": "No series — check Prometheus scrape for iep1a"
+            },
+            "targets": [
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "sum(iep1a_geometry_confidence_count) or on() vector(0)",
+                    "legendFormat": "IEP1A samples",
+                    "refId": "A"
+                }
+            ],
+            "title": "IEP1A samples",
+            "type": "stat"
+        },
+        {
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "fieldConfig": {
+                "defaults": {
+                    "color": {"mode": "thresholds"},
+                    "decimals": 0,
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {"color": "#9DA0A6", "value": null},
+                            {"color": "green", "value": 1}
+                        ]
+                    },
+                    "unit": "short"
+                },
+                "overrides": []
+            },
+            "gridPos": {"h": 4, "w": 4, "x": 4, "y": 1},
+            "id": 32,
+            "options": {
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "horizontal",
+                "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+                "textMode": "value_and_name",
+                "noValue": "No series — check Prometheus scrape for iep1b"
+            },
+            "targets": [
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "sum(iep1b_geometry_confidence_count) or on() vector(0)",
+                    "legendFormat": "IEP1B samples",
+                    "refId": "A"
+                }
+            ],
+            "title": "IEP1B samples",
+            "type": "stat"
+        },
+        {
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "fieldConfig": {
+                "defaults": {
+                    "color": {"mode": "thresholds"},
+                    "decimals": 0,
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {"color": "#9DA0A6", "value": null},
+                            {"color": "green", "value": 1}
+                        ]
+                    },
+                    "unit": "short"
+                },
+                "overrides": []
+            },
+            "gridPos": {"h": 4, "w": 4, "x": 8, "y": 1},
+            "id": 33,
+            "options": {
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "horizontal",
+                "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+                "textMode": "value_and_name",
+                "noValue": "No series — check Prometheus scrape for iep2a"
+            },
+            "targets": [
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "sum(iep2a_mean_page_confidence_count) or on() vector(0)",
+                    "legendFormat": "IEP2A samples",
+                    "refId": "A"
+                }
+            ],
+            "title": "IEP2A samples",
+            "type": "stat"
+        },
+        {
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "fieldConfig": {
+                "defaults": {
+                    "color": {"mode": "thresholds"},
+                    "decimals": 0,
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {"color": "#9DA0A6", "value": null},
+                            {"color": "green", "value": 1}
+                        ]
+                    },
+                    "unit": "short"
+                },
+                "overrides": []
+            },
+            "gridPos": {"h": 4, "w": 4, "x": 12, "y": 1},
+            "id": 34,
+            "options": {
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "horizontal",
+                "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+                "textMode": "value_and_name",
+                "noValue": "No series — check Prometheus scrape for iep2b"
+            },
+            "targets": [
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "sum(iep2b_mean_page_confidence_count) or on() vector(0)",
+                    "legendFormat": "IEP2B samples",
+                    "refId": "A"
+                }
+            ],
+            "title": "IEP2B samples",
+            "type": "stat"
+        },
+        {
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "fieldConfig": {
+                "defaults": {
+                    "color": {"mode": "thresholds"},
+                    "decimals": 0,
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {"color": "#9DA0A6", "value": null},
+                            {"color": "green", "value": 1}
+                        ]
+                    },
+                    "unit": "short"
+                },
+                "overrides": []
+            },
+            "gridPos": {"h": 4, "w": 4, "x": 16, "y": 1},
+            "id": 35,
+            "options": {
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "horizontal",
+                "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+                "textMode": "value_and_name",
+                "noValue": "No series — check Prometheus scrape for eep-worker"
+            },
+            "targets": [
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "sum(drift_window_observations) or on() vector(0)",
+                    "legendFormat": "Drift observations",
+                    "refId": "A"
+                }
+            ],
+            "title": "Drift observations",
+            "type": "stat"
+        },
+        {
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "fieldConfig": {
+                "defaults": {
+                    "color": {"mode": "thresholds"},
+                    "decimals": 0,
+                    "mappings": [],
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {"color": "#9DA0A6", "value": null},
+                            {"color": "green", "value": 1}
+                        ]
+                    },
+                    "unit": "short"
+                },
+                "overrides": []
+            },
+            "gridPos": {"h": 4, "w": 4, "x": 20, "y": 1},
+            "id": 36,
+            "options": {
+                "colorMode": "background",
+                "graphMode": "none",
+                "justifyMode": "auto",
+                "orientation": "horizontal",
+                "reduceOptions": {"calcs": ["lastNotNull"], "fields": "", "values": false},
+                "textMode": "value_and_name",
+                "noValue": "No series — check Prometheus scrape for iep1d"
+            },
+            "targets": [
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "sum(iep1d_rectification_confidence_count) or on() vector(0)",
+                    "legendFormat": "IEP1D samples",
+                    "refId": "A"
+                }
+            ],
+            "title": "IEP1D samples",
+            "type": "stat"
+        },
+        {
+            "collapsed": false,
+            "gridPos": {"h": 1, "w": 24, "x": 0, "y": 5},
+            "id": 10,
+            "title": "IEP1A / IEP1B — Geometry Confidence",
+            "type": "row"
+        },
+        {
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "fieldConfig": {
+                "defaults": {
+                    "custom": {
+                        "fillOpacity": 10,
+                        "lineInterpolation": "linear",
+                        "lineWidth": 1,
+                        "showPoints": "never"
+                    },
+                    "max": 1,
+                    "min": 0,
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {"color": "green", "value": null},
+                            {"color": "yellow", "value": 0.65},
+                            {"color": "red", "value": 0.5}
+                        ]
+                    },
+                    "unit": "percentunit"
+                },
+                "overrides": []
+            },
+            "gridPos": {"h": 8, "w": 24, "x": 0, "y": 6},
+            "id": 11,
+            "options": {
+                "legend": {
+                    "calcs": ["mean", "last"],
+                    "displayMode": "table",
+                    "placement": "bottom"
+                },
+                "tooltip": {"mode": "multi", "sort": "desc"}
+            },
+            "targets": [
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "histogram_quantile(0.50, sum(increase(iep1a_geometry_confidence_bucket[$__range])) by (le))",
+                    "legendFormat": "IEP1A p50 (6h)",
+                    "refId": "A"
+                },
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "histogram_quantile(0.50, sum(increase(iep1b_geometry_confidence_bucket[$__range])) by (le))",
+                    "legendFormat": "IEP1B p50 (6h)",
+                    "refId": "B"
+                },
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "histogram_quantile(0.95, sum(increase(iep1a_geometry_confidence_bucket[$__range])) by (le))",
+                    "legendFormat": "IEP1A p95 (6h)",
+                    "refId": "C"
+                },
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "histogram_quantile(0.95, sum(increase(iep1b_geometry_confidence_bucket[$__range])) by (le))",
+                    "legendFormat": "IEP1B p95 (6h)",
+                    "refId": "D"
+                }
+            ],
+            "title": "IEP1A/B Geometry Confidence (p50 / p95)",
+            "type": "timeseries"
+        },
+        {
+            "collapsed": false,
+            "gridPos": {"h": 1, "w": 24, "x": 0, "y": 14},
+            "id": 12,
+            "title": "IEP1A / IEP1B — TTA",
+            "type": "row"
+        },
+        {
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "fieldConfig": {
+                "defaults": {
+                    "custom": {
+                        "fillOpacity": 10,
+                        "lineInterpolation": "linear",
+                        "lineWidth": 1,
+                        "showPoints": "never"
+                    },
+                    "max": 1,
+                    "min": 0,
+                    "unit": "percentunit"
+                },
+                "overrides": []
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 15},
+            "id": 13,
+            "options": {
+                "legend": {"calcs": ["mean", "last"], "displayMode": "table", "placement": "bottom"},
+                "tooltip": {"mode": "multi", "sort": "desc"}
+            },
+            "targets": [
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "histogram_quantile(0.50, sum(increase(iep1a_tta_structural_agreement_rate_bucket[$__range])) by (le))",
+                    "legendFormat": "IEP1A TTA agreement p50",
+                    "refId": "A"
+                },
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "histogram_quantile(0.50, sum(increase(iep1b_tta_structural_agreement_rate_bucket[$__range])) by (le))",
+                    "legendFormat": "IEP1B TTA agreement p50",
+                    "refId": "B"
+                }
+            ],
+            "title": "IEP1A/B TTA Structural Agreement Rate",
+            "type": "timeseries"
+        },
+        {
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "fieldConfig": {
+                "defaults": {
+                    "custom": {
+                        "fillOpacity": 10,
+                        "lineInterpolation": "linear",
+                        "lineWidth": 1,
+                        "showPoints": "never"
+                    },
+                    "min": 0,
+                    "unit": "short"
+                },
+                "overrides": []
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 15},
+            "id": 14,
+            "options": {
+                "legend": {"calcs": ["mean", "last"], "displayMode": "table", "placement": "bottom"},
+                "tooltip": {"mode": "multi", "sort": "desc"}
+            },
+            "targets": [
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "histogram_quantile(0.50, sum(increase(iep1a_tta_prediction_variance_bucket[$__range])) by (le))",
+                    "legendFormat": "IEP1A variance p50",
+                    "refId": "A"
+                },
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "histogram_quantile(0.95, sum(increase(iep1a_tta_prediction_variance_bucket[$__range])) by (le))",
+                    "legendFormat": "IEP1A variance p95",
+                    "refId": "B"
+                },
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "histogram_quantile(0.50, sum(increase(iep1b_tta_prediction_variance_bucket[$__range])) by (le))",
+                    "legendFormat": "IEP1B variance p50",
+                    "refId": "C"
+                },
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "histogram_quantile(0.95, sum(increase(iep1b_tta_prediction_variance_bucket[$__range])) by (le))",
+                    "legendFormat": "IEP1B variance p95",
+                    "refId": "D"
+                }
+            ],
+            "title": "IEP1A/B TTA Prediction Variance (p50 / p95)",
+            "type": "timeseries"
+        },
+        {
+            "collapsed": false,
+            "gridPos": {"h": 1, "w": 24, "x": 0, "y": 23},
+            "id": 20,
+            "title": "IEP2A / IEP2B",
+            "type": "row"
+        },
+        {
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "fieldConfig": {
+                "defaults": {
+                    "custom": {
+                        "fillOpacity": 10,
+                        "lineInterpolation": "linear",
+                        "lineWidth": 1,
+                        "showPoints": "never"
+                    },
+                    "max": 1,
+                    "min": 0,
+                    "unit": "percentunit"
+                },
+                "overrides": []
+            },
+            "gridPos": {"h": 8, "w": 24, "x": 0, "y": 24},
+            "id": 21,
+            "options": {
+                "legend": {"calcs": ["mean", "last"], "displayMode": "table", "placement": "bottom"},
+                "tooltip": {"mode": "multi", "sort": "desc"}
+            },
+            "targets": [
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "histogram_quantile(0.50, sum(increase(iep2a_mean_page_confidence_bucket[$__range])) by (le))",
+                    "legendFormat": "IEP2A p50 (1h)",
+                    "refId": "A"
+                },
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "histogram_quantile(0.50, sum(increase(iep2b_mean_page_confidence_bucket[$__range])) by (le))",
+                    "legendFormat": "IEP2B p50 (1h)",
+                    "refId": "B"
+                },
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "histogram_quantile(0.95, sum(increase(iep2a_mean_page_confidence_bucket[$__range])) by (le))",
+                    "legendFormat": "IEP2A p95 (1h)",
+                    "refId": "C"
+                },
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "histogram_quantile(0.95, sum(increase(iep2b_mean_page_confidence_bucket[$__range])) by (le))",
+                    "legendFormat": "IEP2B p95 (1h)",
+                    "refId": "D"
+                }
+            ],
+            "title": "IEP2A/IEP2B Mean Page Confidence",
+            "type": "timeseries"
+        },
+        {
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "fieldConfig": {
+                "defaults": {
+                    "custom": {
+                        "fillOpacity": 10,
+                        "lineInterpolation": "linear",
+                        "lineWidth": 1,
+                        "showPoints": "never"
+                    },
+                    "min": 0,
+                    "unit": "short"
+                },
+                "overrides": []
+            },
+            "gridPos": {"h": 8, "w": 24, "x": 0, "y": 32},
+            "id": 22,
+            "options": {
+                "legend": {"calcs": ["mean", "last"], "displayMode": "table", "placement": "bottom"},
+                "tooltip": {"mode": "multi", "sort": "desc"}
+            },
+            "targets": [
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "histogram_quantile(0.50, sum(increase(iep2a_regions_per_page_bucket[$__range])) by (le))",
+                    "legendFormat": "IEP2A regions p50",
+                    "refId": "A"
+                },
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "histogram_quantile(0.50, sum(increase(iep2b_regions_per_page_bucket[$__range])) by (le))",
+                    "legendFormat": "IEP2B regions p50",
+                    "refId": "B"
+                }
+            ],
+            "title": "IEP2A/B Regions per Page",
+            "type": "timeseries"
+        },
+        {
+            "collapsed": false,
+            "gridPos": {"h": 1, "w": 24, "x": 0, "y": 40},
+            "id": 70,
+            "title": "IEP1D",
+            "type": "row"
+        },
+        {
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "fieldConfig": {
+                "defaults": {
+                    "custom": {"fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 1, "showPoints": "never"},
+                    "unit": "ops"
+                },
+                "overrides": []
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 41},
+            "id": 71,
+            "options": {
+                "legend": {"calcs": ["mean", "last"], "displayMode": "table", "placement": "bottom"},
+                "tooltip": {"mode": "multi", "sort": "desc"}
+            },
+            "targets": [
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "sum(increase(iep1d_rectification_triggered_total[$__range]))",
+                    "legendFormat": "trigger rate",
+                    "refId": "A"
+                }
+            ],
+            "title": "IEP1D Rectification Trigger Rate",
+            "type": "timeseries"
+        },
+        {
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "fieldConfig": {
+                "defaults": {
+                    "custom": {"fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 1, "showPoints": "never"},
+                    "min": 0,
+                    "unit": "s"
+                },
+                "overrides": []
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 41},
+            "id": 72,
+            "options": {
+                "legend": {"calcs": ["mean", "last"], "displayMode": "table", "placement": "bottom"},
+                "tooltip": {"mode": "multi", "sort": "desc"}
+            },
+            "targets": [
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "histogram_quantile(0.50, sum(increase(iep1d_gpu_inference_seconds_bucket[$__range])) by (le))",
+                    "legendFormat": "IEP1D p50",
+                    "refId": "A"
+                },
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "histogram_quantile(0.95, sum(increase(iep1d_gpu_inference_seconds_bucket[$__range])) by (le))",
+                    "legendFormat": "IEP1D p95",
+                    "refId": "B"
+                }
+            ],
+            "title": "IEP1D Rectification Latency (p50 / p95)",
+            "type": "timeseries"
+        },
+        {
+            "collapsed": false,
+            "gridPos": {"h": 1, "w": 24, "x": 0, "y": 49},
+            "id": 90,
+            "title": "Drift detector",
+            "type": "row"
+        },
+        {
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "fieldConfig": {
+                "defaults": {
+                    "custom": {"fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 1, "showPoints": "never"},
+                    "max": 1,
+                    "min": 0,
+                    "unit": "short"
+                },
+                "overrides": []
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 50},
+            "id": 91,
+            "options": {
+                "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "right"},
+                "tooltip": {"mode": "multi", "sort": "desc"}
+            },
+            "targets": [
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "drift_window_mean{metric=~\"iep1a.*|iep1b.*\"}",
+                    "legendFormat": "window {{metric}}",
+                    "refId": "A"
+                },
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "drift_baseline_mean{metric=~\"iep1a.*|iep1b.*\"}",
+                    "legendFormat": "baseline {{metric}}",
+                    "refId": "B"
+                }
+            ],
+            "title": "IEP1A / IEP1B — Window Mean vs Baseline",
+            "type": "timeseries"
+        },
+        {
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "fieldConfig": {
+                "defaults": {
+                    "custom": {"fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 1, "showPoints": "never"},
+                    "unit": "short"
+                },
+                "overrides": []
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 50},
+            "id": 92,
+            "options": {
+                "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "right"},
+                "tooltip": {"mode": "multi", "sort": "desc"}
+            },
+            "targets": [
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "drift_window_mean{metric=~\"iep2a.*|iep2b.*|eep.*\"}",
+                    "legendFormat": "window {{metric}}",
+                    "refId": "A"
+                },
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "drift_baseline_mean{metric=~\"iep2a.*|iep2b.*|eep.*\"}",
+                    "legendFormat": "baseline {{metric}}",
+                    "refId": "B"
+                }
+            ],
+            "title": "IEP2 / EEP drift metrics",
+            "type": "timeseries"
+        },
+        {
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "fieldConfig": {
+                "defaults": {
+                    "color": {"mode": "thresholds"},
+                    "decimals": 0,
+                    "mappings": [
+                        {"options": {"0": {"text": "OK"}, "1": {"text": "DRIFTING"}}, "type": "value"}
+                    ],
+                    "max": 1,
+                    "min": 0,
+                    "thresholds": {
+                        "mode": "absolute",
+                        "steps": [
+                            {"color": "green", "value": null},
+                            {"color": "red", "value": 1}
+                        ]
+                    },
+                    "unit": "short"
+                },
+                "overrides": []
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 0, "y": 58},
+            "id": 23,
+            "options": {
+                "colorMode": "background",
+                "graphMode": "none",
+                "orientation": "auto",
+                "reduceOptions": {"calcs": ["lastNotNull"]},
+                "textMode": "auto",
+                "noValue": "No drift series"
+            },
+            "targets": [
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "drift_is_drifting",
+                    "legendFormat": "{{metric}}",
+                    "refId": "A"
+                }
+            ],
+            "title": "Drift Status — All Metrics (green = OK, red = DRIFTING)",
+            "type": "stat"
+        },
+        {
+            "datasource": {"type": "prometheus", "uid": "prometheus"},
+            "fieldConfig": {
+                "defaults": {
+                    "custom": {"fillOpacity": 10, "lineInterpolation": "linear", "lineWidth": 2},
+                    "min": 0,
+                    "max": 200,
+                    "unit": "short"
+                },
+                "overrides": []
+            },
+            "gridPos": {"h": 8, "w": 12, "x": 12, "y": 58},
+            "id": 24,
+            "options": {
+                "legend": {"calcs": ["lastNotNull"], "displayMode": "table", "placement": "right"},
+                "tooltip": {"mode": "multi", "sort": "desc"}
+            },
+            "targets": [
+                {
+                    "datasource": {"type": "prometheus", "uid": "prometheus"},
+                    "expr": "drift_window_observations",
+                    "legendFormat": "{{metric}}",
+                    "refId": "A"
+                }
+            ],
+            "title": "Drift Window Fill (observations per metric)",
+            "type": "timeseries"
+        }
+    ],
+    "refresh": "5m",
+    "schemaVersion": 38,
+    "tags": ["libraryai"],
+    "time": {"from": "now-1h", "to": "now"},
+    "timepicker": {},
+    "timezone": "browser",
+    "title": "LibraryAI — Model Signals",
+    "uid": "libraryai-model-signals",
+    "version": 1
 }
