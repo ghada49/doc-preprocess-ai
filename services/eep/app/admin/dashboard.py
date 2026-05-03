@@ -16,8 +16,14 @@ computed on-request from the authoritative tables; no caching layer is
 introduced.
 
 Fields (spec Section 11.4):
-  throughput_pages_per_hour    — average pages reaching a terminal state per
-                                 active hour.
+  trailing_wall_clock_pages_per_hour — terminal completions in the last 24h ÷ 24
+                                 wall-clock hours (delivery rate, not peak speed).
+  trailing_active_pages_per_hour — terminal completions in the last 24h ÷ aggregate
+                                 active processing time (sum of ``JobPage.processing_time_ms``
+                                 for those rows, converted to hours).  ``null`` when
+                                 ``processing_time_ms`` is missing on any terminal row
+                                 in the window, when the summed time is zero, or when
+                                 there are no terminal completions in the window.
   auto_accept_rate             — fraction of all-time terminal pages where
                                  acceptance_decision = 'accepted'.
   structural_agreement_rate    — fraction of all-time page_lineage rows where
@@ -46,8 +52,8 @@ Fields (spec Section 11.4):
                                  status = 'success' in the window.
   layout_success_rate          — fraction of layout-stage invocations with
                                  status = 'success' in the window.
-  human_review_throughput_rate — average human-corrected pages per active hour
-                                 (page_lineage.human_correction_timestamp).
+  human_review_throughput_rate — human-corrected pages in the window ÷ window_hours
+                                 (same wall-clock convention as delivery rate).
   structural_agreement_rate    — fraction of page_lineage rows created in the
                                  window where structural_agreement IS TRUE.
   window_hours                 — the window used for stage, rescue, and
@@ -55,7 +61,7 @@ Fields (spec Section 11.4):
 
 Query parameter:
   window_hours (int, default 24, min 1, max 720) — look-back window for
-  service-health rates except the active-hour human review throughput.
+  service-health rates and human review throughput.
 
 Error responses:
   401 — missing or invalid bearer token
@@ -69,7 +75,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timedelta, timezone
-from typing import cast
+from typing import Any, cast
 
 import redis as redis_lib
 from fastapi import APIRouter, Depends, Query
@@ -105,59 +111,91 @@ def _safe_rate(numerator: int, denominator: int) -> float:
     return round(numerator / denominator, 4)
 
 
-def _average_timestamp_rows_per_active_hour(rows: list[object]) -> float:
-    """
-    Average event rows across hourly buckets that actually contain events.
-    """
-    buckets: dict[datetime, int] = {}
-    for row in rows:
-        try:
-            event_at = row[0]
-        except (TypeError, KeyError, IndexError):
-            event_at = row
-        if event_at is None:
-            continue
-        if event_at.tzinfo is None:
-            event_at = event_at.replace(tzinfo=timezone.utc)
-        bucket = event_at.astimezone(timezone.utc).replace(
-            minute=0,
-            second=0,
-            microsecond=0,
-        )
-        buckets[bucket] = buckets.get(bucket, 0) + 1
-    if not buckets:
-        return 0.0
-    return round(sum(buckets.values()) / len(buckets), 4)
+_MS_PER_HOUR = 3_600_000.0
 
 
-def _average_terminal_pages_per_hour(db: Session) -> float:
+def compute_trailing_page_rates_from_aggregates(
+    *,
+    hours: int,
+    n_terminal_in_window: int,
+    n_terminal_with_processing_ms: int,
+    sum_processing_time_ms: float,
+) -> tuple[float, float | None]:
     """
-    Average terminal page completions across active historical hourly buckets.
+    Turn trailing-window SQL aggregates into (wall_clock_pph, active_pph).
 
-    Example: 6 pages from 10:00-10:59 and 4 pages from 11:00-11:59 returns 5/h.
+    ``active_pph`` is ``n_terminal / (sum_processing_time_ms / MS_PER_HOUR)`` when every
+    terminal row in the window has ``processing_time_ms`` populated and the sum is
+    positive; otherwise ``None`` (caller surfaces as "active time unavailable").
     """
-    rows = (
-        db.query(JobPage.status_updated_at)
-        .filter(
-            JobPage.status.in_(_TERMINAL_STATES),
-            JobPage.status_updated_at.isnot(None),
-        )
-        .all()
+    if hours <= 0:
+        return 0.0, None
+    wall = round(n_terminal_in_window / float(hours), 4)
+    if n_terminal_in_window == 0:
+        return wall, None
+    if n_terminal_with_processing_ms != n_terminal_in_window:
+        return wall, None
+    if sum_processing_time_ms <= 0:
+        return wall, None
+    active_hours = sum_processing_time_ms / _MS_PER_HOUR
+    if active_hours <= 0:
+        return wall, None
+    active = round(n_terminal_in_window / active_hours, 4)
+    return wall, active
+
+
+def _terminal_trailing_window_base_filters(*, now: datetime, hours: int) -> tuple[Any, ...]:
+    """SQLAlchemy boolean clauses for terminal ``JobPage`` rows in ``(now-hours, now]``."""
+    window_start = now - timedelta(hours=hours)
+    return (
+        JobPage.status.in_(_TERMINAL_STATES),
+        JobPage.status_updated_at.isnot(None),
+        JobPage.status_updated_at >= window_start,
+        JobPage.status_updated_at <= now,
     )
-    return _average_timestamp_rows_per_active_hour(rows)
 
 
-def _average_human_review_pages_per_hour(db: Session) -> float:
-    """Average human-corrected pages across active historical hourly buckets."""
-    rows = (
-        db.query(PageLineage.human_correction_timestamp)
-        .filter(
-            PageLineage.human_corrected.is_(True),
-            PageLineage.human_correction_timestamp.isnot(None),
-        )
-        .all()
+def trailing_terminal_page_rate_metrics(
+    db: Session,
+    *,
+    hours: int = 24,
+    now: datetime | None = None,
+) -> tuple[float, float | None]:
+    """
+    Delivery rate (wall-clock) and active processing rate for terminal ``JobPage`` rows.
+
+    The wall-clock rate divides completions in ``[now - hours, now]`` by *hours*.
+
+    The active rate divides the same completion count by the sum of
+    ``processing_time_ms`` for those rows (worker-task wall time, aggregated across
+    parallelism).  Returns ``(wall, None)`` when active time cannot be computed
+    reliably (see ``compute_trailing_page_rates_from_aggregates``).
+    """
+    if hours <= 0:
+        return 0.0, None
+    now = now or datetime.now(timezone.utc)
+    base = _terminal_trailing_window_base_filters(now=now, hours=hours)
+    n_all = int(db.query(func.count()).select_from(JobPage).filter(*base).scalar() or 0)
+    n_with_ms = int(
+        db.query(func.count())
+        .select_from(JobPage)
+        .filter(*base, JobPage.processing_time_ms.isnot(None))
+        .scalar()
+        or 0
     )
-    return _average_timestamp_rows_per_active_hour(rows)
+    sum_row = (
+        db.query(func.coalesce(func.sum(JobPage.processing_time_ms), 0.0))
+        .select_from(JobPage)
+        .filter(*base, JobPage.processing_time_ms.isnot(None))
+        .scalar()
+    )
+    sum_ms = float(sum_row or 0.0)
+    return compute_trailing_page_rates_from_aggregates(
+        hours=hours,
+        n_terminal_in_window=n_all,
+        n_terminal_with_processing_ms=n_with_ms,
+        sum_processing_time_ms=sum_ms,
+    )
 
 
 def _dashboard_acceptance_rates(db: Session) -> tuple[float, float]:
@@ -222,7 +260,9 @@ class DashboardSummaryResponse(BaseModel):
     System-wide KPI snapshot.
 
     Fields:
-        throughput_pages_per_hour    — average terminal pages per active hour
+        trailing_wall_clock_pages_per_hour — terminal completions in last 24h ÷ 24
+        trailing_active_pages_per_hour — same count ÷ aggregate ``processing_time_ms``
+                                           hours, or null when unavailable
         auto_accept_rate             — fraction of terminal pages automatically accepted
         structural_agreement_rate    — fraction of pages where IEP1A and IEP1B agreed
         pending_corrections_count    — pages currently awaiting human correction
@@ -231,7 +271,8 @@ class DashboardSummaryResponse(BaseModel):
         shadow_evaluations_count     — jobs submitted with shadow_mode enabled
     """
 
-    throughput_pages_per_hour: float
+    trailing_wall_clock_pages_per_hour: float
+    trailing_active_pages_per_hour: float | None = None
     auto_accept_rate: float
     structural_agreement_rate: float
     pending_corrections_count: int
@@ -248,7 +289,7 @@ class ServiceHealthResponse(BaseModel):
         preprocessing_success_rate   — IEP1A/IEP1B/IEP1C invocation success rate
         rectification_success_rate   — IEP1D invocation success rate
         layout_success_rate          — IEP2A/IEP2B invocation success rate
-        human_review_throughput_rate — human-corrected pages per active hour
+        human_review_throughput_rate — human-corrected pages in the window ÷ window_hours
         structural_agreement_rate    — IEP1A/IEP1B geometric agreement rate
         rescue_rate                  — fraction of first-pass failures that entered
                                        IEP1D rescue (vs. skipped by policy). 0.0 when
@@ -290,7 +331,7 @@ def get_dashboard_summary(
 
     **Auth:** admin role required (403 for non-admin callers).
     """
-    throughput_pages_per_hour = _average_terminal_pages_per_hour(db)
+    wall_pph, active_pph = trailing_terminal_page_rate_metrics(db, hours=24)
 
     auto_accept_rate, structural_agreement_rate = update_dashboard_rate_metrics(db)
 
@@ -316,9 +357,10 @@ def get_dashboard_summary(
     )
 
     logger.debug(
-        "dashboard-summary: throughput=%.1f auto_accept=%.4f pending_corrections=%d "
+        "dashboard-summary: wall_pph=%.2f active_pph=%s auto_accept=%.4f pending_corrections=%d "
         "active_jobs=%d active_workers=%d shadow=%d",
-        throughput_pages_per_hour,
+        wall_pph,
+        active_pph,
         auto_accept_rate,
         pending_corrections_count,
         active_jobs_count,
@@ -326,7 +368,8 @@ def get_dashboard_summary(
         shadow_evaluations_count,
     )
     return DashboardSummaryResponse(
-        throughput_pages_per_hour=throughput_pages_per_hour,
+        trailing_wall_clock_pages_per_hour=wall_pph,
+        trailing_active_pages_per_hour=active_pph,
         auto_accept_rate=auto_accept_rate,
         structural_agreement_rate=structural_agreement_rate,
         pending_corrections_count=pending_corrections_count,
@@ -372,14 +415,19 @@ def get_service_health(
         Compute success rate for service invocations matching any of the given
         ILIKE patterns within the current window.
         """
-        q = db.query(ServiceInvocation).filter(
+        base_filters = (
             or_(*[ServiceInvocation.service_name.ilike(p) for p in name_filters]),
             ServiceInvocation.invoked_at >= window_start,
         )
-        total: int = q.with_entities(func.count(ServiceInvocation.id)).scalar() or 0
+        total: int = (
+            db.query(func.count(ServiceInvocation.id)).filter(*base_filters).scalar() or 0
+        )
         success: int = (
-            q.filter(ServiceInvocation.status == "success")
-            .with_entities(func.count(ServiceInvocation.id))
+            db.query(func.count(ServiceInvocation.id))
+            .filter(
+                *base_filters,
+                ServiceInvocation.status == "success",
+            )
             .scalar()
             or 0
         )
@@ -394,7 +442,19 @@ def get_service_health(
     # Layout stage: IEP2A / IEP2B
     layout_success_rate = _stage_rate(["iep2%"])
 
-    human_review_throughput_rate = _average_human_review_pages_per_hour(db)
+    human_corrections_window: int = (
+        db.query(func.count(PageLineage.lineage_id))
+        .filter(
+            PageLineage.human_corrected.is_(True),
+            PageLineage.human_correction_timestamp.isnot(None),
+            PageLineage.human_correction_timestamp >= window_start,
+        )
+        .scalar()
+        or 0
+    )
+    human_review_throughput_rate = round(
+        human_corrections_window / float(window_hours), 4
+    )
 
     # Structural agreement rate: page_lineage rows created within the window
     total_with_agreement_window: int = (

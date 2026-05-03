@@ -521,7 +521,8 @@ export interface PromotionAuditResponse {
 // ---- Admin -------------------------------------------------------
 
 export interface DashboardSummary {
-  throughput_pages_per_hour: number | null;
+  trailing_wall_clock_pages_per_hour: number | null;
+  trailing_active_pages_per_hour: number | null;
   auto_accept_rate: number | null;
   structural_agreement_rate: number | null;
   pending_corrections_count: number;

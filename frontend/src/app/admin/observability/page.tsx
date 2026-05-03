@@ -147,15 +147,30 @@ export default function ObservabilityPage() {
         <div>
           <p className="text-2xs font-medium text-slate-400 uppercase tracking-wide mb-2">Pipeline output</p>
           {sLoading ? (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-              {Array.from({ length: 4 }).map((_, i) => <Skeleton key={i} className="h-24" />)}
+            <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-4">
+              {Array.from({ length: 5 }).map((_, i) => (
+                <Skeleton key={i} className="h-24" />
+              ))}
             </div>
           ) : (
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+            <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-4">
               <MetricTile
-                label="Pages / Hour"
-                value={summary?.throughput_pages_per_hour != null ? String(Math.round(summary.throughput_pages_per_hour)) : "—"}
-                sub="Active-hour average"
+                label="Delivery (24h wall-clock)"
+                value={
+                  summary?.trailing_wall_clock_pages_per_hour != null
+                    ? `${summary.trailing_wall_clock_pages_per_hour.toFixed(1)}/h`
+                    : "—"
+                }
+                sub="Terminal completions ÷ 24 calendar hours"
+              />
+              <MetricTile
+                label="Active processing /h"
+                value={
+                  summary?.trailing_active_pages_per_hour != null
+                    ? `${summary.trailing_active_pages_per_hour.toFixed(1)}/h`
+                    : "Active time unavailable"
+                }
+                sub="Sum of JobPage.processing_time_ms in the window"
               />
               <MetricTile
                 label="Auto-Accept Rate"
@@ -172,7 +187,7 @@ export default function ObservabilityPage() {
               <MetricTile
                 label="Human Review Rate"
                 value={health?.human_review_throughput_rate != null ? `${health.human_review_throughput_rate.toFixed(1)}/h` : "—"}
-                sub="Active-hour correction average"
+                sub="Window average (÷ window hours)"
               />
             </div>
           )}
