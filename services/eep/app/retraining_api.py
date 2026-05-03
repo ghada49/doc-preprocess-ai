@@ -26,14 +26,14 @@ import logging
 import os
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Literal
+from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from services.eep.app.auth import CurrentUser, require_admin
-from services.eep.app.db.models import ModelVersion, RetrainingJob, RetrainingTrigger
+from services.eep.app.db.models import ModelVersion, PageLineage, RetrainingJob, RetrainingTrigger
 from services.eep.app.db.session import get_session
 from services.eep.app.scaling.retraining_scaler import maybe_start_retraining_worker
 from services.eep.app.scaling.runpod_scaler import terminate_retraining_pod
@@ -566,6 +566,83 @@ def get_retraining_status(
     )
 
 
+def _material_bucket(material_type: str) -> str:
+    """Map page_lineage material_type to dataset-builder family bucket."""
+    if material_type in {"book", "newspaper", "microfilm"}:
+        return material_type
+    if material_type == "archival_document":
+        return "microfilm"
+    return "book"
+
+
+def _check_training_data_sufficiency(db: Session) -> dict[str, Any] | None:
+    """
+    Count eligible human-corrected rows per (family, material) and check against
+    the minimum thresholds used by the dataset builder.
+
+    Returns None when at least one (family, material) combination has enough data.
+    Returns a detail dict when no combination meets its threshold, so the caller
+    can return HTTP 422 with a human-readable breakdown.
+
+    Thresholds match dataset_builder's RETRAINING_MIN_CORRECTED_{FAMILY}_{MATERIAL}
+    env vars (default 10).
+    """
+    _FAMILIES = ("iep1a", "iep1b")
+    _MATERIALS = ("book", "newspaper", "microfilm")
+
+    rows = (
+        db.query(
+            PageLineage.iep1a_used,
+            PageLineage.iep1b_used,
+            PageLineage.material_type,
+        )
+        .filter(
+            PageLineage.human_corrected.is_(True),
+            PageLineage.human_correction_fields.isnot(None),
+            PageLineage.acceptance_decision == "accepted",
+        )
+        .all()
+    )
+
+    counts: dict[tuple[str, str], int] = {(f, m): 0 for f in _FAMILIES for m in _MATERIALS}
+    for iep1a_used, iep1b_used, material_type in rows:
+        bucket = _material_bucket(material_type or "book")
+        if iep1a_used:
+            counts[("iep1a", bucket)] = counts.get(("iep1a", bucket), 0) + 1
+        if iep1b_used:
+            counts[("iep1b", bucket)] = counts.get(("iep1b", bucket), 0) + 1
+
+    thresholds: dict[tuple[str, str], int] = {}
+    for family in _FAMILIES:
+        for material in _MATERIALS:
+            env = f"RETRAINING_MIN_CORRECTED_{family.upper()}_{material.upper()}"
+            thresholds[(family, material)] = int(os.environ.get(env, "10"))
+
+    eligible = [
+        (f, m)
+        for (f, m), count in counts.items()
+        if count >= thresholds[(f, m)]
+    ]
+    if eligible:
+        return None
+
+    breakdown = {
+        f"{family}/{material}": {"have": counts[(family, material)], "need": thresholds[(family, material)]}
+        for family in _FAMILIES
+        for material in _MATERIALS
+        if counts[(family, material)] > 0 or thresholds[(family, material)] <= 20
+    }
+    return {
+        "reason": "insufficient_training_data",
+        "message": (
+            "Not enough accepted human-corrected pages to start retraining. "
+            "At least one model/material combination must meet its minimum. "
+            f"Current counts: {breakdown}"
+        ),
+        "breakdown": breakdown,
+    }
+
+
 @router.post(
     "/v1/retraining/trigger",
     response_model=ManualRetrainingResponse,
@@ -596,6 +673,13 @@ def trigger_manual_retraining(
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Manual retraining is already queued or running.",
+        )
+
+    insufficiency = _check_training_data_sufficiency(db)
+    if insufficiency is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=insufficiency["message"],
         )
 
     now = datetime.now(UTC)

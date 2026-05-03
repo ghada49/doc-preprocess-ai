@@ -4,6 +4,7 @@ import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import toast from "react-hot-toast";
 import {
+  AlertTriangle,
   CheckCircle,
   Clock,
   Play,
@@ -25,6 +26,7 @@ import { cn, formatDate, formatRelative, snakeToTitle } from "@/lib/utils";
 export function RetrainingView() {
   const queryClient = useQueryClient();
   const [showTriggerModal, setShowTriggerModal] = useState(false);
+  const [triggerBlockedReason, setTriggerBlockedReason] = useState<string | null>(null);
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["retraining-status"],
     queryFn: getRetrainingStatus,
@@ -44,7 +46,15 @@ export function RetrainingView() {
       queryClient.invalidateQueries({ queryKey: ["retraining-status"] });
     },
     onError: (error) => {
-      toast.error(getApiErrorMessage(error, "Could not queue manual retraining."));
+      const msg = getApiErrorMessage(error, "Could not queue manual retraining.");
+      // 422 = insufficient data — show as a persistent banner, not just a toast
+      // so the admin understands what action they need to take.
+      if ((error as { response?: { status?: number } })?.response?.status === 422) {
+        setTriggerBlockedReason(msg);
+        setShowTriggerModal(false);
+      } else {
+        toast.error(msg);
+      }
     },
   });
 
@@ -99,7 +109,7 @@ export function RetrainingView() {
           </Button>
           <Button
             size="sm"
-            onClick={() => setShowTriggerModal(true)}
+            onClick={() => { setTriggerBlockedReason(null); setShowTriggerModal(true); }}
             disabled={hasRetrainingInFlight || triggerMutation.isPending}
             className="gap-1.5"
           >
@@ -108,6 +118,26 @@ export function RetrainingView() {
           </Button>
         </div>
       </div>
+
+      {triggerBlockedReason && (
+        <div className="flex items-start gap-3 rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-800">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" />
+          <div>
+            <p className="font-semibold mb-0.5">Retraining cannot start — not enough training data</p>
+            <p className="text-amber-700">{triggerBlockedReason}</p>
+            <p className="mt-1 text-amber-600">
+              Accept more human-corrected pages (at least 10 per model/material combination) to unlock retraining.
+            </p>
+          </div>
+          <button
+            className="ml-auto shrink-0 text-amber-400 hover:text-amber-600"
+            onClick={() => setTriggerBlockedReason(null)}
+            aria-label="Dismiss"
+          >
+            ×
+          </button>
+        </div>
+      )}
 
       <JobSection
         title="Active Jobs"
