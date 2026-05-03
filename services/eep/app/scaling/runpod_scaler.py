@@ -24,7 +24,12 @@ class RunPodStartError(RuntimeError):
     """Raised when RunPod pod creation fails."""
 
 
-def start_retraining_pod(trigger_id: str, *, job_id: str | None = None) -> tuple[str, str]:
+def start_retraining_pod(
+    trigger_id: str,
+    *,
+    job_id: str | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> tuple[str, str]:
     """
     Create a RunPod GPU pod for retraining.
 
@@ -45,7 +50,12 @@ def start_retraining_pod(trigger_id: str, *, job_id: str | None = None) -> tuple
     if not image_name:
         raise RunPodStartError("RUNPOD_IMAGE is not set.")
 
-    payload = _build_create_pod_payload(trigger_id, image_name, job_id=job_id)
+    payload = _build_create_pod_payload(
+        trigger_id,
+        image_name,
+        job_id=job_id,
+        extra_env=extra_env,
+    )
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
@@ -99,6 +109,7 @@ def _build_create_pod_payload(
     image_name: str,
     *,
     job_id: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> dict[str, Any]:
     gpu_types = _csv_env(
         "RUNPOD_GPU_TYPES",
@@ -120,7 +131,7 @@ def _build_create_pod_payload(
         "volumeMountPath": os.environ.get("RUNPOD_VOLUME_MOUNT_PATH", "/workspace"),
         "minVCPUPerGPU": int(os.environ.get("RUNPOD_MIN_VCPU_PER_GPU", "4")),
         "minRAMPerGPU": int(os.environ.get("RUNPOD_MIN_RAM_PER_GPU", "16")),
-        "env": _runpod_env(trigger_id, job_id=job_id),
+        "env": _runpod_env(trigger_id, job_id=job_id, extra_env=extra_env),
     }
 
     registry_auth_id = os.environ.get("RUNPOD_CONTAINER_REGISTRY_AUTH_ID", "").strip()
@@ -138,7 +149,12 @@ def _build_create_pod_payload(
     return payload
 
 
-def _runpod_env(trigger_id: str, *, job_id: str | None = None) -> dict[str, str]:
+def _runpod_env(
+    trigger_id: str,
+    *,
+    job_id: str | None = None,
+    extra_env: dict[str, str] | None = None,
+) -> dict[str, str]:
     callback_url = _callback_url()
     callback_secret = os.environ.get("RETRAINING_CALLBACK_SECRET", "").strip()
     if not callback_secret:
@@ -152,10 +168,12 @@ def _runpod_env(trigger_id: str, *, job_id: str | None = None) -> dict[str, str]
         "RETRAINING_CALLBACK_SECRET": callback_secret,
         "PYTHONPATH": "/app",
         "HEALTH_PORT": os.environ.get("RETRAINING_HEALTH_PORT", "9104"),
-        # callback_once mode supports stub retraining only — live training
-        # runs via ECS db_poll mode (retraining-worker task def).
-        "LIBRARYAI_RETRAINING_TRAIN": "stub",
-        "LIBRARYAI_RETRAINING_GOLDEN_EVAL": "stub",
+        # RunPod is the GPU path, so inherit EEP's live/stub retraining mode.
+        "LIBRARYAI_RETRAINING_TRAIN": os.environ.get("LIBRARYAI_RETRAINING_TRAIN", "live"),
+        "LIBRARYAI_RETRAINING_GOLDEN_EVAL": os.environ.get(
+            "LIBRARYAI_RETRAINING_GOLDEN_EVAL",
+            "live",
+        ),
         "RETRAINING_DATASET_MODE": os.environ.get(
             "RETRAINING_DATASET_MODE",
             "corrected_hybrid",
@@ -181,14 +199,31 @@ def _runpod_env(trigger_id: str, *, job_id: str | None = None) -> dict[str, str]
         "S3_ACCESS_KEY",
         "S3_SECRET_KEY",
         "S3_ENDPOINT_URL",
+        "MLFLOW_TRACKING_URI",
+        "RETRAINING_MLFLOW_EXPERIMENT",
         "RETRAINING_DATASET_VERSION",
+        "RETRAINING_DATASET_CHECKSUM",
+        "RETRAINING_DATASET_ARCHIVE_URI",
+        "RETRAINING_DATASET_MANIFEST_REL",
         "RETRAINING_DATASET_BUILDER_CMD",
         "RETRAINING_DATASET_BUILDER_TIMEOUT",
+        "RETRAINING_SOURCE_WINDOW",
         "RETRAINING_TRAIN_MANIFEST",
         "RETRAINING_DEVICE",
         "RETRAINING_QUICK",
         "RETRAINING_SUBPROCESS_TIMEOUT",
+        "RETRAINING_MIN_CORRECTED_IEP1A_BOOK",
+        "RETRAINING_MIN_CORRECTED_IEP1A_NEWSPAPER",
+        "RETRAINING_MIN_CORRECTED_IEP1A_MICROFILM",
+        "RETRAINING_MIN_CORRECTED_IEP1B_BOOK",
+        "RETRAINING_MIN_CORRECTED_IEP1B_NEWSPAPER",
+        "RETRAINING_MIN_CORRECTED_IEP1B_MICROFILM",
         "GOLDEN_SKIP_CROSS_MODEL",
+        "GOLDEN_YOLO_DEVICE",
+        "GOLDEN_S3_READ_MAX_ATTEMPTS",
+        "GOLDEN_S3_READ_RETRY_BASE_SECONDS",
+        "GOLDEN_STRUCTURAL_AGREEMENT_MIN",
+        "GOLDEN_LATENCY_P95_MAX_SECONDS",
     ]
 
     for name in pass_through:
@@ -197,11 +232,14 @@ def _runpod_env(trigger_id: str, *, job_id: str | None = None) -> dict[str, str]
             env[name] = value
 
     # boto3 uses AWS_* names. Keep compatibility with the existing S3_* secret
-    # names so the RunPod pod can access private S3 objects without DB access.
+    # names so the RunPod pod can access private S3 objects.
     if "AWS_ACCESS_KEY_ID" not in env and env.get("S3_ACCESS_KEY_ID"):
         env["AWS_ACCESS_KEY_ID"] = env["S3_ACCESS_KEY_ID"]
     if "AWS_SECRET_ACCESS_KEY" not in env and env.get("S3_SECRET_ACCESS_KEY"):
         env["AWS_SECRET_ACCESS_KEY"] = env["S3_SECRET_ACCESS_KEY"]
+
+    if extra_env:
+        env.update({key: value for key, value in extra_env.items() if value})
 
     return env
 

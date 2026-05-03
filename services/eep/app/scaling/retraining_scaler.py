@@ -29,6 +29,7 @@ def maybe_start_retraining_worker(
     trigger_id: str,
     *,
     job_id: str | None = None,
+    extra_env: dict[str, str] | None = None,
 ) -> tuple[RetrainingWorkerStartStatus, str, str | None]:
     """
     Start the retraining worker infrastructure when configured.
@@ -43,7 +44,11 @@ def maybe_start_retraining_worker(
 
     if mode == "runpod_pod":
         try:
-            pod_id, message = start_retraining_pod(trigger_id, job_id=job_id)
+            pod_id, message = start_retraining_pod(
+                trigger_id,
+                job_id=job_id,
+                extra_env=extra_env,
+            )
         except RunPodStartError as exc:
             message = str(exc)
             logger.error("retraining_scaler: %s", message)

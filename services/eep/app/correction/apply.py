@@ -880,6 +880,8 @@ def _apply_single_page_correction(
         )
     src_data = get_backend(source_uri).get_bytes(source_uri)
     source_image = _decode_split_source_image(source_uri, src_data)
+    source_image_height = int(source_image.shape[0])
+    source_image_width = int(source_image.shape[1])
     corrected_image = _normalize_human_correction_image(
         source_uri=source_uri,
         image=source_image,
@@ -906,6 +908,8 @@ def _apply_single_page_correction(
         "crop_box": stored_crop_box,
         "deskew_angle": body.deskew_angle if effective_selection_mode == "rect" else None,
         "source_artifact_uri": source_uri,
+        "image_width": source_image_width,
+        "image_height": source_image_height,
     }
 
     advanced = advance_page_state(

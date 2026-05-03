@@ -575,6 +575,8 @@ class TestApplyCorrectionEndpoint:
         assert lineage.human_corrected is True
         assert lineage.human_correction_fields["crop_box"] == [5, 10, 400, 600]
         assert lineage.human_correction_fields["deskew_angle"] == pytest.approx(1.5)
+        assert lineage.human_correction_fields["image_width"] == 32
+        assert lineage.human_correction_fields["image_height"] == 32
         assert lineage.human_correction_timestamp is not None
 
     def test_null_deskew_angle_persisted_without_error(self) -> None:

@@ -326,7 +326,8 @@ def execute_retraining_task(trigger: RetrainingTrigger, db: Session) -> None:
     if train_mode == "live":
         repo_root = Path(__file__).resolve().parents[3]
         try:
-            selection = select_retraining_dataset(repo_root)
+            prefer_dataset_mode = "corrected_only" if trigger_type == "manual_retraining" else None
+            selection = select_retraining_dataset(repo_root, prefer_mode=prefer_dataset_mode)
         except DatasetSelectionDeferred as exc:
             logger.info("execute_retraining_task: dataset selection deferred: %s", exc)
             job.status = "completed"

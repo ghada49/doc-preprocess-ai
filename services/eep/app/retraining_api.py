@@ -24,8 +24,10 @@ from __future__ import annotations
 import hmac
 import logging
 import os
+import tarfile
 import uuid
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
@@ -37,6 +39,12 @@ from services.eep.app.db.models import ModelVersion, PageLineage, RetrainingJob,
 from services.eep.app.db.session import get_session
 from services.eep.app.scaling.retraining_scaler import maybe_start_retraining_worker
 from services.eep.app.scaling.runpod_scaler import terminate_retraining_pod
+from services.retraining_worker.app.dataset_registry import (
+    DatasetSelection,
+    DatasetSelectionDeferred,
+    DatasetSelectionError,
+    select_retraining_dataset,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["mlops"])
@@ -616,7 +624,7 @@ def _check_training_data_sufficiency(db: Session) -> dict[str, Any] | None:
     for family in _FAMILIES:
         for material in _MATERIALS:
             env = f"RETRAINING_MIN_CORRECTED_{family.upper()}_{material.upper()}"
-            thresholds[(family, material)] = int(os.environ.get(env, "100"))
+            thresholds[(family, material)] = int(os.environ.get(env, "10"))
 
     eligible = [
         (f, m)
@@ -641,6 +649,158 @@ def _check_training_data_sufficiency(db: Session) -> dict[str, Any] | None:
         ),
         "breakdown": breakdown,
     }
+
+
+def _repo_root() -> Path:
+    return Path(__file__).resolve().parents[3]
+
+
+def _s3_client() -> Any:
+    try:
+        import boto3  # type: ignore[import]
+        from botocore.config import Config  # type: ignore[import]
+    except ImportError as exc:
+        raise RuntimeError("boto3 is required to upload RunPod retraining datasets") from exc
+
+    kwargs: dict[str, Any] = {}
+    endpoint = os.environ.get("S3_ENDPOINT_URL", "").strip()
+    if endpoint:
+        kwargs["endpoint_url"] = endpoint
+    region = os.environ.get("S3_REGION", os.environ.get("AWS_REGION", "")).strip()
+    if region:
+        kwargs["region_name"] = region
+    access_key = os.environ.get("S3_ACCESS_KEY_ID", "").strip() or os.environ.get(
+        "AWS_ACCESS_KEY_ID",
+        "",
+    ).strip()
+    secret_key = os.environ.get("S3_SECRET_ACCESS_KEY", "").strip() or os.environ.get(
+        "AWS_SECRET_ACCESS_KEY",
+        "",
+    ).strip()
+    if access_key and secret_key:
+        kwargs["aws_access_key_id"] = access_key
+        kwargs["aws_secret_access_key"] = secret_key
+    kwargs["config"] = Config(
+        retries={"max_attempts": int(os.environ.get("S3_MAX_RETRIES", "3")), "mode": "adaptive"}
+    )
+    return boto3.client("s3", **kwargs)
+
+
+def _dataset_archive_prefix() -> tuple[str, str]:
+    raw = os.environ.get("RETRAINING_DATASET_ARCHIVE_S3_PREFIX", "").strip()
+    if not raw:
+        bucket = os.environ.get("S3_BUCKET_NAME", "").strip()
+        if not bucket:
+            raise RuntimeError(
+                "S3_BUCKET_NAME or RETRAINING_DATASET_ARCHIVE_S3_PREFIX is required "
+                "for RunPod live retraining datasets."
+            )
+        raw = f"s3://{bucket}/retraining/datasets"
+    if not raw.startswith("s3://"):
+        raise RuntimeError(
+            "RETRAINING_DATASET_ARCHIVE_S3_PREFIX must be an s3:// URI for RunPod live retraining."
+        )
+    without_scheme = raw[len("s3://") :].rstrip("/")
+    bucket, _, prefix = without_scheme.partition("/")
+    if not bucket:
+        raise RuntimeError("Invalid RETRAINING_DATASET_ARCHIVE_S3_PREFIX: missing bucket")
+    return bucket, prefix
+
+
+def _upload_dataset_archive(selection: DatasetSelection, *, job_id: str) -> tuple[str, str]:
+    """
+    Package the selected corrected-export dataset so a RunPod pod can train
+    without private DB or shared filesystem access.
+    """
+    manifest = selection.manifest_path.resolve()
+    if not manifest.is_file():
+        raise RuntimeError(f"Selected retraining manifest does not exist: {manifest}")
+    dataset_root = manifest.parent
+    archive_dir = _repo_root() / ".tmp" / "retraining_archives"
+    archive_dir.mkdir(parents=True, exist_ok=True)
+    archive_path = archive_dir / f"{job_id}.tar.gz"
+    with tarfile.open(archive_path, "w:gz") as archive:
+        archive.add(dataset_root, arcname=".")
+
+    bucket, prefix = _dataset_archive_prefix()
+    dataset_version = selection.dataset_version or f"rt-{job_id.replace('-', '')[:12]}"
+    key_prefix = f"{prefix.rstrip('/')}/" if prefix else ""
+    key = f"{key_prefix}{dataset_version}/{job_id}.tar.gz"
+    _s3_client().upload_file(str(archive_path), bucket, key)
+    return f"s3://{bucket}/{key}", manifest.relative_to(dataset_root).as_posix()
+
+
+def _production_weight_env(service_name: str, db: Session) -> str | None:
+    latest: ModelVersion | None = (
+        db.query(ModelVersion)
+        .filter(
+            ModelVersion.service_name == service_name,
+            ModelVersion.stage == "production",
+        )
+        .order_by(ModelVersion.promoted_at.desc())
+        .first()
+    )
+    if latest is None or not latest.notes:
+        return None
+
+    materials = ("book", "newspaper", "microfilm")
+    result: dict[str, str] = {}
+    for token in latest.notes.split(" "):
+        if not token.startswith("s3_weights:"):
+            continue
+        for uri in token[len("s3_weights:") :].split(","):
+            uri = uri.strip()
+            if not uri.startswith("s3://"):
+                continue
+            stem = uri.rsplit("/", 1)[-1].removesuffix(".pt")
+            for prefix in (f"{service_name}_", "iep1a_", "iep1b_"):
+                if stem.startswith(prefix):
+                    material = stem[len(prefix) :]
+                    if material in materials:
+                        result[material] = uri
+                    break
+        break
+    if not result:
+        return None
+    return ",".join(f"{material}={uri}" for material, uri in sorted(result.items()))
+
+
+def _prepare_runpod_live_env(db: Session, *, job_id: str) -> dict[str, str]:
+    repo_root = _repo_root()
+    try:
+        selection = select_retraining_dataset(repo_root, prefer_mode="corrected_only")
+    except DatasetSelectionDeferred as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    except DatasetSelectionError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Could not prepare retraining dataset: {exc}",
+        ) from exc
+
+    try:
+        archive_uri, manifest_rel = _upload_dataset_archive(selection, job_id=job_id)
+    except Exception as exc:  # noqa: BLE001
+        logger.exception("trigger_manual_retraining: failed to archive corrected dataset")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Could not upload retraining dataset archive for RunPod: {exc}",
+        ) from exc
+
+    env = {
+        "RETRAINING_DATASET_ARCHIVE_URI": archive_uri,
+        "RETRAINING_DATASET_MANIFEST_REL": manifest_rel,
+        "RETRAINING_TRAIN_MANIFEST": f"/workspace/retraining_dataset/{job_id}/{manifest_rel}",
+        "RETRAINING_DATASET_VERSION": selection.dataset_version or f"rt-{job_id.replace('-', '')[:12]}",
+        "RETRAINING_DATASET_CHECKSUM": selection.dataset_checksum,
+        "RETRAINING_DATASET_MODE": "provided_archive",
+    }
+    iep1a_weights = _production_weight_env("iep1a", db)
+    iep1b_weights = _production_weight_env("iep1b", db)
+    if iep1a_weights:
+        env["IEP1A_WEIGHTS_URI"] = iep1a_weights
+    if iep1b_weights:
+        env["IEP1B_WEIGHTS_URI"] = iep1b_weights
+    return env
 
 
 @router.post(
@@ -714,9 +874,34 @@ def trigger_manual_retraining(
         db.refresh(row)
         db.refresh(runpod_job)
 
+    runpod_env: dict[str, str] | None = None
+    if runpod_job is not None and os.environ.get(
+        "LIBRARYAI_RETRAINING_TRAIN",
+        "live",
+    ).strip().lower() == "live":
+        try:
+            runpod_env = _prepare_runpod_live_env(db, job_id=runpod_job.job_id)
+        except HTTPException as exc:
+            row.status = "failed"
+            row.resolved_at = datetime.now(UTC)
+            runpod_job.status = "failed"
+            runpod_job.completed_at = datetime.now(UTC)
+            runpod_job.error_message = str(exc.detail)
+            db.commit()
+            raise
+        runpod_job.dataset_version = runpod_env.get("RETRAINING_DATASET_VERSION")
+        row.notes = (
+            f"{row.notes or ''}; dataset_version={runpod_env.get('RETRAINING_DATASET_VERSION')}; "
+            f"dataset_archive={runpod_env.get('RETRAINING_DATASET_ARCHIVE_URI')}"
+        )
+        db.commit()
+        db.refresh(row)
+        db.refresh(runpod_job)
+
     worker_start_status, worker_start_message, worker_external_id = maybe_start_retraining_worker(
         row.trigger_id,
         job_id=runpod_job.job_id if runpod_job is not None else None,
+        extra_env=runpod_env,
     )
     if worker_external_id:
         notes_suffix = f"; worker_external_id={worker_external_id}"

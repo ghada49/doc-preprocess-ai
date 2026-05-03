@@ -21,10 +21,13 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import tarfile
 import time
 import uuid
 from collections.abc import AsyncGenerator
 from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any
 
 import httpx
 from fastapi import FastAPI
@@ -32,8 +35,11 @@ from sqlalchemy.orm import Session
 
 from services.eep.app.db.models import RetrainingTrigger
 from services.eep.app.db.session import SessionLocal
+from services.retraining_worker.app.dataset_registry import select_retraining_dataset
+from services.retraining_worker.app.golden_gate_merge import build_iep1ab_live_gates
+from services.retraining_worker.app.live_train import run_live_preprocessing_training
 from services.retraining_worker.app.reconcile import ReconcileConfig, run_reconciliation_loop
-from services.retraining_worker.app.task import execute_retraining_task
+from services.retraining_worker.app.task import _resolve_env_pretrained_weights, execute_retraining_task
 from shared.logging_config import setup_logging
 from shared.metrics import (
     RETRAINING_JOB_DURATION_SECONDS,
@@ -199,6 +205,180 @@ async def _post_callback(payload: dict) -> None:
         response.raise_for_status()
 
 
+def _gate_map(gate_results: dict[str, Any]) -> float | None:
+    geometry = gate_results.get("geometry_iou")
+    if isinstance(geometry, dict):
+        value = geometry.get("value")
+        if isinstance(value, (int, float)):
+            return float(value)
+    return None
+
+
+def _live_model_notes(
+    *,
+    s3_uris: list[str],
+    manifest_path: Path,
+    dataset_checksum: str,
+) -> str:
+    parts: list[str] = []
+    if s3_uris:
+        parts.append("s3_weights:" + ",".join(s3_uris))
+    parts.append(f"dataset_manifest={manifest_path}")
+    if dataset_checksum:
+        parts.append(f"dataset_checksum={dataset_checksum}")
+    parts.append("RunPod callback_once live retraining")
+    return " ".join(parts)
+
+
+def _download_s3_uri(uri: str, dest: Path) -> None:
+    if not uri.startswith("s3://"):
+        raise RuntimeError(f"Expected s3:// dataset archive URI, got {uri!r}")
+    try:
+        import boto3  # type: ignore[import]
+        from botocore.config import Config  # type: ignore[import]
+    except ImportError as exc:
+        raise RuntimeError("boto3 is required to download retraining dataset archives") from exc
+
+    without_scheme = uri[len("s3://") :]
+    bucket, _, key = without_scheme.partition("/")
+    if not bucket or not key:
+        raise RuntimeError(f"Invalid dataset archive URI: {uri}")
+
+    kwargs: dict[str, Any] = {}
+    endpoint = os.environ.get("S3_ENDPOINT_URL", "").strip()
+    if endpoint:
+        kwargs["endpoint_url"] = endpoint
+    region = os.environ.get("S3_REGION", os.environ.get("AWS_REGION", "")).strip()
+    if region:
+        kwargs["region_name"] = region
+    kwargs["config"] = Config(
+        retries={"max_attempts": int(os.environ.get("S3_MAX_RETRIES", "3")), "mode": "adaptive"}
+    )
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    boto3.client("s3", **kwargs).download_file(bucket, key, str(dest))
+
+
+def _extract_tar_safe(archive_path: Path, dest_dir: Path) -> None:
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    root = dest_dir.resolve()
+    with tarfile.open(archive_path, "r:gz") as archive:
+        for member in archive.getmembers():
+            member_path = (dest_dir / member.name).resolve()
+            if not str(member_path).startswith(str(root)):
+                raise RuntimeError(f"Unsafe dataset archive member path: {member.name}")
+        archive.extractall(dest_dir)
+
+
+def _provided_dataset_manifest(job_id: str) -> Path | None:
+    archive_uri = os.environ.get("RETRAINING_DATASET_ARCHIVE_URI", "").strip()
+    if not archive_uri:
+        manifest = os.environ.get("RETRAINING_TRAIN_MANIFEST", "").strip()
+        return Path(manifest) if manifest else None
+
+    base_dir = Path("/workspace/retraining_dataset") / job_id
+    manifest_rel = os.environ.get(
+        "RETRAINING_DATASET_MANIFEST_REL",
+        "retraining_train_manifest.json",
+    ).strip()
+    manifest_path = base_dir / manifest_rel
+    if manifest_path.is_file():
+        return manifest_path
+
+    archive_path = base_dir.with_suffix(".tar.gz")
+    _download_s3_uri(archive_uri, archive_path)
+    _extract_tar_safe(archive_path, base_dir)
+    if not manifest_path.is_file():
+        raise RuntimeError(
+            f"Dataset archive extracted but manifest was not found: {manifest_path}"
+        )
+    return manifest_path
+
+
+def _build_live_callback_payload(trigger_id: str, job_id: str) -> dict[str, Any]:
+    repo_root = Path(__file__).resolve().parents[3]
+    provided_manifest = _provided_dataset_manifest(job_id)
+    if provided_manifest is not None:
+        manifest_path = provided_manifest
+        dataset_version = os.environ.get(
+            "RETRAINING_DATASET_VERSION",
+            f"rt-{job_id.replace('-', '')[:12]}",
+        ).strip()
+        dataset_checksum = os.environ.get("RETRAINING_DATASET_CHECKSUM", "").strip()
+    else:
+        selection = select_retraining_dataset(repo_root, prefer_mode="corrected_only")
+        manifest_path = selection.manifest_path
+        dataset_version = selection.dataset_version or f"rt-{job_id.replace('-', '')[:12]}"
+        dataset_checksum = selection.dataset_checksum
+
+    trained_weights = run_live_preprocessing_training(
+        repo_root,
+        job_id,
+        dataset_version,
+        manifest_path=manifest_path,
+        include_iep0=False,
+        pretrained_iep1a=_resolve_env_pretrained_weights("iep1a") or None,
+        pretrained_iep1b=_resolve_env_pretrained_weights("iep1b") or None,
+    )
+
+    mlflow_run_id = (
+        ",".join(trained_weights.mlflow_run_ids)
+        if trained_weights.mlflow_run_ids
+        else f"live-no-runid-{uuid.uuid4().hex[:12]}"
+    )
+
+    eval_mode = os.environ.get("LIBRARYAI_RETRAINING_GOLDEN_EVAL", "stub").strip().lower()
+    if eval_mode == "live":
+        gate_results = build_iep1ab_live_gates(
+            repo_root,
+            weights_iep1a_by_material=trained_weights.iep1a_weights,
+            weights_iep1b_by_material=trained_weights.iep1b_weights,
+        )
+    else:
+        gate_results = _stub_gate_results()
+
+    notes = _live_model_notes(
+        s3_uris=trained_weights.s3_uris,
+        manifest_path=manifest_path,
+        dataset_checksum=dataset_checksum,
+    )
+    short_job = job_id.replace("-", "")[:12]
+    model_versions: list[dict[str, Any]] = []
+    if trained_weights.iep1a_weights:
+        model_versions.append(
+            {
+                "service_name": "iep1a",
+                "version_tag": f"rt-{short_job}-iep1a",
+                "mlflow_run_id": mlflow_run_id,
+                "dataset_version": dataset_version,
+                "gate_results": gate_results,
+                "notes": notes,
+            }
+        )
+    if trained_weights.iep1b_weights:
+        model_versions.append(
+            {
+                "service_name": "iep1b",
+                "version_tag": f"rt-{short_job}-iep1b",
+                "mlflow_run_id": mlflow_run_id,
+                "dataset_version": dataset_version,
+                "gate_results": gate_results,
+                "notes": notes,
+            }
+        )
+
+    return {
+        "trigger_id": trigger_id,
+        "job_id": job_id,
+        "status": "completed",
+        "mlflow_run_id": mlflow_run_id,
+        "dataset_version": dataset_version,
+        "result_model_version": ",".join(v["version_tag"] for v in model_versions),
+        "result_mAP": _gate_map(gate_results),
+        "promotion_decision": "pending_gate_review",
+        "model_versions": model_versions,
+    }
+
+
 async def _callback_once() -> None:
     trigger_id = os.environ.get("RETRAINING_TRIGGER_ID", "").strip()
     job_id = os.environ.get("RETRAINING_JOB_ID", "").strip()
@@ -223,10 +403,19 @@ async def _callback_once() -> None:
 
         train_mode = os.environ.get("LIBRARYAI_RETRAINING_TRAIN", "stub").strip().lower()
         eval_mode = os.environ.get("LIBRARYAI_RETRAINING_GOLDEN_EVAL", "stub").strip().lower()
+        if train_mode == "live":
+            await _post_callback(_build_live_callback_payload(trigger_id, job_id))
+            logger.info(
+                "retraining_worker: callback_once live training completed trigger_id=%s job_id=%s",
+                trigger_id,
+                job_id,
+            )
+            return
+
         if train_mode != "stub" or eval_mode != "stub":
             raise RuntimeError(
-                "RunPod callback_once currently supports stub retraining only; "
-                "live mode needs an S3-only trainer payload."
+                "RunPod callback_once supports LIBRARYAI_RETRAINING_TRAIN=live or stub. "
+                f"Got train={train_mode!r}, eval={eval_mode!r}."
             )
 
         mlflow_run_id = f"stub-run-{uuid.uuid4().hex[:12]}"
