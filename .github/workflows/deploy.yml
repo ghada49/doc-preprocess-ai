@@ -39,7 +39,7 @@ jobs:
           - service: eep
             context: .
             dockerfile: services/eep/Dockerfile
-            paths: services/eep shared scripts
+            paths: services/eep services/retraining_worker shared scripts
           - service: eep-worker
             context: .
             dockerfile: services/eep_worker/Dockerfile
@@ -648,6 +648,62 @@ jobs:
           # managed by scale-up/scale-down and may have desired>0 from a prior
           # scale-up without GPU capacity available — excluding them avoids a
           # guaranteed timeout.
+          #
+          # Uses a polling loop (20 min max) instead of `aws ecs wait` so we can
+          # emit diagnostics on failure rather than a bare "Max attempts exceeded".
+          MAX_WAIT=1200   # seconds (20 min)
+          INTERVAL=15
+
+          dump_diagnostics() {
+            local SVC=$1
+            echo "--- Recent events for $SVC ---"
+            aws ecs describe-services \
+              --cluster "$CLUSTER" \
+              --services "$SVC" \
+              --query 'services[0].events[0:8]' \
+              --output table 2>/dev/null || true
+            echo "--- Stopped tasks for $SVC (last 5 min) ---"
+            STOPPED=$(aws ecs list-tasks \
+              --cluster "$CLUSTER" \
+              --service-name "$SVC" \
+              --desired-status STOPPED \
+              --query 'taskArns' --output text 2>/dev/null || true)
+            if [ -n "$STOPPED" ]; then
+              TASK_ARNS=$(echo "$STOPPED" | tr '\t' ' ' | awk '{print $1,$2,$3,$4,$5}')
+              aws ecs describe-tasks \
+                --cluster "$CLUSTER" \
+                --tasks $TASK_ARNS \
+                --query 'tasks[*].{taskArn:taskArn,stoppedReason:stoppedReason,containers:containers[*].{name:name,exitCode:exitCode,reason:reason}}' \
+                --output table 2>/dev/null || true
+            fi
+          }
+
+          wait_stable() {
+            local SVC=$1
+            local ELAPSED=0
+            while [ "$ELAPSED" -lt "$MAX_WAIT" ]; do
+              READ=$(aws ecs describe-services \
+                --cluster "$CLUSTER" \
+                --services "$SVC" \
+                --query 'services[0].{r:runningCount,d:desiredCount,p:pendingCount,deps:length(deployments)}' \
+                --output json 2>/dev/null)
+              R=$(echo "$READ" | python3 -c "import sys,json; print(json.load(sys.stdin)['r'])")
+              D=$(echo "$READ" | python3 -c "import sys,json; print(json.load(sys.stdin)['d'])")
+              P=$(echo "$READ" | python3 -c "import sys,json; print(json.load(sys.stdin)['p'])")
+              DEPS=$(echo "$READ" | python3 -c "import sys,json; print(json.load(sys.stdin)['deps'])")
+              echo "$SVC: running=$R desired=$D pending=$P deployments=$DEPS (${ELAPSED}s / ${MAX_WAIT}s)"
+              if [ "$R" = "$D" ] && [ "$DEPS" = "1" ] && [ "$P" = "0" ]; then
+                echo "$SVC: STABLE"
+                return 0
+              fi
+              sleep "$INTERVAL"
+              ELAPSED=$((ELAPSED + INTERVAL))
+            done
+            echo "::error::$SVC did not stabilize within ${MAX_WAIT}s — dumping diagnostics"
+            dump_diagnostics "$SVC"
+            return 1
+          }
+
           CORE_SVCS=(eep frontend retraining-worker)
           ACTIVE=()
           for SVC in "${CORE_SVCS[@]}"; do
@@ -659,14 +715,18 @@ jobs:
               ACTIVE+=("libraryai-${SVC}")
             fi
           done
-          if [ ${#ACTIVE[@]} -gt 0 ]; then
-            echo "Waiting for stable: ${ACTIVE[*]}"
-            aws ecs wait services-stable \
-              --cluster "$CLUSTER" \
-              --services "${ACTIVE[@]}"
-          else
+
+          if [ ${#ACTIVE[@]} -eq 0 ]; then
             echo "No core staging services currently running — skipping stability wait"
+            exit 0
           fi
+
+          echo "Waiting for stable: ${ACTIVE[*]}"
+          FAILED=0
+          for SVC in "${ACTIVE[@]}"; do
+            wait_stable "$SVC" || FAILED=1
+          done
+          exit "$FAILED"
 
   # ── 5. Admin bootstrap ────────────────────────────────────────────────────
   bootstrap-admin-staging:
