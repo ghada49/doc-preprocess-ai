@@ -22,8 +22,7 @@ import os
 import threading
 import time
 import unittest
-from unittest.mock import MagicMock, call, patch
-
+from unittest.mock import MagicMock, patch
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -166,8 +165,9 @@ class TestScaleUpServiceList(unittest.TestCase):
 
         with patch.dict(os.environ, env, clear=False):
             with patch("boto3.client", return_value=mock_ecs):
-                from services.eep.app.scaling import normal_scaler
                 import importlib
+
+                from services.eep.app.scaling import normal_scaler
                 importlib.reload(normal_scaler)  # reload so env vars are re-read
                 with patch.object(
                     normal_scaler,
@@ -183,7 +183,12 @@ class TestScaleUpServiceList(unittest.TestCase):
                         "_register_eep_worker_with_runpod_urls",
                         return_value="arn:aws:ecs:us-east-1:123:task-definition/libraryai-eep-worker:2",
                     ):
-                        normal_scaler._do_scale_up()
+                        with patch.object(
+                            normal_scaler,
+                            "_has_shadow_candidate",
+                            return_value=True,
+                        ):
+                            normal_scaler._do_scale_up()
 
         return mock_ecs
 
@@ -237,6 +242,7 @@ class TestScaleUpServiceList(unittest.TestCase):
     def test_runpod_pods_created_when_api_key_set(self):
         """When RUNPOD_API_KEY is set, _create_runpod_pods is called for iep0/iep1a/iep1b."""
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)  # reload before patching so reload doesn't undo the patch
 
@@ -285,6 +291,7 @@ class TestScaleUpServiceList(unittest.TestCase):
     def test_runpod_pods_skipped_when_no_api_key(self):
         """When RUNPOD_API_KEY is absent, _create_runpod_pods is not called."""
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -296,6 +303,7 @@ class TestScaleUpServiceList(unittest.TestCase):
     def test_runpod_startup_failure_aborts_without_starting_workers(self):
         """RunPod create failures must not start workers with stale ECS DNS URLs."""
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -327,6 +335,7 @@ class TestScaleUpServiceList(unittest.TestCase):
         desired>=1 AND running>=1.
         """
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -360,6 +369,7 @@ class TestScaleUpServiceList(unittest.TestCase):
     def test_aws_startup_failure_terminates_created_runpod_pods(self):
         """If AWS startup fails after pod creation, the created RunPod pods are terminated."""
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -408,6 +418,7 @@ class TestScaleUpServiceList(unittest.TestCase):
 
     def test_runpod_gpu_candidates_normalize_aliases_and_fallbacks(self):
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -425,6 +436,7 @@ class TestScaleUpServiceList(unittest.TestCase):
 
     def test_runpod_cloud_type_normalizes_security_alias(self):
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -433,6 +445,7 @@ class TestScaleUpServiceList(unittest.TestCase):
 
     def test_runpod_cloud_candidates_default_to_both_pools(self):
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -441,6 +454,7 @@ class TestScaleUpServiceList(unittest.TestCase):
 
     def test_runpod_pod_mode_invalid_defaults_to_create(self):
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -484,6 +498,7 @@ class TestCreateRunPodPodWithFallback(unittest.TestCase):
 
     def _call(self, side_effects, gpu_types=None, cloud_types=None):
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -532,6 +547,7 @@ class TestCreateRunPodPodWithFallback(unittest.TestCase):
     def test_non_supply_error_propagates_immediately(self):
         """Auth failures and other non-capacity errors must not try the next GPU."""
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -558,6 +574,7 @@ class TestCreateRunPodPodWithFallback(unittest.TestCase):
 
     def test_gpu_types_empty_raises(self):
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -573,6 +590,7 @@ class TestCreateRunPodPodWithFallback(unittest.TestCase):
 
     def test_runpod_gpu_types_empty_env_uses_defaults(self):
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -585,6 +603,7 @@ class TestCreateRunPodPodWithFallback(unittest.TestCase):
 
     def test_runpod_rest_create_uses_gpu_type_ids_payload(self):
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -634,6 +653,7 @@ class TestNormalProcessingAlreadyActive(unittest.TestCase):
 
     def setUp(self):
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
         self.normal_scaler = normal_scaler
@@ -928,6 +948,7 @@ class TestDrainIgnoresHumanReviewStates(unittest.TestCase):
     def setUp(self):
         # Re-import to get fresh module state
         import importlib
+
         import scripts.ecs_scaler.drain_monitor as dm
         importlib.reload(dm)
         self.dm = dm
@@ -970,6 +991,7 @@ class TestDrainWaitsForActiveWork(unittest.TestCase):
 
     def setUp(self):
         import importlib
+
         import scripts.ecs_scaler.drain_monitor as dm
         importlib.reload(dm)
         self.dm = dm
@@ -1059,6 +1081,7 @@ class TestDrainMonitorSingleShotModes(unittest.TestCase):
 
     def setUp(self):
         import importlib
+
         import scripts.ecs_scaler.drain_monitor as dm
         importlib.reload(dm)
         self.dm = dm
@@ -1182,6 +1205,7 @@ class TestDrainMonitorActiveWorkDiagnostics(unittest.TestCase):
 
     def setUp(self):
         import importlib
+
         import scripts.ecs_scaler.drain_monitor as dm
         importlib.reload(dm)
         self.dm = dm
@@ -1462,7 +1486,8 @@ class TestIep1dTaskDefPortMappings(unittest.TestCase):
     """
 
     def _task_def(self):
-        import json, pathlib
+        import json
+        import pathlib
         path = pathlib.Path(__file__).parent.parent / "k8s" / "ecs" / "iep1d-task-def.json"
         return json.loads(path.read_text())
 
@@ -1494,7 +1519,8 @@ class TestEepWorkerTaskDefIep1dUrls(unittest.TestCase):
     """
 
     def _task_def(self):
-        import json, pathlib
+        import json
+        import pathlib
 
         path = pathlib.Path(__file__).parent.parent / "k8s" / "ecs" / "eep-worker-task-def.json"
         return json.loads(path.read_text())
@@ -1541,7 +1567,8 @@ class TestIep1eTaskDefHealthAndSizing(unittest.TestCase):
     """
 
     def _task_def(self):
-        import json, pathlib
+        import json
+        import pathlib
 
         path = pathlib.Path(__file__).parent.parent / "k8s" / "ecs" / "iep1e-task-def.json"
         return json.loads(path.read_text())
