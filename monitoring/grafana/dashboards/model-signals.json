@@ -22,7 +22,7 @@
             "collapsed": false,
             "gridPos": {"h": 1, "w": 24, "x": 0, "y": 0},
             "id": 30,
-            "title": "Live Sample Presence",
+            "title": "Model Observations (Selected Range)",
             "type": "row"
         },
         {
@@ -46,7 +46,7 @@
             "gridPos": {"h": 4, "w": 4, "x": 0, "y": 1},
             "id": 31,
             "options": {
-                "colorMode": "value",
+                "colorMode": "background",
                 "graphMode": "none",
                 "justifyMode": "auto",
                 "orientation": "horizontal",
@@ -57,12 +57,12 @@
             "targets": [
                 {
                     "datasource": {"type": "prometheus", "uid": "prometheus"},
-                    "expr": "sum(iep1a_geometry_confidence_count) or on() vector(0)",
-                    "legendFormat": "IEP1A samples",
+                    "expr": "round(sum(increase(iep1a_geometry_confidence_count[$__range]))) or on() vector(0)",
+                    "legendFormat": "IEP1A observations",
                     "refId": "A"
                 }
             ],
-            "title": "IEP1A samples",
+            "title": "IEP1A observations",
             "type": "stat"
         },
         {
@@ -97,12 +97,12 @@
             "targets": [
                 {
                     "datasource": {"type": "prometheus", "uid": "prometheus"},
-                    "expr": "sum(iep1b_geometry_confidence_count) or on() vector(0)",
-                    "legendFormat": "IEP1B samples",
+                    "expr": "round(sum(increase(iep1b_geometry_confidence_count[$__range]))) or on() vector(0)",
+                    "legendFormat": "IEP1B observations",
                     "refId": "A"
                 }
             ],
-            "title": "IEP1B samples",
+            "title": "IEP1B observations",
             "type": "stat"
         },
         {
@@ -137,12 +137,12 @@
             "targets": [
                 {
                     "datasource": {"type": "prometheus", "uid": "prometheus"},
-                    "expr": "sum(iep2a_mean_page_confidence_count) or on() vector(0)",
-                    "legendFormat": "IEP2A samples",
+                    "expr": "round(sum(increase(iep2a_mean_page_confidence_count[$__range]))) or on() vector(0)",
+                    "legendFormat": "IEP2A observations",
                     "refId": "A"
                 }
             ],
-            "title": "IEP2A samples",
+            "title": "IEP2A observations",
             "type": "stat"
         },
         {
@@ -177,12 +177,12 @@
             "targets": [
                 {
                     "datasource": {"type": "prometheus", "uid": "prometheus"},
-                    "expr": "sum(iep2b_mean_page_confidence_count) or on() vector(0)",
-                    "legendFormat": "IEP2B samples",
+                    "expr": "round(sum(increase(iep2b_mean_page_confidence_count[$__range]))) or on() vector(0)",
+                    "legendFormat": "IEP2B observations",
                     "refId": "A"
                 }
             ],
-            "title": "IEP2B samples",
+            "title": "IEP2B observations",
             "type": "stat"
         },
         {
@@ -217,12 +217,12 @@
             "targets": [
                 {
                     "datasource": {"type": "prometheus", "uid": "prometheus"},
-                    "expr": "sum(drift_window_observations) or on() vector(0)",
-                    "legendFormat": "Drift observations",
+                    "expr": "sum(max_over_time(drift_window_observations[$__range])) or on() vector(0)",
+                    "legendFormat": "Drift window fill",
                     "refId": "A"
                 }
             ],
-            "title": "Drift observations",
+            "title": "Drift window fill",
             "type": "stat"
         },
         {
@@ -257,12 +257,12 @@
             "targets": [
                 {
                     "datasource": {"type": "prometheus", "uid": "prometheus"},
-                    "expr": "sum(iep1d_rectification_confidence_count) or on() vector(0)",
-                    "legendFormat": "IEP1D samples",
+                    "expr": "round(sum(increase(iep1d_rectification_confidence_count[$__range]))) or on() vector(0)",
+                    "legendFormat": "IEP1D observations",
                     "refId": "A"
                 }
             ],
-            "title": "IEP1D samples",
+            "title": "IEP1D observations",
             "type": "stat"
         },
         {

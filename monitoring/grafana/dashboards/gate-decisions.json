@@ -101,7 +101,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "avg(eep_auto_accept_rate)",
+                                           "expr":  "avg(eep_auto_accept_rate{job=\"eep\"})",
                                            "legendFormat":  "auto-accept rate",
                                            "refId":  "A"
                                        }
@@ -175,7 +175,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "avg(eep_structural_agreement_rate)",
+                                           "expr":  "avg(eep_structural_agreement_rate{job=\"eep\"})",
                                            "legendFormat":  "structural agreement",
                                            "refId":  "A"
                                        }
@@ -395,7 +395,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "(sum by (route) (increase(eep_geometry_selection_route_total[$__range])) or on() vector(0)) / clamp_min((sum(increase(eep_geometry_selection_route_total[$__range])) or vector(0)), 1)",
+                                           "expr":  "sum by (route) (increase(eep_geometry_selection_route_total[$__range])) / scalar(clamp_min(sum(increase(eep_geometry_selection_route_total[$__range])), 1))",
                                            "legendFormat":  "{{route}}",
                                            "refId":  "A"
                                        }
@@ -451,7 +451,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "(sum by (route) (increase(eep_artifact_validation_route_total[$__range])) or on() vector(0)) / clamp_min((sum(increase(eep_artifact_validation_route_total[$__range])) or vector(0)), 1)",
+                                           "expr":  "sum by (route) (increase(eep_artifact_validation_route_total[$__range])) / scalar(clamp_min(sum(increase(eep_artifact_validation_route_total[$__range])), 1))",
                                            "legendFormat":  "{{route}}",
                                            "refId":  "A"
                                        }
@@ -537,7 +537,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "avg(eep_auto_accept_rate)",
+                                           "expr":  "avg(eep_auto_accept_rate{job=\"eep\"})",
                                            "legendFormat":  "auto-accept rate",
                                            "refId":  "A"
                                        },
@@ -546,7 +546,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "avg(eep_structural_agreement_rate)",
+                                           "expr":  "avg(eep_structural_agreement_rate{job=\"eep\"})",
                                            "legendFormat":  "structural agreement rate",
                                            "refId":  "B"
                                        },
