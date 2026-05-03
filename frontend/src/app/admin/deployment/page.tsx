@@ -241,43 +241,6 @@ export default function DeploymentPage() {
                 </>
               )}
             </div>
-
-            {/* Cost / scaling notes */}
-            <div className="bg-white border border-slate-200 rounded-xl p-5 shadow-sm">
-              <h2 className="text-sm font-semibold text-slate-800 mb-3">Scaling &amp; Cost Notes</h2>
-              <div className="space-y-3 text-xs text-slate-600">
-                <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
-                  <p className="font-semibold text-slate-700 mb-1">ECS Service Scaling</p>
-                  <p>
-                    EEP and EEP Worker run as Fargate services. GPU inference services (IEP1A, IEP1B,
-                    IEP1D, IEP2A, IEP2B) run on EC2 GPU task definitions. Scale-up and scale-down
-                    are triggered by GitHub Actions workflows (
-                    <code className="font-mono">.github/workflows/scale-up.yml</code> /
-                    <code className="font-mono">scale-down.yml</code>).
-                  </p>
-                </div>
-                <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
-                  <p className="font-semibold text-slate-700 mb-1">GPU Cost Estimation</p>
-                  <p>
-                    Actual GPU-hour cost depends on EC2 instance type and ASG desired count.
-                    ECS task CPU/memory are defined in{" "}
-                    <code className="font-mono">k8s/ecs/*.json</code>. Live billing data
-                    is not available via this dashboard — check AWS Cost Explorer.
-                  </p>
-                </div>
-                <div className="p-3 bg-slate-50 rounded-lg border border-slate-200">
-                  <p className="font-semibold text-slate-700 mb-1">S3 Storage</p>
-                  <p>
-                    All input, intermediate, and output artifacts are stored in the configured
-                    S3 bucket. Temporary cleanup is handled by S3 Lifecycle: intermediate
-                    artifacts (raw scans, geometry masks) purged after 90 days; final outputs
-                    retained indefinitely. DB-referenced artifacts (page_lineage, job outputs)
-                    are never deleted by a lifecycle rule — those require a separate DB-guided
-                    sweep which is not yet implemented.
-                  </p>
-                </div>
-              </div>
-            </div>
           </div>
         )}
       </div>

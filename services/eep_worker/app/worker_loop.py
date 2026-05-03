@@ -65,6 +65,7 @@ from services.eep_worker.app.downsample_step import run_downsample_step
 from services.eep_worker.app.geometry_invocation import (
     GeometryInvocationResult,
     GeometryServiceError,
+    _log_invocation,
     invoke_geometry_services,
 )
 from services.eep_worker.app.iep1d_scaler import (
@@ -1114,7 +1115,38 @@ async def _call_layout_service(
     material_type: str,
     backend: GPUBackend,
     circuit_breaker: CircuitBreaker,
+    session: Session | None = None,
+    lineage_id: str | None = None,
 ) -> LayoutDetectResponse | None:
+    def _audit(
+        invoked_at: datetime,
+        completed_at: datetime,
+        duration_ms: float | None,
+        status: str,
+        error_message: str | None,
+        metrics: dict[str, Any] | None,
+        *,
+        model_version: str | None = None,
+        config_snapshot: dict[str, Any] | None = None,
+    ) -> None:
+        if session is None or lineage_id is None:
+            return
+        _log_invocation(
+            session,
+            lineage_id,
+            service_name,
+            invoked_at,
+            completed_at,
+            duration_ms,
+            status,
+            error_message,
+            metrics,
+            None,
+            model_version,
+            None,
+            config_snapshot,
+        )
+
     if not circuit_breaker.allow_call():
         logger.warning(
             "worker_loop: %s skipped by open circuit breaker job=%s page=%d sub=%s",
@@ -1122,6 +1154,15 @@ async def _call_layout_service(
             job_id,
             page_number,
             sub_page_index,
+        )
+        skip_at = datetime.now(UTC)
+        _audit(
+            skip_at,
+            skip_at,
+            None,
+            "skipped",
+            f"Circuit breaker open for {service_name!r}",
+            None,
         )
         return None
 
@@ -1134,10 +1175,30 @@ async def _call_layout_service(
     if sub_page_index is not None:
         payload["sub_page_index"] = sub_page_index
 
+    snapshot = {"endpoint": endpoint, "material_type": material_type}
+
+    invoked_at = datetime.now(UTC)
     try:
         raw = await backend.call(endpoint, payload)
         response = LayoutDetectResponse.model_validate(raw)
         circuit_breaker.record_success()
+        completed_at = datetime.now(UTC)
+        duration_ms = (completed_at - invoked_at).total_seconds() * 1000.0
+        _audit(
+            invoked_at,
+            completed_at,
+            duration_ms,
+            "success",
+            None,
+            {
+                "region_count": len(response.regions),
+                "mean_page_confidence": response.layout_conf_summary.mean_conf,
+                "detector_type": response.detector_type,
+                "processing_time_ms": response.processing_time_ms,
+            },
+            model_version=response.model_version,
+            config_snapshot=snapshot,
+        )
         return response
     except BackendError as exc:
         circuit_breaker.record_failure(exc.kind)
@@ -1150,6 +1211,14 @@ async def _call_layout_service(
             exc.kind.value,
             exc,
         )
+        completed_at = datetime.now(UTC)
+        duration_ms = (completed_at - invoked_at).total_seconds() * 1000.0
+        is_timeout = exc.kind in (
+            BackendErrorKind.COLD_START_TIMEOUT,
+            BackendErrorKind.WARM_INFERENCE_TIMEOUT,
+        )
+        status = "timeout" if is_timeout else "error"
+        _audit(invoked_at, completed_at, duration_ms, status, str(exc), None)
     except ValidationError as exc:
         circuit_breaker.record_failure(None)
         logger.warning(
@@ -1160,7 +1229,11 @@ async def _call_layout_service(
             sub_page_index,
             exc,
         )
-    except Exception:
+        completed_at = datetime.now(UTC)
+        duration_ms = (completed_at - invoked_at).total_seconds() * 1000.0
+        msg = f"Malformed layout response from {service_name!r}: {exc}"
+        _audit(invoked_at, completed_at, duration_ms, "error", msg, None)
+    except Exception as exc:
         circuit_breaker.record_failure(None)
         logger.exception(
             "worker_loop: unexpected %s failure job=%s page=%d sub=%s",
@@ -1169,6 +1242,10 @@ async def _call_layout_service(
             page_number,
             sub_page_index,
         )
+        completed_at = datetime.now(UTC)
+        duration_ms = (completed_at - invoked_at).total_seconds() * 1000.0
+        msg = f"Unexpected error from {service_name!r}: {exc}"
+        _audit(invoked_at, completed_at, duration_ms, "error", msg, None)
     return None
 
 
@@ -3328,6 +3405,7 @@ async def _run_layout(
         iep2b_result = None
     else:
         try:
+            iep2a_invoked_at = datetime.now(UTC)
             iep2a_result = await asyncio.wait_for(
                 _call_layout_service(
                     service_name="iep2a",
@@ -3339,10 +3417,24 @@ async def _run_layout(
                     material_type=material_type,
                     backend=config.backend,
                     circuit_breaker=config.iep2a_circuit_breaker,
+                    session=session,
+                    lineage_id=lineage.lineage_id,
                 ),
                 timeout=config.iep2_call_timeout_seconds,
             )
         except TimeoutError:
+            now = datetime.now(UTC)
+            _log_invocation(
+                session,
+                lineage.lineage_id,
+                "iep2a",
+                iep2a_invoked_at,
+                now,
+                (now - iep2a_invoked_at).total_seconds() * 1000.0,
+                "timeout",
+                f"Exceeded iep2 call timeout ({config.iep2_call_timeout_seconds}s)",
+                None,
+            )
             logger.warning(
                 "worker_loop: iep2a timed out after %.1fs job=%s page=%d",
                 config.iep2_call_timeout_seconds,
@@ -3353,6 +3445,7 @@ async def _run_layout(
             iep2a_result = None
 
         try:
+            iep2b_invoked_at = datetime.now(UTC)
             iep2b_result = await asyncio.wait_for(
                 _call_layout_service(
                     service_name="iep2b",
@@ -3364,10 +3457,24 @@ async def _run_layout(
                     material_type=material_type,
                     backend=config.backend,
                     circuit_breaker=config.iep2b_circuit_breaker,
+                    session=session,
+                    lineage_id=lineage.lineage_id,
                 ),
                 timeout=config.iep2_call_timeout_seconds,
             )
         except TimeoutError:
+            now = datetime.now(UTC)
+            _log_invocation(
+                session,
+                lineage.lineage_id,
+                "iep2b",
+                iep2b_invoked_at,
+                now,
+                (now - iep2b_invoked_at).total_seconds() * 1000.0,
+                "timeout",
+                f"Exceeded iep2 call timeout ({config.iep2_call_timeout_seconds}s)",
+                None,
+            )
             logger.warning(
                 "worker_loop: iep2b timed out after %.1fs job=%s page=%d",
                 config.iep2_call_timeout_seconds,
