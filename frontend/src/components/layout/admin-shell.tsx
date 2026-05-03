@@ -12,7 +12,6 @@ import {
   Settings,
   Users,
   LogOut,
-  Activity,
   Rocket,
   Layers,
 } from "lucide-react";
@@ -27,7 +26,6 @@ const adminNavItems: NavItem[] = [
   { label: "Jobs", href: "/admin/jobs", icon: Briefcase },
   { label: "Correction Queue", href: "/admin/queue", icon: ClipboardList },
   { label: "Lineage / Audit Trail", href: "/admin/lineage", icon: GitBranch },
-  { label: "Observability", href: "/admin/observability", icon: Activity },
   { label: "Model Lifecycle", href: "/admin/model-lifecycle", icon: Layers },
   { label: "Model Evaluation", href: "/admin/models", icon: FlaskConical },
   { label: "Retraining", href: "/admin/retraining", icon: RefreshCw },
