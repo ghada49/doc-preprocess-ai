@@ -10,6 +10,10 @@ on:
         type: boolean
         default: false
 
+concurrency:
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
+
 permissions:
   id-token: write
   contents: read
@@ -574,6 +578,7 @@ jobs:
               | sed "s|RUNPOD_CONTAINER_DISK_GB_VALUE|${{ vars.RUNPOD_CONTAINER_DISK_GB || '50' }}|g" \
               | sed "s|RUNPOD_MIN_VCPU_PER_GPU_VALUE|${{ vars.RUNPOD_MIN_VCPU_PER_GPU || '2' }}|g" \
               | sed "s|RUNPOD_MIN_RAM_PER_GPU_VALUE|${{ vars.RUNPOD_MIN_RAM_PER_GPU || '8' }}|g" \
+              | sed "s|RUNPOD_CONTAINER_REGISTRY_AUTH_ID_VALUE|${{ vars.RUNPOD_CONTAINER_REGISTRY_AUTH_ID || '' }}|g" \
               | sed "s|GOOGLE_ENABLED_VALUE|${{ vars.GOOGLE_ENABLED || 'false' }}|g" \
               | sed "s|GOOGLE_PROJECT_ID_VALUE|${{ vars.GOOGLE_PROJECT_ID || '' }}|g" \
               | sed "s|GOOGLE_LOCATION_VALUE|${{ vars.GOOGLE_LOCATION || 'us' }}|g" \
