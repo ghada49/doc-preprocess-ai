@@ -58,6 +58,7 @@ class ArtifactImageDimensions:
 
     width: int
     height: int
+    byte_size: int | None = None
 
 
 # ---------------------------------------------------------------------------
@@ -69,9 +70,16 @@ ARTIFACT_HARD_CHECK_NAMES: tuple[str, ...] = (
     "file_exists",
     "valid_image",
     "non_degenerate",
+    "min_dimensions",
+    "min_file_size",
     "bounds_consistent",
+    "crop_area_plausible",
     "dimensions_consistent",
 )
+
+MIN_ARTIFACT_DIMENSION_PX = 16
+MIN_ARTIFACT_FILE_SIZE_BYTES = 512
+MIN_CROP_AREA_FRACTION = 0.001
 
 
 @dataclass
@@ -103,6 +111,9 @@ def check_artifact_hard_requirements(
     response: PreprocessBranchResponse,
     image_loader: Callable[[str], ArtifactImageDimensions],
     dimension_tolerance: int = 2,
+    min_dimension_px: int = MIN_ARTIFACT_DIMENSION_PX,
+    min_file_size_bytes: int = MIN_ARTIFACT_FILE_SIZE_BYTES,
+    min_crop_area_fraction: float = MIN_CROP_AREA_FRACTION,
 ) -> ArtifactHardCheckResult:
     """
     Apply all five hard requirement checks to a single normalized artifact.
@@ -154,6 +165,10 @@ def check_artifact_hard_requirements(
     if dims is not None:
         if not (dims.width > 0 and dims.height > 0):
             failed.append("non_degenerate")
+        elif dims.width < min_dimension_px or dims.height < min_dimension_px:
+            failed.append("min_dimensions")
+        if dims.byte_size is not None and dims.byte_size < min_file_size_bytes:
+            failed.append("min_file_size")
 
     # -------------------------------------------------------------------
     # Check 4: Bounds consistency  (data-only — no I/O needed)
@@ -170,6 +185,10 @@ def check_artifact_hard_requirements(
         and crop.y_max <= orig.height
     ):
         failed.append("bounds_consistent")
+    orig_area = float(orig.width * orig.height)
+    crop_area = max(0.0, float(crop.x_max - crop.x_min) * float(crop.y_max - crop.y_min))
+    if orig_area <= 0.0 or (crop_area / orig_area) < min_crop_area_fraction:
+        failed.append("crop_area_plausible")
 
     # -------------------------------------------------------------------
     # Check 5: Dimension consistency
@@ -228,7 +247,7 @@ def make_cv2_image_loader(
         if img is None:
             raise ValueError(f"cv2.imdecode returned None for URI: {uri}")
         h, w = img.shape[:2]
-        return ArtifactImageDimensions(width=w, height=h)
+        return ArtifactImageDimensions(width=w, height=h, byte_size=len(data))
 
     return _load
 

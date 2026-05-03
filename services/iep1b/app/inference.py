@@ -366,7 +366,7 @@ def _detections_to_response(
                     corners=None,
                     bbox=(0, 0, 1, 1),
                     confidence=0.0,
-                    page_area_fraction=1.0,
+                    page_area_fraction=0.0,
                 )
             ],
             split_required=False,

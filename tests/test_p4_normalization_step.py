@@ -30,6 +30,7 @@ from services.eep.app.gates.artifact_validation import (
     ArtifactHardCheckResult,
     ArtifactImageDimensions,
     ArtifactValidationResult,
+    make_cv2_image_loader,
 )
 from services.eep.app.gates.geometry_selection import PreprocessingGateConfig
 from services.eep_worker.app.normalization_step import (
@@ -368,6 +369,32 @@ class TestRouteDecision:
 
         outcome = _run(geometry_route="rectification")
         assert outcome.route == "rescue_required"
+
+    def test_tiny_output_tiff_is_rejected_before_downstream(self) -> None:
+        img = _make_test_image(400, 600)
+        geo = _make_geometry_response(bbox=(10, 10, 11, 11))
+        stored: dict[str, bytes] = {}
+        storage = _make_storage_mock()
+        storage.put_bytes.side_effect = lambda uri, data: stored.__setitem__(uri, data)
+        storage.get_bytes.side_effect = lambda uri: stored[uri]
+
+        outcome = run_normalization_and_first_validation(
+            full_res_image=img,
+            selected_geometry=geo,
+            selected_model="iep1a",
+            geometry_route_decision="accepted",
+            proxy_width=300,
+            proxy_height=200,
+            output_uri="s3://bucket/tiny.tiff",
+            storage=storage,
+            image_loader=make_cv2_image_loader(storage),
+        )
+
+        assert outcome.route == "rescue_required"
+        assert outcome.validation_result.passed is False
+        failed = outcome.validation_result.hard_result.failed_checks
+        assert "min_dimensions" in failed
+        assert "min_file_size" in failed
 
     @patch("services.eep_worker.app.normalization_step.run_artifact_validation")
     @patch("services.eep_worker.app.normalization_step.normalize_single_page")

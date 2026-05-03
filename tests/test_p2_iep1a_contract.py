@@ -36,6 +36,8 @@ is_model_ready() rather than via HTTP.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
@@ -127,6 +129,21 @@ class TestReadinessLogic:
     def test_model_ready_when_env_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
         monkeypatch.setenv("IEP1A_MOCK_NOT_READY", "false")
         assert inference_mod.is_model_ready() is True
+
+
+class TestNoDetectionFallback:
+    def test_placeholder_area_fraction_is_zero(self) -> None:
+        stats = SimpleNamespace(
+            structural_agreement_rate=1.0,
+            prediction_variance=0.0,
+            tta_passes=1,
+            uncertainty_flags=[],
+        )
+        resp = inference_mod._detections_to_response([], stats, 1.0)
+        assert resp.pages[0].bbox == (0, 0, 1, 1)
+        assert resp.pages[0].page_area_fraction == 0.0
+        assert resp.geometry_confidence == 0.0
+        assert "no_detection" in resp.warnings
 
 
 # ---------------------------------------------------------------------------

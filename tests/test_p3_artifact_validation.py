@@ -113,12 +113,14 @@ def _make_response(
 
 
 def _loader_ok(
-    width: int = _ARTIFACT_W, height: int = _ARTIFACT_H
+    width: int = _ARTIFACT_W,
+    height: int = _ARTIFACT_H,
+    byte_size: int | None = None,
 ) -> Callable[[str], ArtifactImageDimensions]:
     """Returns a loader that always succeeds with the given dimensions."""
 
     def _load(uri: str) -> ArtifactImageDimensions:
-        return ArtifactImageDimensions(width=width, height=height)
+        return ArtifactImageDimensions(width=width, height=height, byte_size=byte_size)
 
     return _load
 
@@ -147,16 +149,19 @@ def _loader_corrupt() -> Callable[[str], ArtifactImageDimensions]:
 
 
 class TestArtifactHardCheckNames:
-    def test_contains_all_five_canonical_names(self) -> None:
+    def test_contains_all_canonical_names(self) -> None:
         expected = {
             "file_exists",
             "valid_image",
             "non_degenerate",
+            "min_dimensions",
+            "min_file_size",
             "bounds_consistent",
+            "crop_area_plausible",
             "dimensions_consistent",
         }
         assert set(ARTIFACT_HARD_CHECK_NAMES) == expected
-        assert len(ARTIFACT_HARD_CHECK_NAMES) == 5
+        assert len(ARTIFACT_HARD_CHECK_NAMES) == 8
 
     def test_is_tuple(self) -> None:
         assert isinstance(ARTIFACT_HARD_CHECK_NAMES, tuple)
@@ -319,6 +324,26 @@ class TestNonDegenerateCheck:
         result = check_artifact_hard_requirements(resp, _loader_ok(1, 1))
         assert "non_degenerate" not in result.failed_checks
 
+    def test_tiny_positive_dimensions_fail_min_dimensions(self) -> None:
+        t = _make_transform(
+            crop_x_min=100.0,
+            crop_y_min=50.0,
+            crop_x_max=102.0,
+            crop_y_max=52.0,
+            post_w=2,
+            post_h=2,
+        )
+        resp = _make_response(transform=t)
+        result = check_artifact_hard_requirements(resp, _loader_ok(2, 2))
+        assert result.passed is False
+        assert "min_dimensions" in result.failed_checks
+
+    def test_suspiciously_small_tiff_bytes_fail_min_file_size(self) -> None:
+        resp = _make_response()
+        result = check_artifact_hard_requirements(resp, _loader_ok(byte_size=178))
+        assert result.passed is False
+        assert "min_file_size" in result.failed_checks
+
 
 # ---------------------------------------------------------------------------
 # Check 4: bounds_consistent
@@ -389,6 +414,21 @@ class TestBoundsConsistentCheck:
         resp = _make_response()
         result = check_artifact_hard_requirements(resp, _loader_ok())
         assert "bounds_consistent" not in result.failed_checks
+
+    def test_tiny_crop_inside_bounds_fails_crop_area_plausible(self) -> None:
+        t = _make_transform(
+            crop_x_min=100.0,
+            crop_y_min=50.0,
+            crop_x_max=101.0,
+            crop_y_max=51.0,
+            post_w=1,
+            post_h=1,
+        )
+        resp = _make_response(transform=t)
+        result = check_artifact_hard_requirements(resp, _loader_ok(1, 1))
+        assert result.passed is False
+        assert "bounds_consistent" not in result.failed_checks
+        assert "crop_area_plausible" in result.failed_checks
 
 
 # ---------------------------------------------------------------------------
