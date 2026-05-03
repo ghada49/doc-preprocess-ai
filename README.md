@@ -56,7 +56,7 @@ Pages submitted to the API are processed through a multi-stage worker pipeline:
 
 ```bash
 git clone <repo-url>
-cd 503nproject
+cd doc-preprocess-ai
 cp .env.example .env
 ```
 
