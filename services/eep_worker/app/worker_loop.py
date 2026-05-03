@@ -10,6 +10,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import socket
 import time
 import uuid
@@ -98,7 +99,13 @@ from services.eep_worker.app.rescue_step import RescueOutcome, run_rescue_flow
 from services.eep_worker.app.split_step import SplitOutcome, run_split_normalization
 from services.eep_worker.app.task import build_gate_config
 from services.eep_worker.app.watchdog import TaskWatchdog
-from shared.gpu.backend import BackendError, GPUBackend, LocalHTTPBackend, RunpodBackend
+from shared.gpu.backend import (
+    BackendError,
+    BackendErrorKind,
+    GPUBackend,
+    LocalHTTPBackend,
+    RunpodBackend,
+)
 from shared.io.storage import get_backend
 from shared.metrics import EEP_RECTIFICATION_POLICY_SKIPS, EEP_REQUESTS_TOTAL, SHADOW_TASKS_ENQUEUED
 from shared.schemas.iep0 import BatchClassifyResponse, ClassifyResponse
@@ -1215,6 +1222,36 @@ async def _wait_for_iep1e_ready(
             await asyncio.sleep(min(poll_interval_seconds, max(0.0, remaining)))
 
 
+def _iep1e_transient_backend_error(exc: BackendError) -> bool:
+    """
+    True when the POST to iep1e likely hit a short-lived fault (deploy, LB, TCP).
+
+    Only BackendErrorKind.SERVICE_ERROR is considered; timeouts and validation
+    failures are treated as non-retryable here.
+    """
+    if exc.kind != BackendErrorKind.SERVICE_ERROR:
+        return False
+    msg = exc.message
+    if re.search(r"Service returned HTTP\s+(500|502|503|504)\b", msg, re.IGNORECASE):
+        return True
+    lowered = msg.lower()
+    markers = (
+        "connection error",
+        "connection reset",
+        "server disconnected",
+        "remoteprotocolerror",
+        "broken pipe",
+        "connection refused",
+        "readerror",
+        "connecterror",
+        "unexpected_eof",
+        "eof occurred",
+        "localprotocolerror",
+        "writeerror",
+    )
+    return any(m in lowered for m in markers)
+
+
 async def _call_iep1e(
     *,
     page_uris: list[str],
@@ -1235,6 +1272,10 @@ async def _call_iep1e(
 
     On None, callers must fall back to the original (geometry-only) URIs.
     Circuit breaker is checked before the call; recorded on success/failure.
+
+    Transient SERVICE_ERROR responses (typical connection drops during ECS
+    deploys, HTTP 500/502/503/504) are retried with exponential backoff before
+    recording circuit-breaker failure.  Configure via IEP1E_TRANSIENT_* env vars.
 
     Args:
         page_uris:         1 or 2 IEP1C-normalized artifact URIs, physical left-first.
@@ -1288,34 +1329,77 @@ async def _call_iep1e(
         "material_type": material_type,
     }
 
+    max_transient_retries = max(0, _env_int("IEP1E_TRANSIENT_MAX_RETRIES", 3))
+    retry_base_seconds = max(0.0, _env_float("IEP1E_TRANSIENT_RETRY_BASE_SECONDS", 0.5))
+    retry_max_sleep = max(
+        retry_base_seconds,
+        _env_float("IEP1E_TRANSIENT_RETRY_MAX_SLEEP_SECONDS", 8.0),
+    )
+    total_attempts = max_transient_retries + 1
+
     try:
-        raw = await backend.call(
-            endpoint,
-            payload,
-            execution_timeout_seconds=execution_timeout_seconds,
-        )
-        response = SemanticNormResponse.model_validate(raw)
-        cb.record_success()
-        logger.info(
-            "worker_loop: iep1e semantic-norm job=%s page=%d "
-            "direction=%s fallback=%s pages=%d",
-            job_id,
-            page_number,
-            response.reading_direction,
-            response.fallback_used,
-            len(response.pages),
-        )
-        return response
-    except BackendError as exc:
-        cb.record_failure(exc.kind)
-        logger.warning(
-            "worker_loop: iep1e failed job=%s page=%d kind=%s error=%s; "
-            "using geometry-only fallback",
-            job_id,
-            page_number,
-            exc.kind.value,
-            exc,
-        )
+        for attempt in range(total_attempts):
+            try:
+                raw = await backend.call(
+                    endpoint,
+                    payload,
+                    execution_timeout_seconds=execution_timeout_seconds,
+                )
+                response = SemanticNormResponse.model_validate(raw)
+                cb.record_success()
+                if attempt > 0:
+                    logger.info(
+                        "worker_loop: iep1e semantic-norm job=%s page=%d "
+                        "direction=%s fallback=%s pages=%d "
+                        "(after %d attempts; transient retries)",
+                        job_id,
+                        page_number,
+                        response.reading_direction,
+                        response.fallback_used,
+                        len(response.pages),
+                        attempt + 1,
+                    )
+                else:
+                    logger.info(
+                        "worker_loop: iep1e semantic-norm job=%s page=%d "
+                        "direction=%s fallback=%s pages=%d",
+                        job_id,
+                        page_number,
+                        response.reading_direction,
+                        response.fallback_used,
+                        len(response.pages),
+                    )
+                return response
+            except BackendError as exc:
+                transient = _iep1e_transient_backend_error(exc)
+                if transient and attempt < max_transient_retries:
+                    sleep_s = min(
+                        retry_max_sleep,
+                        retry_base_seconds * (2**attempt),
+                    )
+                    logger.info(
+                        "worker_loop: iep1e transient failure; retrying job=%s page=%d "
+                        "attempt=%d/%d kind=%s sleep=%.2fs err=%s",
+                        job_id,
+                        page_number,
+                        attempt + 1,
+                        total_attempts,
+                        exc.kind.value,
+                        sleep_s,
+                        exc,
+                    )
+                    await asyncio.sleep(sleep_s)
+                    continue
+                cb.record_failure(exc.kind)
+                logger.warning(
+                    "worker_loop: iep1e failed job=%s page=%d kind=%s error=%s; "
+                    "using geometry-only fallback",
+                    job_id,
+                    page_number,
+                    exc.kind.value,
+                    exc,
+                )
+                return None
     except ValidationError as exc:
         cb.record_failure(None)
         logger.warning(
