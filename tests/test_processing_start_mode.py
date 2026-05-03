@@ -1405,8 +1405,8 @@ class TestIep1dServiceConnectConfig(unittest.TestCase):
     """
     iep1d must be present in _SERVICE_CONNECT_CONFIGS so that every
     update-service call for libraryai-iep1d includes the Service Connect
-    block that registers iep1d.libraryai.local in Cloud Map.
-    Without this entry the DNS name never resolves and all iep1d calls fail.
+    block that registers the short discovery name ``iep1d`` in the mesh.
+    Without this entry the Service Connect endpoint for IEP1D is missing.
     """
 
     def _cfg(self):
@@ -1482,6 +1482,105 @@ class TestIep1dTaskDefPortMappings(unittest.TestCase):
             pm for pm in container["portMappings"] if pm.get("name") == "http"
         )
         self.assertEqual(http_pm["containerPort"], 8003)
+
+
+# ── eep-worker task def: IEP1D URLs must use Service Connect short name iep1d ─
+
+class TestEepWorkerTaskDefIep1dUrls(unittest.TestCase):
+    """
+    IEP1D readiness polls IEP1D_READY_URL; rectify uses IEP1D_URL. The FQDN
+    ``iep1d.libraryai.local`` does not resolve from Fargate tasks in this mesh
+    (gaierror); both env vars must use the short host ``iep1d``.
+    """
+
+    def _task_def(self):
+        import json, pathlib
+
+        path = pathlib.Path(__file__).parent.parent / "k8s" / "ecs" / "eep-worker-task-def.json"
+        return json.loads(path.read_text())
+
+    @staticmethod
+    def _env_map(td: dict) -> dict[str, str]:
+        env_list = td["containerDefinitions"][0]["environment"]
+        return {e["name"]: e["value"] for e in env_list}
+
+    def test_iep1d_ready_url_does_not_use_libraryai_local_fqdn(self):
+        env = self._env_map(self._task_def())
+        ready = env.get("IEP1D_READY_URL", "")
+        self.assertNotIn(
+            "iep1d.libraryai.local",
+            ready,
+            "IEP1D_READY_URL must not use iep1d.libraryai.local (DNS fails in mesh)",
+        )
+
+    def test_iep1d_ready_and_rectify_urls_share_iep1d_host(self):
+        from urllib.parse import urlparse
+
+        env = self._env_map(self._task_def())
+        ready_url = env.get("IEP1D_READY_URL", "")
+        rectify_base = env.get("IEP1D_URL", "")
+        self.assertTrue(ready_url, "IEP1D_READY_URL must be set")
+        self.assertTrue(rectify_base, "IEP1D_URL must be set")
+        h_ready = urlparse(ready_url).hostname
+        h_rect = urlparse(rectify_base).hostname
+        self.assertEqual(h_ready, "iep1d", f"IEP1D_READY_URL host was {h_ready!r}")
+        self.assertEqual(h_rect, "iep1d", f"IEP1D_URL host was {h_rect!r}")
+        self.assertEqual(
+            h_ready,
+            h_rect,
+            "IEP1D_READY_URL and IEP1D_URL must use the same hostname for DNS consistency",
+        )
+
+
+# ── iep1e task def sizing + health check regression (Fargate / semantic-norm) ─
+
+class TestIep1eTaskDefHealthAndSizing(unittest.TestCase):
+    """
+    libraryai-iep1e task definition: CPU/memory for long Paddle/OCR work and a
+    health probe that tolerates load without depending on curl or probing /ready.
+    """
+
+    def _task_def(self):
+        import json, pathlib
+
+        path = pathlib.Path(__file__).parent.parent / "k8s" / "ecs" / "iep1e-task-def.json"
+        return json.loads(path.read_text())
+
+    def test_iep1e_task_level_cpu_2048(self):
+        self.assertEqual(self._task_def()["cpu"], "2048")
+
+    def test_iep1e_task_level_memory_8192(self):
+        self.assertEqual(self._task_def()["memory"], "8192")
+
+    def test_iep1e_health_check_targets_health_not_ready(self):
+        td = self._task_def()
+        cmd_parts = td["containerDefinitions"][0]["healthCheck"]["command"]
+        joined = " ".join(cmd_parts)
+        self.assertIn("127.0.0.1:8007/health", joined)
+        self.assertNotIn("/ready", joined)
+
+    def test_iep1e_health_check_does_not_use_curl(self):
+        td = self._task_def()
+        joined = " ".join(td["containerDefinitions"][0]["healthCheck"]["command"])
+        self.assertNotIn("curl", joined.lower())
+
+    def test_iep1e_health_check_uses_python_urllib(self):
+        td = self._task_def()
+        joined = " ".join(td["containerDefinitions"][0]["healthCheck"]["command"])
+        self.assertIn("urllib.request", joined)
+        self.assertIn("python -c", joined)
+
+    def test_iep1e_health_check_timeout_at_least_10(self):
+        hc = self._task_def()["containerDefinitions"][0]["healthCheck"]
+        self.assertGreaterEqual(hc["timeout"], 10)
+
+    def test_iep1e_health_check_retries_at_least_5(self):
+        hc = self._task_def()["containerDefinitions"][0]["healthCheck"]
+        self.assertGreaterEqual(hc["retries"], 5)
+
+    def test_iep1e_health_check_start_period_at_least_300(self):
+        hc = self._task_def()["containerDefinitions"][0]["healthCheck"]
+        self.assertGreaterEqual(hc["startPeriod"], 300)
 
 
 if __name__ == "__main__":

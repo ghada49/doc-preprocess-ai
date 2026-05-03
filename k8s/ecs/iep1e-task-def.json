@@ -2,8 +2,8 @@
   "family": "libraryai-iep1e",
   "networkMode": "awsvpc",
   "requiresCompatibilities": ["FARGATE"],
-  "cpu": "1024",
-  "memory": "3072",
+  "cpu": "2048",
+  "memory": "8192",
   "executionRoleArn": "arn:aws:iam::ACCOUNT_ID:role/ecsTaskExecutionRole",
   "taskRoleArn": "arn:aws:iam::ACCOUNT_ID:role/libraryai-task-role",
   "containerDefinitions": [
@@ -25,11 +25,14 @@
         { "name": "IEP1E_MODEL_DIR",  "value": "/opt/models/iep1e" }
       ],
       "healthCheck": {
-        "command": ["CMD-SHELL", "curl -sf http://127.0.0.1:8007/health || exit 1"],
+        "command": [
+          "CMD-SHELL",
+          "python -c \"import urllib.request; urllib.request.urlopen('http://127.0.0.1:8007/health', timeout=10).read()\" || exit 1"
+        ],
         "interval": 30,
-        "timeout": 5,
-        "retries": 3,
-        "startPeriod": 240
+        "timeout": 15,
+        "retries": 5,
+        "startPeriod": 300
       },
       "logConfiguration": {
         "logDriver": "awslogs",
