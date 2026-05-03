@@ -1,0 +1,75 @@
+{
+  "case_id": "iep1b_book_aub_aco003575_000040_rot90",
+  "model": "iep1b",
+  "material_type": "book",
+  "source_collection": "aub_aco003575",
+  "image_s3_key": "golden-dataset/iep1b/book/aub_aco003575_000040_rot90.tif",
+  "image_sha256": "6a24e2ad24846d5b90856f46d707da16c2046f02dc882466128c69d9bbb6a937",
+  "split_expected": true,
+  "sub_page_count": 2,
+  "annotations": {
+    "detections": [
+      {
+        "class_id": 0,
+        "bbox_xyxy": [
+          0.25429,
+          0.239676,
+          0.792336,
+          0.495773
+        ],
+        "keypoints": [
+          [
+            0.25429,
+            0.239676
+          ],
+          [
+            0.788746,
+            0.246603
+          ],
+          [
+            0.792336,
+            0.494189
+          ],
+          [
+            0.256614,
+            0.495773
+          ]
+        ]
+      },
+      {
+        "class_id": 1,
+        "bbox_xyxy": [
+          0.256308,
+          0.50074,
+          0.793762,
+          0.760296
+        ],
+        "keypoints": [
+          [
+            0.256308,
+            0.501789
+          ],
+          [
+            0.791426,
+            0.50074
+          ],
+          [
+            0.793762,
+            0.750887
+          ],
+          [
+            0.257187,
+            0.760296
+          ]
+        ]
+      }
+    ]
+  },
+  "thresholds": {
+    "iou_min": 0.7,
+    "mean_keypoint_distance_max": 0.03,
+    "confidence_min": 0.7
+  },
+  "created_by": "ghada",
+  "created_at": "2026-04-18"
+}

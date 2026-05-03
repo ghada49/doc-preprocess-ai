@@ -1,0 +1,649 @@
+{
+  "version": "1.0",
+  "created_at": "2026-04-16",
+  "s3_bucket": "libraryai-golden-linef-eun1",
+  "cases": [
+    {
+      "case_id": "iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00008_rot0",
+      "model": "iep1a",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00008_rot0.json"
+    },
+    {
+      "case_id": "iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00008_rot90",
+      "model": "iep1a",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00008_rot90.json"
+    },
+    {
+      "case_id": "iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00018_rot0",
+      "model": "iep1a",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00018_rot0.json"
+    },
+    {
+      "case_id": "iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00018_rot90",
+      "model": "iep1a",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00018_rot90.json"
+    },
+    {
+      "case_id": "iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00027_rot0",
+      "model": "iep1a",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00027_rot0.json"
+    },
+    {
+      "case_id": "iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00027_rot90",
+      "model": "iep1a",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00027_rot90.json"
+    },
+    {
+      "case_id": "iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00029_rot0",
+      "model": "iep1a",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00029_rot0.json"
+    },
+    {
+      "case_id": "iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00029_rot90",
+      "model": "iep1a",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00029_rot90.json"
+    },
+    {
+      "case_id": "iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00032_rot0",
+      "model": "iep1a",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00032_rot0.json"
+    },
+    {
+      "case_id": "iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00032_rot90",
+      "model": "iep1a",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1a_newspaper_na121_al-moqatam_1908_oct-dec_00032_rot90.json"
+    },
+    {
+      "case_id": "iep1a_newspaper_na246_sada-nahda_1946_0261_rot0",
+      "model": "iep1a",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1a_newspaper_na246_sada-nahda_1946_0261_rot0.json"
+    },
+    {
+      "case_id": "iep1a_newspaper_na246_sada-nahda_1946_0261_rot90",
+      "model": "iep1a",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1a_newspaper_na246_sada-nahda_1946_0261_rot90.json"
+    },
+    {
+      "case_id": "iep1a_book_aub_aco003575_000002_rot0",
+      "model": "iep1a",
+      "material_type": "book",
+      "annotation_path": "cases/iep1a_book_aub_aco003575_000002_rot0.json"
+    },
+    {
+      "case_id": "iep1a_book_aub_aco003575_000002_rot90",
+      "model": "iep1a",
+      "material_type": "book",
+      "annotation_path": "cases/iep1a_book_aub_aco003575_000002_rot90.json"
+    },
+    {
+      "case_id": "iep1a_book_aub_aco003575_000007_rot0",
+      "model": "iep1a",
+      "material_type": "book",
+      "annotation_path": "cases/iep1a_book_aub_aco003575_000007_rot0.json"
+    },
+    {
+      "case_id": "iep1a_book_aub_aco003575_000007_rot90",
+      "model": "iep1a",
+      "material_type": "book",
+      "annotation_path": "cases/iep1a_book_aub_aco003575_000007_rot90.json"
+    },
+    {
+      "case_id": "iep1a_book_aub_aco003575_000008_rot0",
+      "model": "iep1a",
+      "material_type": "book",
+      "annotation_path": "cases/iep1a_book_aub_aco003575_000008_rot0.json"
+    },
+    {
+      "case_id": "iep1a_book_aub_aco003575_000008_rot90",
+      "model": "iep1a",
+      "material_type": "book",
+      "annotation_path": "cases/iep1a_book_aub_aco003575_000008_rot90.json"
+    },
+    {
+      "case_id": "iep1a_book_aub_aco003575_000009_rot0",
+      "model": "iep1a",
+      "material_type": "book",
+      "annotation_path": "cases/iep1a_book_aub_aco003575_000009_rot0.json"
+    },
+    {
+      "case_id": "iep1a_book_aub_aco003575_000009_rot90",
+      "model": "iep1a",
+      "material_type": "book",
+      "annotation_path": "cases/iep1a_book_aub_aco003575_000009_rot90.json"
+    },
+    {
+      "case_id": "iep1a_book_aub_aco003575_000015_rot0",
+      "model": "iep1a",
+      "material_type": "book",
+      "annotation_path": "cases/iep1a_book_aub_aco003575_000015_rot0.json"
+    },
+    {
+      "case_id": "iep1a_book_aub_aco003575_000015_rot90",
+      "model": "iep1a",
+      "material_type": "book",
+      "annotation_path": "cases/iep1a_book_aub_aco003575_000015_rot90.json"
+    },
+    {
+      "case_id": "iep1a_book_aub_aco003575_000016_rot0",
+      "model": "iep1a",
+      "material_type": "book",
+      "annotation_path": "cases/iep1a_book_aub_aco003575_000016_rot0.json"
+    },
+    {
+      "case_id": "iep1a_book_aub_aco003575_000016_rot90",
+      "model": "iep1a",
+      "material_type": "book",
+      "annotation_path": "cases/iep1a_book_aub_aco003575_000016_rot90.json"
+    },
+    {
+      "case_id": "iep1a_microfilm_nam_a-naaman_06_0003_rot90",
+      "model": "iep1a",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1a_microfilm_nam_a-naaman_06_0003_rot90.json"
+    },
+    {
+      "case_id": "iep1a_microfilm_nam_a-naaman_06_0009_rot0",
+      "model": "iep1a",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1a_microfilm_nam_a-naaman_06_0009_rot0.json"
+    },
+    {
+      "case_id": "iep1a_microfilm_nam_a-naaman_06_0020_rot90",
+      "model": "iep1a",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1a_microfilm_nam_a-naaman_06_0020_rot90.json"
+    },
+    {
+      "case_id": "iep1a_microfilm_nam_a-naaman_06_0021_rot0",
+      "model": "iep1a",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1a_microfilm_nam_a-naaman_06_0021_rot0.json"
+    },
+    {
+      "case_id": "iep1a_microfilm_nam_a-naaman_06_0022_rot0",
+      "model": "iep1a",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1a_microfilm_nam_a-naaman_06_0022_rot0.json"
+    },
+    {
+      "case_id": "iep1a_microfilm_nam_a-naaman_06_0023_rot90",
+      "model": "iep1a",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1a_microfilm_nam_a-naaman_06_0023_rot90.json"
+    },
+    {
+      "case_id": "iep1a_microfilm_nam_a-naaman_06_0025_rot90",
+      "model": "iep1a",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1a_microfilm_nam_a-naaman_06_0025_rot90.json"
+    },
+    {
+      "case_id": "iep1a_microfilm_nam_a-naaman_06_0029_rot0",
+      "model": "iep1a",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1a_microfilm_nam_a-naaman_06_0029_rot0.json"
+    },
+    {
+      "case_id": "iep1a_microfilm_nam_a-naaman_06_0043_rot0",
+      "model": "iep1a",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1a_microfilm_nam_a-naaman_06_0043_rot0.json"
+    },
+    {
+      "case_id": "iep1a_microfilm_nam_a-naaman_06_0054_rot0",
+      "model": "iep1a",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1a_microfilm_nam_a-naaman_06_0054_rot0.json"
+    },
+    {
+      "case_id": "iep1a_microfilm_nam_a-naaman_06_0058_rot90",
+      "model": "iep1a",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1a_microfilm_nam_a-naaman_06_0058_rot90.json"
+    },
+    {
+      "case_id": "iep1a_microfilm_nam_a-naaman_06_0060_rot90",
+      "model": "iep1a",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1a_microfilm_nam_a-naaman_06_0060_rot90.json"
+    },
+    {
+      "case_id": "iep1b_book_aub_aco003575_000020_rot0",
+      "model": "iep1b",
+      "material_type": "book",
+      "annotation_path": "cases/iep1b_book_aub_aco003575_000020_rot0.json"
+    },
+    {
+      "case_id": "iep1b_book_aub_aco003575_000022_rot0",
+      "model": "iep1b",
+      "material_type": "book",
+      "annotation_path": "cases/iep1b_book_aub_aco003575_000022_rot0.json"
+    },
+    {
+      "case_id": "iep1b_book_aub_aco003575_000022_rot90",
+      "model": "iep1b",
+      "material_type": "book",
+      "annotation_path": "cases/iep1b_book_aub_aco003575_000022_rot90.json"
+    },
+    {
+      "case_id": "iep1b_book_aub_aco003575_000034_rot90",
+      "model": "iep1b",
+      "material_type": "book",
+      "annotation_path": "cases/iep1b_book_aub_aco003575_000034_rot90.json"
+    },
+    {
+      "case_id": "iep1b_book_aub_aco003575_000037_rot0",
+      "model": "iep1b",
+      "material_type": "book",
+      "annotation_path": "cases/iep1b_book_aub_aco003575_000037_rot0.json"
+    },
+    {
+      "case_id": "iep1b_book_aub_aco003575_000040_rot90",
+      "model": "iep1b",
+      "material_type": "book",
+      "annotation_path": "cases/iep1b_book_aub_aco003575_000040_rot90.json"
+    },
+    {
+      "case_id": "iep1b_book_aub_aco003575_000042_rot0",
+      "model": "iep1b",
+      "material_type": "book",
+      "annotation_path": "cases/iep1b_book_aub_aco003575_000042_rot0.json"
+    },
+    {
+      "case_id": "iep1b_book_aub_aco003575_000052_rot0",
+      "model": "iep1b",
+      "material_type": "book",
+      "annotation_path": "cases/iep1b_book_aub_aco003575_000052_rot0.json"
+    },
+    {
+      "case_id": "iep1b_book_aub_aco003575_000058_rot0",
+      "model": "iep1b",
+      "material_type": "book",
+      "annotation_path": "cases/iep1b_book_aub_aco003575_000058_rot0.json"
+    },
+    {
+      "case_id": "iep1b_book_aub_aco003575_000058_rot90",
+      "model": "iep1b",
+      "material_type": "book",
+      "annotation_path": "cases/iep1b_book_aub_aco003575_000058_rot90.json"
+    },
+    {
+      "case_id": "iep1b_book_aub_aco003575_000063_rot0",
+      "model": "iep1b",
+      "material_type": "book",
+      "annotation_path": "cases/iep1b_book_aub_aco003575_000063_rot0.json"
+    },
+    {
+      "case_id": "iep1b_book_aub_aco003575_000063_rot90",
+      "model": "iep1b",
+      "material_type": "book",
+      "annotation_path": "cases/iep1b_book_aub_aco003575_000063_rot90.json"
+    },
+    {
+      "case_id": "iep1b_newspaper_na121_00008_rot0",
+      "model": "iep1b",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1b_newspaper_na121_00008_rot0.json"
+    },
+    {
+      "case_id": "iep1b_newspaper_na121_00008_rot90",
+      "model": "iep1b",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1b_newspaper_na121_00008_rot90.json"
+    },
+    {
+      "case_id": "iep1b_newspaper_na121_00018_rot0",
+      "model": "iep1b",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1b_newspaper_na121_00018_rot0.json"
+    },
+    {
+      "case_id": "iep1b_newspaper_na121_00018_rot90",
+      "model": "iep1b",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1b_newspaper_na121_00018_rot90.json"
+    },
+    {
+      "case_id": "iep1b_newspaper_na121_00027_rot0",
+      "model": "iep1b",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1b_newspaper_na121_00027_rot0.json"
+    },
+    {
+      "case_id": "iep1b_newspaper_na121_00027_rot90",
+      "model": "iep1b",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1b_newspaper_na121_00027_rot90.json"
+    },
+    {
+      "case_id": "iep1b_newspaper_na121_00029_rot0",
+      "model": "iep1b",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1b_newspaper_na121_00029_rot0.json"
+    },
+    {
+      "case_id": "iep1b_newspaper_na121_00029_rot90",
+      "model": "iep1b",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1b_newspaper_na121_00029_rot90.json"
+    },
+    {
+      "case_id": "iep1b_newspaper_na121_00032_rot0",
+      "model": "iep1b",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1b_newspaper_na121_00032_rot0.json"
+    },
+    {
+      "case_id": "iep1b_newspaper_na121_00032_rot90",
+      "model": "iep1b",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1b_newspaper_na121_00032_rot90.json"
+    },
+    {
+      "case_id": "iep1b_newspaper_na246_0261_rot0",
+      "model": "iep1b",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1b_newspaper_na246_0261_rot0.json"
+    },
+    {
+      "case_id": "iep1b_newspaper_na246_0261_rot90",
+      "model": "iep1b",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep1b_newspaper_na246_0261_rot90.json"
+    },
+    {
+      "case_id": "iep1b_microfilm_nam_a-naaman_06_0044_rot0",
+      "model": "iep1b",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1b_microfilm_nam_a-naaman_06_0044_rot0.json"
+    },
+    {
+      "case_id": "iep1b_microfilm_nam_a-naaman_06_0044_rot90",
+      "model": "iep1b",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1b_microfilm_nam_a-naaman_06_0044_rot90.json"
+    },
+    {
+      "case_id": "iep1b_microfilm_nam_a-naaman_06_0099_rot0",
+      "model": "iep1b",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1b_microfilm_nam_a-naaman_06_0099_rot0.json"
+    },
+    {
+      "case_id": "iep1b_microfilm_nam_a-naaman_06_0099_rot90",
+      "model": "iep1b",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1b_microfilm_nam_a-naaman_06_0099_rot90.json"
+    },
+    {
+      "case_id": "iep1b_microfilm_nam_a-naaman_06_0146_rot0",
+      "model": "iep1b",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1b_microfilm_nam_a-naaman_06_0146_rot0.json"
+    },
+    {
+      "case_id": "iep1b_microfilm_nam_a-naaman_06_0146_rot90",
+      "model": "iep1b",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1b_microfilm_nam_a-naaman_06_0146_rot90.json"
+    },
+    {
+      "case_id": "iep1b_microfilm_nam_a-naaman_06_0161_rot0",
+      "model": "iep1b",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1b_microfilm_nam_a-naaman_06_0161_rot0.json"
+    },
+    {
+      "case_id": "iep1b_microfilm_nam_a-naaman_06_0161_rot90",
+      "model": "iep1b",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1b_microfilm_nam_a-naaman_06_0161_rot90.json"
+    },
+    {
+      "case_id": "iep1b_microfilm_nam_a-naaman_06_0173_rot0",
+      "model": "iep1b",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1b_microfilm_nam_a-naaman_06_0173_rot0.json"
+    },
+    {
+      "case_id": "iep1b_microfilm_nam_a-naaman_06_0173_rot90",
+      "model": "iep1b",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1b_microfilm_nam_a-naaman_06_0173_rot90.json"
+    },
+    {
+      "case_id": "iep1b_microfilm_nam_a-naaman_06_0333_rot0",
+      "model": "iep1b",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep1b_microfilm_nam_a-naaman_06_0333_rot0.json"
+    },
+    {
+      "case_id": "iep0_na121_al-moqatam_1908_oct-dec_00226_rot0",
+      "model": "iep0",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep0_na121_al-moqatam_1908_oct-dec_00226_rot0.json"
+    },
+    {
+      "case_id": "iep0_na121_al-moqatam_1908_oct-dec_00226_rot90",
+      "model": "iep0",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep0_na121_al-moqatam_1908_oct-dec_00226_rot90.json"
+    },
+    {
+      "case_id": "iep0_na121_al-moqatam_1908_oct-dec_00226_rot180",
+      "model": "iep0",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep0_na121_al-moqatam_1908_oct-dec_00226_rot180.json"
+    },
+    {
+      "case_id": "iep0_na121_al-moqatam_1908_oct-dec_00226_rot270",
+      "model": "iep0",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep0_na121_al-moqatam_1908_oct-dec_00226_rot270.json"
+    },
+    {
+      "case_id": "iep0_na121_al-moqatam_1908_oct-dec_00227_rot0",
+      "model": "iep0",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep0_na121_al-moqatam_1908_oct-dec_00227_rot0.json"
+    },
+    {
+      "case_id": "iep0_na121_al-moqatam_1908_oct-dec_00227_rot90",
+      "model": "iep0",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep0_na121_al-moqatam_1908_oct-dec_00227_rot90.json"
+    },
+    {
+      "case_id": "iep0_na121_al-moqatam_1908_oct-dec_00227_rot180",
+      "model": "iep0",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep0_na121_al-moqatam_1908_oct-dec_00227_rot180.json"
+    },
+    {
+      "case_id": "iep0_na121_al-moqatam_1908_oct-dec_00227_rot270",
+      "model": "iep0",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep0_na121_al-moqatam_1908_oct-dec_00227_rot270.json"
+    },
+    {
+      "case_id": "iep0_na121_al-moqatam_1908_oct-dec_00228_rot0",
+      "model": "iep0",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep0_na121_al-moqatam_1908_oct-dec_00228_rot0.json"
+    },
+    {
+      "case_id": "iep0_na121_al-moqatam_1908_oct-dec_00228_rot90",
+      "model": "iep0",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep0_na121_al-moqatam_1908_oct-dec_00228_rot90.json"
+    },
+    {
+      "case_id": "iep0_na121_al-moqatam_1908_oct-dec_00228_rot180",
+      "model": "iep0",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep0_na121_al-moqatam_1908_oct-dec_00228_rot180.json"
+    },
+    {
+      "case_id": "iep0_na121_al-moqatam_1908_oct-dec_00228_rot270",
+      "model": "iep0",
+      "material_type": "newspaper",
+      "annotation_path": "cases/iep0_na121_al-moqatam_1908_oct-dec_00228_rot270.json"
+    },
+    {
+      "case_id": "iep0_aub_aco003575_000044_rot0",
+      "model": "iep0",
+      "material_type": "book",
+      "annotation_path": "cases/iep0_aub_aco003575_000044_rot0.json"
+    },
+    {
+      "case_id": "iep0_aub_aco003575_000044_rot90",
+      "model": "iep0",
+      "material_type": "book",
+      "annotation_path": "cases/iep0_aub_aco003575_000044_rot90.json"
+    },
+    {
+      "case_id": "iep0_aub_aco003575_000044_rot180",
+      "model": "iep0",
+      "material_type": "book",
+      "annotation_path": "cases/iep0_aub_aco003575_000044_rot180.json"
+    },
+    {
+      "case_id": "iep0_aub_aco003575_000044_rot270",
+      "model": "iep0",
+      "material_type": "book",
+      "annotation_path": "cases/iep0_aub_aco003575_000044_rot270.json"
+    },
+    {
+      "case_id": "iep0_aub_aco003575_000045_rot0",
+      "model": "iep0",
+      "material_type": "book",
+      "annotation_path": "cases/iep0_aub_aco003575_000045_rot0.json"
+    },
+    {
+      "case_id": "iep0_aub_aco003575_000045_rot90",
+      "model": "iep0",
+      "material_type": "book",
+      "annotation_path": "cases/iep0_aub_aco003575_000045_rot90.json"
+    },
+    {
+      "case_id": "iep0_aub_aco003575_000045_rot180",
+      "model": "iep0",
+      "material_type": "book",
+      "annotation_path": "cases/iep0_aub_aco003575_000045_rot180.json"
+    },
+    {
+      "case_id": "iep0_aub_aco003575_000045_rot270",
+      "model": "iep0",
+      "material_type": "book",
+      "annotation_path": "cases/iep0_aub_aco003575_000045_rot270.json"
+    },
+    {
+      "case_id": "iep0_aub_aco003575_000046_rot0",
+      "model": "iep0",
+      "material_type": "book",
+      "annotation_path": "cases/iep0_aub_aco003575_000046_rot0.json"
+    },
+    {
+      "case_id": "iep0_aub_aco003575_000046_rot90",
+      "model": "iep0",
+      "material_type": "book",
+      "annotation_path": "cases/iep0_aub_aco003575_000046_rot90.json"
+    },
+    {
+      "case_id": "iep0_aub_aco003575_000046_rot180",
+      "model": "iep0",
+      "material_type": "book",
+      "annotation_path": "cases/iep0_aub_aco003575_000046_rot180.json"
+    },
+    {
+      "case_id": "iep0_aub_aco003575_000046_rot270",
+      "model": "iep0",
+      "material_type": "book",
+      "annotation_path": "cases/iep0_aub_aco003575_000046_rot270.json"
+    },
+    {
+      "case_id": "iep0_nam_a-naaman_06_0051_rot0",
+      "model": "iep0",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep0_nam_a-naaman_06_0051_rot0.json"
+    },
+    {
+      "case_id": "iep0_nam_a-naaman_06_0051_rot90",
+      "model": "iep0",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep0_nam_a-naaman_06_0051_rot90.json"
+    },
+    {
+      "case_id": "iep0_nam_a-naaman_06_0051_rot180",
+      "model": "iep0",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep0_nam_a-naaman_06_0051_rot180.json"
+    },
+    {
+      "case_id": "iep0_nam_a-naaman_06_0051_rot270",
+      "model": "iep0",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep0_nam_a-naaman_06_0051_rot270.json"
+    },
+    {
+      "case_id": "iep0_nam_a-naaman_06_0052_rot0",
+      "model": "iep0",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep0_nam_a-naaman_06_0052_rot0.json"
+    },
+    {
+      "case_id": "iep0_nam_a-naaman_06_0052_rot90",
+      "model": "iep0",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep0_nam_a-naaman_06_0052_rot90.json"
+    },
+    {
+      "case_id": "iep0_nam_a-naaman_06_0052_rot180",
+      "model": "iep0",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep0_nam_a-naaman_06_0052_rot180.json"
+    },
+    {
+      "case_id": "iep0_nam_a-naaman_06_0052_rot270",
+      "model": "iep0",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep0_nam_a-naaman_06_0052_rot270.json"
+    },
+    {
+      "case_id": "iep0_nam_a-naaman_06_0053_rot0",
+      "model": "iep0",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep0_nam_a-naaman_06_0053_rot0.json"
+    },
+    {
+      "case_id": "iep0_nam_a-naaman_06_0053_rot90",
+      "model": "iep0",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep0_nam_a-naaman_06_0053_rot90.json"
+    },
+    {
+      "case_id": "iep0_nam_a-naaman_06_0053_rot180",
+      "model": "iep0",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep0_nam_a-naaman_06_0053_rot180.json"
+    },
+    {
+      "case_id": "iep0_nam_a-naaman_06_0053_rot270",
+      "model": "iep0",
+      "material_type": "microfilm",
+      "annotation_path": "cases/iep0_nam_a-naaman_06_0053_rot270.json"
+    }
+  ]
+}

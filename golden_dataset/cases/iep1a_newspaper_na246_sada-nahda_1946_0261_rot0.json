@@ -1,0 +1,23 @@
+{
+  "case_id": "iep1a_newspaper_na246_sada-nahda_1946_0261_rot0",
+  "model": "iep1a",
+  "material_type": "newspaper",
+  "source_collection": "na246_sada-nahda",
+  "image_s3_key": "golden-dataset/iep1a/newspaper/na246_sada-nahda_1946_0261.tif",
+  "image_sha256": "6187f94f4f11369bd7a924b3e1ff11cd2c78cafe13cae52b248089feb0f2e29c",
+  "split_expected": true,
+  "sub_page_count": 2,
+  "annotations": {
+    "bboxes": [
+      [0.04251, 0.051682, 0.496899, 0.959771],
+      [0.506107, 0.05884, 0.966937, 0.963708]
+    ],
+    "classes": [0, 1]
+  },
+  "thresholds": {
+    "iou_min": 0.75,
+    "confidence_min": 0.7
+  },
+  "created_by": "ghada",
+  "created_at": "2026-04-18"
+}

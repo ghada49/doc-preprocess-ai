@@ -1,0 +1,14 @@
+{
+  "case_id": "iep0_nam_a-naaman_06_0052_rot180",
+  "model": "iep0",
+  "material_type": "microfilm",
+  "source_collection": "nam_a-naaman_06",
+  "annotations": {
+    "expected_class": "microfilm"
+  },
+  "thresholds": {
+    "confidence_min": 0.7
+  },
+  "image_s3_key": "golden-dataset/iep0/microfilm/nam_a-naaman_06_0052_rot180.tif",
+  "image_sha256": "13c02346369c457abc35c2182a04a47795e16e596d28524293fecbbf4b16bd44"
+}

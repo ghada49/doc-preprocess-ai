@@ -1,0 +1,23 @@
+{
+  "case_id": "iep1a_book_aub_aco003575_000016_rot90",
+  "model": "iep1a",
+  "material_type": "book",
+  "source_collection": "aub_aco003575",
+  "image_s3_key": "golden-dataset/iep1a/book/aub_aco003575_000016_rot90.tif",
+  "image_sha256": "0a6d79a13b1ac293016690f9a263d66d10c5899022b5f04cacbf762422d156cc",
+  "split_expected": true,
+  "sub_page_count": 2,
+  "annotations": {
+    "bboxes": [
+      [0.223043, 0.22605, 0.769255, 0.485267],
+      [0.228962, 0.482533, 0.77487, 0.753006]
+    ],
+    "classes": [0, 1]
+  },
+  "thresholds": {
+    "iou_min": 0.75,
+    "confidence_min": 0.7
+  },
+  "created_by": "ghada",
+  "created_at": "2026-04-18"
+}
