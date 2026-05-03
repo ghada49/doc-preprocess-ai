@@ -34,15 +34,13 @@ All DB interactions are mocked via MagicMock sessions.
 from __future__ import annotations
 
 import uuid
-from datetime import datetime, timedelta, timezone
-from typing import Any
-from unittest.mock import MagicMock, call, patch
+from datetime import UTC, datetime, timedelta
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from services.retraining_worker.app.reconcile import (
     ReconcileConfig,
-    ReconcileResult,
     reconcile_once,
 )
 from services.retraining_worker.app.task import (
@@ -53,7 +51,7 @@ from services.retraining_worker.app.task import (
 
 # ── Constants ─────────────────────────────────────────────────────────────────
 
-_NOW = datetime(2026, 3, 28, 12, 0, 0, tzinfo=timezone.utc)
+_NOW = datetime(2026, 3, 28, 12, 0, 0, tzinfo=UTC)
 
 
 # ── Trigger / Job / ModelVersion mock factories ───────────────────────────────
@@ -118,7 +116,6 @@ class TestExecuteRetrainingTaskPreprocessing:
         db = _make_task_session()
         execute_retraining_task(trigger, db)
         # At least one db.add call must be for a RetrainingJob
-        from services.eep.app.db.models import RetrainingJob
         added_types = [type(c[0][0]).__name__ for c in db.add.call_args_list]
         assert "RetrainingJob" in added_types
 
@@ -316,7 +313,6 @@ class TestExecuteRetrainingTaskMonitoringOnly:
         trigger = _make_trigger(trigger_type="layout_confidence_degradation")
         db = _make_task_session()
         execute_retraining_task(trigger, db)
-        from services.eep.app.db.models import RetrainingJob
         added_types = [type(c[0][0]).__name__ for c in db.add.call_args_list]
         assert "RetrainingJob" not in added_types
 
@@ -324,7 +320,6 @@ class TestExecuteRetrainingTaskMonitoringOnly:
         trigger = _make_trigger(trigger_type="layout_confidence_degradation")
         db = _make_task_session()
         execute_retraining_task(trigger, db)
-        from services.eep.app.db.models import ModelVersion
         added_types = [type(c[0][0]).__name__ for c in db.add.call_args_list]
         assert "ModelVersion" not in added_types
 
@@ -359,6 +354,7 @@ class TestTriggerPipelineMapping:
             "structural_agreement_degradation",
             "drift_alert_persistence",
             "layout_confidence_degradation",
+            "manual_retraining",
         }
         assert set(_TRIGGER_PIPELINE.keys()) == known
 
@@ -430,7 +426,8 @@ def _mock_db_for_reconcile(
     job_query_count = [0]
     trigger_query_count = [0]
 
-    from services.eep.app.db.models import RetrainingJob, RetrainingTrigger as RT
+    from services.eep.app.db.models import RetrainingJob
+    from services.eep.app.db.models import RetrainingTrigger as RT
 
     def _smart_query(model):
         q = MagicMock()

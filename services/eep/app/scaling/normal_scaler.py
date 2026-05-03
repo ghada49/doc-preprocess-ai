@@ -100,6 +100,17 @@ _WORKER_SERVICES: list[str] = [
 ]
 
 _SERVICE_CONNECT_CONFIGS: dict[str, dict] = {
+    "libraryai-iep1d": {
+        "enabled": True,
+        "namespace": "libraryai.local",
+        "services": [
+            {
+                "portName": "http",
+                "discoveryName": "iep1d",
+                "clientAliases": [{"port": 8003, "dnsName": "iep1d"}],
+            }
+        ],
+    },
     "libraryai-iep1e": {
         "enabled": True,
         "namespace": "libraryai.local",
@@ -243,6 +254,26 @@ def maybe_trigger_scale_up(r: redis_lib.Redis) -> None:
 # ── internals ─────────────────────────────────────────────────────────────────
 
 
+def _has_shadow_candidate() -> bool:
+    """Return True if a ModelVersion with stage='shadow' exists in the DB."""
+    try:
+        from services.eep.app.db.models import ModelVersion  # noqa: PLC0415
+        from services.eep.app.db.session import SessionLocal  # noqa: PLC0415
+
+        db = SessionLocal()
+        try:
+            return (
+                db.query(ModelVersion).filter(ModelVersion.stage == "shadow").limit(1).count()
+            ) > 0
+        finally:
+            db.close()
+    except Exception:
+        logger.warning(
+            "normal_scaler: could not check for shadow candidate — skipping shadow-worker"
+        )
+        return False
+
+
 def _do_scale_up() -> None:
     """
     Start normal-processing infrastructure.
@@ -337,18 +368,23 @@ def _do_scale_up() -> None:
         ):
             raise RuntimeError("failed to update libraryai-eep-worker")
 
-    # 3. CPU IEP services ──────────────────────────────────────────────────────
+        # 3. CPU IEP services ──────────────────────────────────────────────────────
         for svc in _CPU_IEP_SERVICES:
             if not _update_service(ecs_client, cluster, svc, 1, force_new=True):
                 raise RuntimeError(f"failed to update {svc}")
 
-    # 4. Remaining worker services ─────────────────────────────────────────────
+        # 4. Remaining worker services ─────────────────────────────────────────────
         # eep-recovery mutates Redis queues and must run as a singleton.  The
         # reconciler also takes a Redis lock as a defense against mis-scaling.
         if not _update_service(ecs_client, cluster, "libraryai-eep-recovery", 1):
             raise RuntimeError("failed to update libraryai-eep-recovery")
-        if not _update_service(ecs_client, cluster, "libraryai-shadow-worker", worker_desired):
-            raise RuntimeError("failed to update libraryai-shadow-worker")
+        if _has_shadow_candidate():
+            if not _update_service(ecs_client, cluster, "libraryai-shadow-worker", worker_desired):
+                raise RuntimeError("failed to update libraryai-shadow-worker")
+        else:
+            logger.info(
+                "normal_scaler: no shadow-stage ModelVersion found — shadow-worker not started"
+            )
     except Exception as exc:  # noqa: BLE001
         logger.error("normal_scaler: AWS service startup failed: %s — rolling back scale-up.", exc)
         _rollback_aws_services(ecs_client, cluster)
@@ -529,7 +565,7 @@ def _create_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
     cloud_types = _runpod_cloud_type_candidates()
 
     _IEP_PODS = [
-        ("libraryai-iep0",  "gma51/libraryai-iep0:latest",  8006),
+        ("libraryai-iep0", "gma51/libraryai-iep0:latest", 8006),
         ("libraryai-iep1a", "gma51/libraryai-iep1a:latest", 8001),
         ("libraryai-iep1b", "gma51/libraryai-iep1b:latest", 8002),
     ]
@@ -576,7 +612,7 @@ def _create_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
             bookkeeping=bk,
         )
 
-    iep0_url  = f"https://{pod_ids['libraryai-iep0']}-8006.proxy.runpod.net"
+    iep0_url = f"https://{pod_ids['libraryai-iep0']}-8006.proxy.runpod.net"
     iep1a_url = f"https://{pod_ids['libraryai-iep1a']}-8001.proxy.runpod.net"
     iep1b_url = f"https://{pod_ids['libraryai-iep1b']}-8002.proxy.runpod.net"
 
@@ -593,7 +629,9 @@ def _create_runpod_pods(api_key: str, region: str) -> tuple[str, str, str]:
             append_entries=append_entries_raw,
             remove_pod_ids=frozenset(terminated_raw),
         )
-        logger.info("normal_scaler: RunPod pod state merged to s3://%s/ops/runpod-pods.json", bucket)
+        logger.info(
+            "normal_scaler: RunPod pod state merged to s3://%s/ops/runpod-pods.json", bucket
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("normal_scaler: could not merge RunPod pod state to S3: %s", exc)
 
@@ -712,11 +750,7 @@ def _cleanup_created_runpod_pods(api_key: str, pod_ids: list[str], reason: str) 
 
     for pod_id in pod_ids:
         try:
-            mutation = (
-                'mutation { podTerminate(input: {'
-                f'podId: "{pod_id}"'
-                '}) }'
-            )
+            mutation = "mutation { podTerminate(input: {" f'podId: "{pod_id}"' "}) }"
             resp = httpx.post(
                 f"https://api.runpod.io/graphql?api_key={api_key}",
                 json={"query": mutation},
@@ -967,7 +1001,9 @@ def _create_runpod_pod_rest(
         resp.raise_for_status()
     except httpx.HTTPStatusError as exc:
         body = resp.text[:1000]
-        raise RuntimeError(f"RunPod REST error creating {name}: HTTP {resp.status_code}: {body}") from exc
+        raise RuntimeError(
+            f"RunPod REST error creating {name}: HTTP {resp.status_code}: {body}"
+        ) from exc
 
     data = resp.json()
     pod_id = data.get("id")
@@ -1017,12 +1053,12 @@ def _create_runpod_pod(
     import httpx  # noqa: PLC0415
 
     mutation = (
-        'mutation { podFindAndDeployOnDemand(input: {'
+        "mutation { podFindAndDeployOnDemand(input: {"
         f' name: "{name}", imageName: "{image}",'
         f' gpuTypeId: "{gpu_type_id}", cloudType: {cloud_type},'
-        f' containerDiskInGb: 20, minMemoryInGb: 8, minVcpuCount: 2,'
+        f" containerDiskInGb: 20, minMemoryInGb: 8, minVcpuCount: 2,"
         f' ports: "{port}/http", startJupyter: false, startSsh: false'
-        '}) { id } }'
+        "}) { id } }"
     )
     resp = httpx.post(
         f"https://api.runpod.io/graphql?api_key={api_key}",
@@ -1055,12 +1091,12 @@ def _create_runpod_pod_set(
     pod_ids: dict[str, str] = {}
     for name, image, port in pods:
         mutation = (
-            'mutation { podFindAndDeployOnDemand(input: {'
+            "mutation { podFindAndDeployOnDemand(input: {"
             f' name: "{name}", imageName: "{image}",'
             f' gpuTypeId: "{gpu_type_id}", cloudType: {cloud_type},'
-            f' containerDiskInGb: 20, minMemoryInGb: 8, minVcpuCount: 2,'
+            f" containerDiskInGb: 20, minMemoryInGb: 8, minVcpuCount: 2,"
             f' ports: "{port}/http", startJupyter: false, startSsh: false'
-            '}) { id } }'
+            "}) { id } }"
         )
         resp = httpx.post(
             f"https://api.runpod.io/graphql?api_key={api_key}",
@@ -1235,9 +1271,9 @@ def _resume_existing_runpod_pods(api_key: str, region: str) -> tuple[str, str, s
 
     for name, (pod_id, _) in pods.items():
         mutation = (
-            'mutation { podResume(input: {'
+            "mutation { podResume(input: {"
             f' podId: "{pod_id}", gpuCount: 1'
-            '}) { id desiredStatus imageName } }'
+            "}) { id desiredStatus imageName } }"
         )
         resp = httpx.post(
             f"https://api.runpod.io/graphql?api_key={api_key}",
@@ -1249,16 +1285,33 @@ def _resume_existing_runpod_pods(api_key: str, region: str) -> tuple[str, str, s
         if "errors" in data:
             raise RuntimeError(f"RunPod error resuming {name}: {data['errors']}")
         status = data["data"]["podResume"].get("desiredStatus")
-        logger.info("normal_scaler: RunPod pod resumed for %s id=%s status=%s", name, pod_id, status)
+        logger.info(
+            "normal_scaler: RunPod pod resumed for %s id=%s status=%s", name, pod_id, status
+        )
 
     try:
         from shared.runpod_pods_state import iso_now_utc  # noqa: PLC0415
 
         bucket = os.environ.get("S3_BUCKET_NAME", "libraryai2")
         entries = [
-            {"role": "iep0", "pod_id": pods["iep0"][0], "created_at": iso_now_utc(), "source": "normal_scaler_existing"},
-            {"role": "iep1a", "pod_id": pods["iep1a"][0], "created_at": iso_now_utc(), "source": "normal_scaler_existing"},
-            {"role": "iep1b", "pod_id": pods["iep1b"][0], "created_at": iso_now_utc(), "source": "normal_scaler_existing"},
+            {
+                "role": "iep0",
+                "pod_id": pods["iep0"][0],
+                "created_at": iso_now_utc(),
+                "source": "normal_scaler_existing",
+            },
+            {
+                "role": "iep1a",
+                "pod_id": pods["iep1a"][0],
+                "created_at": iso_now_utc(),
+                "source": "normal_scaler_existing",
+            },
+            {
+                "role": "iep1b",
+                "pod_id": pods["iep1b"][0],
+                "created_at": iso_now_utc(),
+                "source": "normal_scaler_existing",
+            },
         ]
         _merge_put_runpod_pods_s3(
             region,
@@ -1266,7 +1319,10 @@ def _resume_existing_runpod_pods(api_key: str, region: str) -> tuple[str, str, s
             append_entries=entries,
             remove_pod_ids=frozenset(),
         )
-        logger.info("normal_scaler: existing RunPod pod state merged to s3://%s/ops/runpod-pods.json", bucket)
+        logger.info(
+            "normal_scaler: existing RunPod pod state merged to s3://%s/ops/runpod-pods.json",
+            bucket,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("normal_scaler: could not merge existing RunPod pod state to S3: %s", exc)
 
@@ -1278,10 +1334,18 @@ def _resume_existing_runpod_pods(api_key: str, region: str) -> tuple[str, str, s
 
 
 # Fields returned by describe_task_definition that must be stripped before re-registering.
-_TASK_DEF_READONLY_FIELDS = frozenset({
-    "taskDefinitionArn", "revision", "status", "requiresAttributes",
-    "compatibilities", "registeredAt", "registeredBy", "deregisteredAt",
-})
+_TASK_DEF_READONLY_FIELDS = frozenset(
+    {
+        "taskDefinitionArn",
+        "revision",
+        "status",
+        "requiresAttributes",
+        "compatibilities",
+        "registeredAt",
+        "registeredBy",
+        "deregisteredAt",
+    }
+)
 
 
 def _register_eep_worker_with_runpod_urls(
@@ -1295,8 +1359,9 @@ def _register_eep_worker_with_runpod_urls(
     RunPod URLs, register a new revision, and return its ARN.
     """
     resp = ecs_client.describe_task_definition(taskDefinition="libraryai-eep-worker")
-    task_def: dict = {k: v for k, v in resp["taskDefinition"].items()
-                      if k not in _TASK_DEF_READONLY_FIELDS}
+    task_def: dict = {
+        k: v for k, v in resp["taskDefinition"].items() if k not in _TASK_DEF_READONLY_FIELDS
+    }
 
     iep2a_url = os.environ.get("IEP2A_URL", "http://iep2a-v2:8004").strip()
     if not iep2a_url:
@@ -1336,9 +1401,9 @@ def _update_service(
     force_new: bool = False,
 ) -> bool:
     """Call ecs:UpdateService, logging success or failure."""
-    assert service not in _EXCLUDED_SERVICES, (
-        f"BUG: _update_service called for excluded service {service!r}"
-    )
+    assert (
+        service not in _EXCLUDED_SERVICES
+    ), f"BUG: _update_service called for excluded service {service!r}"
     kwargs: dict = {"cluster": cluster, "service": service, "desiredCount": desired}
     if task_def_arn:
         kwargs["taskDefinition"] = task_def_arn

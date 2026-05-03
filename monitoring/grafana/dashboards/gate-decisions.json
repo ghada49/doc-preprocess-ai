@@ -101,7 +101,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "avg(eep_auto_accept_rate)",
+                                           "expr":  "avg(eep_auto_accept_rate{job=\"eep\"})",
                                            "legendFormat":  "auto-accept rate",
                                            "refId":  "A"
                                        }
@@ -175,7 +175,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "avg(eep_structural_agreement_rate)",
+                                           "expr":  "avg(eep_structural_agreement_rate{job=\"eep\"})",
                                            "legendFormat":  "structural agreement",
                                            "refId":  "A"
                                        }
@@ -249,7 +249,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "avg(eep_layout_consensus_confidence)",
+                                           "expr":  "(sum(increase(eep_layout_consensus_confidence_sum[$__range])) or vector(0)) / clamp_min((sum(increase(eep_layout_consensus_confidence_count[$__range])) or vector(0)), 1)",
                                            "legendFormat":  "layout consensus",
                                            "refId":  "A"
                                        }
@@ -327,7 +327,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "sum(rate(iep1d_rectification_triggered_total[1h])) / sum(rate(eep_requests_total[1h]))",
+                                           "expr":  "(sum(increase(iep1d_rectification_triggered_total[1h])) or vector(0)) / clamp_min((sum(increase(eep_requests_total[1h])) or vector(0)), 1)",
                                            "legendFormat":  "rectification rate",
                                            "refId":  "A"
                                        }
@@ -395,7 +395,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "sum by (route) (rate(eep_geometry_selection_route_total[5m])) / sum(rate(eep_geometry_selection_route_total[5m]))",
+                                           "expr":  "sum by (route) (increase(eep_geometry_selection_route_total[$__range])) / scalar(clamp_min(sum(increase(eep_geometry_selection_route_total[$__range])), 1))",
                                            "legendFormat":  "{{route}}",
                                            "refId":  "A"
                                        }
@@ -451,7 +451,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "sum by (route) (rate(eep_artifact_validation_route_total[5m])) / sum(rate(eep_artifact_validation_route_total[5m]))",
+                                           "expr":  "sum by (route) (increase(eep_artifact_validation_route_total[$__range])) / scalar(clamp_min(sum(increase(eep_artifact_validation_route_total[$__range])), 1))",
                                            "legendFormat":  "{{route}}",
                                            "refId":  "A"
                                        }
@@ -537,7 +537,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "avg(eep_auto_accept_rate)",
+                                           "expr":  "avg(eep_auto_accept_rate{job=\"eep\"})",
                                            "legendFormat":  "auto-accept rate",
                                            "refId":  "A"
                                        },
@@ -546,7 +546,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "avg(eep_structural_agreement_rate)",
+                                           "expr":  "avg(eep_structural_agreement_rate{job=\"eep\"})",
                                            "legendFormat":  "structural agreement rate",
                                            "refId":  "B"
                                        },
@@ -555,7 +555,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "avg(eep_layout_consensus_confidence)",
+                                           "expr":  "(sum(rate(eep_layout_consensus_confidence_sum[$__rate_interval])) or vector(0)) / clamp_min((sum(rate(eep_layout_consensus_confidence_count[$__rate_interval])) or vector(0)), 0.000001)",
                                            "legendFormat":  "layout consensus confidence",
                                            "refId":  "C"
                                        }
@@ -628,7 +628,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "sum(rate(iep1d_rectification_triggered_total[1h])) / sum(rate(eep_requests_total[1h]))",
+                                           "expr":  "(sum(increase(iep1d_rectification_triggered_total[1h])) or vector(0)) / clamp_min((sum(increase(eep_requests_total[1h])) or vector(0)), 1)",
                                            "legendFormat":  "rectification fallback rate (1h)",
                                            "refId":  "A"
                                        },
@@ -637,7 +637,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "sum(rate(iep1d_rectification_triggered_total[30m])) / sum(rate(eep_requests_total[30m]))",
+                                           "expr":  "(sum(increase(iep1d_rectification_triggered_total[30m])) or vector(0)) / clamp_min((sum(increase(eep_requests_total[30m])) or vector(0)), 1)",
                                            "legendFormat":  "rectification fallback rate (30m)",
                                            "refId":  "B"
                                        }

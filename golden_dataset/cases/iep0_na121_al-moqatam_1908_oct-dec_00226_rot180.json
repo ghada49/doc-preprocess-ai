@@ -1,0 +1,14 @@
+{
+  "case_id": "iep0_na121_al-moqatam_1908_oct-dec_00226_rot180",
+  "model": "iep0",
+  "material_type": "newspaper",
+  "source_collection": "na121_al-moqatam",
+  "annotations": {
+    "expected_class": "newspaper"
+  },
+  "thresholds": {
+    "confidence_min": 0.7
+  },
+  "image_s3_key": "golden-dataset/iep0/newspaper/na121_al-moqatam_1908_oct-dec_00226_rot180.tif",
+  "image_sha256": "d7d1f7091146435ac9e81d23a2fdf7ca10922b83b82aaa66e5afa721a6ad09a1"
+}

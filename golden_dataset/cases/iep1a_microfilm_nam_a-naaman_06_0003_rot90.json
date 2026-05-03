@@ -1,0 +1,29 @@
+{
+  "case_id": "iep1a_microfilm_nam_a-naaman_06_0003_rot90",
+  "model": "iep1a",
+  "material_type": "microfilm",
+  "source_collection": "nam_a-naaman_06",
+  "image_s3_key": "golden-dataset/iep1a/microfilm/nam_a-naaman_06_0003_rot90.tif",
+  "image_sha256": "a1a9c893aa39e75cf1df128151da2c89d39fad2c84c2bbdaf3b786405577248f",
+  "split_expected": false,
+  "sub_page_count": 1,
+  "annotations": {
+    "bboxes": [
+      [
+        0.073548,
+        0.049487,
+        0.938373,
+        0.941597
+      ]
+    ],
+    "classes": [
+      0
+    ]
+  },
+  "thresholds": {
+    "iou_min": 0.75,
+    "confidence_min": 0.7
+  },
+  "created_by": "ghada",
+  "created_at": "2026-04-18"
+}

@@ -15,6 +15,7 @@ import {
   AlertCircle,
   CheckCircle2,
   CircleDashed,
+  Timer,
 } from "lucide-react";
 import {
   getDashboardSummary,
@@ -29,6 +30,12 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { formatPercent, formatScore } from "@/lib/utils";
 import { cn } from "@/lib/utils";
 import type { ServiceHealthRate } from "@/types/api";
+
+/** One decimal place for pages/hour tiles (stable for low volume). */
+function formatPagesPerHourOneDecimal(value: number | null | undefined): string | null {
+  if (value == null || Number.isNaN(value)) return null;
+  return (Math.round(value * 10) / 10).toFixed(1);
+}
 
 // ── Health rate row definitions ────────────────────────────────────────────────
 
@@ -75,7 +82,8 @@ const healthRateMeta: Array<{
     key: "human_review_throughput_rate",
     label: "Human Review Throughput",
     kind: "rate",
-    subtitle: "Human-corrected pages per active hour.",
+    subtitle:
+      "Human-corrected pages in the API window ÷ window hours (same wall-clock convention as Pages / Hour).",
   },
 ];
 
@@ -177,17 +185,25 @@ export default function AdminDashboardPage() {
           <p className="text-2xs font-medium text-slate-400 uppercase tracking-wide mb-2">
             Pipeline output
           </p>
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
+          <div className="grid grid-cols-2 sm:grid-cols-3 xl:grid-cols-5 gap-4">
             <KPICard
-              label="Pages / Hour"
-              value={
-                summary?.throughput_pages_per_hour != null
-                  ? Math.round(summary.throughput_pages_per_hour)
-                  : null
-              }
+              label="Delivery Rate — trailing 24h wall-clock"
+              value={formatPagesPerHourOneDecimal(summary?.trailing_wall_clock_pages_per_hour)}
               icon={Zap}
               iconColor="text-yellow-600"
-              sublabel="Active-hour average"
+              sublabel="Terminal completions in the last 24h ÷ 24 calendar hours"
+              loading={summaryLoading}
+            />
+            <KPICard
+              label="Active Processing Rate"
+              value={
+                summary?.trailing_active_pages_per_hour != null
+                  ? formatPagesPerHourOneDecimal(summary.trailing_active_pages_per_hour)
+                  : "Active time unavailable"
+              }
+              icon={Timer}
+              iconColor="text-amber-600"
+              sublabel="Same completions ÷ sum of JobPage.processing_time_ms (hours); needs full per-page timing"
               loading={summaryLoading}
             />
             <KPICard

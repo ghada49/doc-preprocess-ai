@@ -1,0 +1,14 @@
+{
+  "case_id": "iep0_aub_aco003575_000044_rot90",
+  "model": "iep0",
+  "material_type": "book",
+  "source_collection": "aub_aco003575",
+  "annotations": {
+    "expected_class": "book"
+  },
+  "thresholds": {
+    "confidence_min": 0.7
+  },
+  "image_s3_key": "golden-dataset/iep0/book/aub_aco003575_000044_rot90.tif",
+  "image_sha256": "5fd08d5eaf2f92d64c5702c07a00c4032b8b9b489564141a78e7de46292e3980"
+}

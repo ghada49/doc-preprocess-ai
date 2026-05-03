@@ -5,7 +5,6 @@ import type {
   PromotionAuditResponse,
   QueueStatusResponse,
   ServiceHealthResponse,
-  ServiceInventoryResponse,
   ModelGateComparisonsResponse,
 } from "@/types/api";
 
@@ -19,10 +18,6 @@ export function getServiceHealth(windowHours = 24): Promise<ServiceHealthRespons
 
 export function getQueueStatus(): Promise<QueueStatusResponse> {
   return apiGet<QueueStatusResponse>("/v1/admin/queue-status");
-}
-
-export function getServiceInventory(): Promise<ServiceInventoryResponse> {
-  return apiGet<ServiceInventoryResponse>("/v1/admin/service-inventory");
 }
 
 export function getDeploymentStatus(): Promise<DeploymentStatusResponse> {

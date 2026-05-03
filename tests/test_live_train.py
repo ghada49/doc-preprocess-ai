@@ -40,5 +40,5 @@ def test_manifest_missing_iep1a_key(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     (tmp_path / "cls").mkdir()
 
     monkeypatch.delenv("RETRAINING_IEP0_DATA_ROOT", raising=False)
-    with pytest.raises(RetrainingTrainConfigError, match="iep1a"):
+    with pytest.raises(RetrainingTrainConfigError, match="at least one"):
         lt._resolve_train_paths()

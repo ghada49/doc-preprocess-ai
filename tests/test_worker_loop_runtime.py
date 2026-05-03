@@ -961,6 +961,7 @@ class TestCallIep1eFailureHandling:
             cb=cb,
             ready_timeout_seconds=5.0,
             ready_poll_interval_seconds=1.0,
+            execution_timeout_seconds=180.0,
         )
 
         assert result is None
@@ -981,7 +982,7 @@ class TestCallIep1eFailureHandling:
         async def _fake_wait(*_a: object, **_kw: object) -> bool:
             return True
 
-        async def _fake_call(_url: str, _payload: object) -> object:
+        async def _fake_call(_url: str, _payload: object, **_kw: object) -> object:
             return {"unexpected_key": "no pages here"}  # will fail SemanticNormResponse.model_validate
 
         monkeypatch.setattr(worker_loop, "_wait_for_iep1e_ready", _fake_wait)
@@ -999,6 +1000,7 @@ class TestCallIep1eFailureHandling:
             cb=cb,
             ready_timeout_seconds=5.0,
             ready_poll_interval_seconds=1.0,
+            execution_timeout_seconds=180.0,
         )
 
         assert result is None
@@ -1034,6 +1036,7 @@ class TestCallIep1eFailureHandling:
             cb=cb,
             ready_timeout_seconds=5.0,
             ready_poll_interval_seconds=1.0,
+            execution_timeout_seconds=180.0,
         )
 
         assert result is None
@@ -1085,7 +1088,7 @@ class TestCallIep1eFailureHandling:
             "ordered_page_uris": ["s3://bucket/oriented/1.tiff"],
         }
 
-        async def _fake_call(_url: str, _payload: object) -> object:
+        async def _fake_call(_url: str, _payload: object, **_kw: object) -> object:
             return valid_payload
 
         monkeypatch.setattr(worker_loop, "_wait_for_iep1e_ready", _fake_wait)
@@ -1103,6 +1106,7 @@ class TestCallIep1eFailureHandling:
             cb=cb,
             ready_timeout_seconds=5.0,
             ready_poll_interval_seconds=1.0,
+            execution_timeout_seconds=180.0,
         )
 
         assert result is not None
@@ -1110,6 +1114,227 @@ class TestCallIep1eFailureHandling:
         assert result.reading_direction == "ltr"
         assert len(result.pages) == 1
         assert result.pages[0].sub_page_index == 0
+
+
+class TestCallIep1eTransientRetries:
+    """Transient SERVICE_ERROR retries with backoff before CB failure / fallback."""
+
+    @pytest.mark.asyncio
+    async def test_transient_disconnect_retries_then_succeeds(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from services.eep_worker.app import worker_loop
+        from shared.gpu.backend import BackendError, BackendErrorKind
+        from shared.schemas.semantic_norm import SemanticNormResponse
+
+        monkeypatch.setenv("IEP1E_TRANSIENT_RETRY_BASE_SECONDS", "0")
+        monkeypatch.setenv("IEP1E_TRANSIENT_MAX_RETRIES", "4")
+
+        cb_events: list[tuple[str, object]] = []
+
+        cb = SimpleNamespace(
+            allow_call=lambda: True,
+            record_failure=lambda kind: cb_events.append(("fail", kind)),
+            record_success=lambda: cb_events.append(("ok", None)),
+        )
+
+        async def _fake_wait(*_a: object, **_kw: object) -> bool:
+            return True
+
+        valid_payload = {
+            "reading_direction": "ltr",
+            "fallback_used": False,
+            "processing_time_ms": 1.0,
+            "warnings": [],
+            "pages": [
+                {
+                    "sub_page_index": 0,
+                    "oriented_uri": "s3://bucket/oriented/1.tiff",
+                    "original_uri": "s3://bucket/page/1.tiff",
+                    "orientation": {
+                        "best_rotation_deg": 0,
+                        "orientation_confident": True,
+                        "score_ratio": 1.5,
+                        "score_diff": 20.0,
+                        "script_evidence": {
+                            "n_boxes": 10,
+                            "n_chars": 50,
+                            "mean_conf": 0.9,
+                            "latin_ratio": 0.8,
+                            "arabic_ratio": 0.0,
+                            "garbage_ratio": 0.05,
+                        },
+                    },
+                }
+            ],
+            "ordered_page_uris": ["s3://bucket/oriented/1.tiff"],
+        }
+
+        call_count = 0
+
+        async def _fake_call(_url: str, _payload: object, **_kw: object) -> object:
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise BackendError(
+                    BackendErrorKind.SERVICE_ERROR,
+                    "Connection error calling http://iep1e:8007/v1/semantic-norm: "
+                    "Server disconnected without sending a response.",
+                )
+            return valid_payload
+
+        monkeypatch.setattr(worker_loop, "_wait_for_iep1e_ready", _fake_wait)
+        backend = SimpleNamespace(call=_fake_call)
+
+        result = await worker_loop._call_iep1e(
+            page_uris=["s3://bucket/page/1.tiff"],
+            x_centers=[100.0],
+            sub_page_indices=[0],
+            job_id="job-retry-ok",
+            page_number=1,
+            material_type="book",
+            endpoint="http://iep1e:8007/v1/semantic-norm",
+            backend=backend,
+            cb=cb,
+            ready_timeout_seconds=5.0,
+            ready_poll_interval_seconds=1.0,
+            execution_timeout_seconds=180.0,
+        )
+
+        assert call_count == 3
+        assert isinstance(result, SemanticNormResponse)
+        assert cb_events == [("ok", None)]
+
+    @pytest.mark.asyncio
+    async def test_non_transient_http_400_no_retry(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from services.eep_worker.app import worker_loop
+        from shared.gpu.backend import BackendError, BackendErrorKind
+
+        monkeypatch.setenv("IEP1E_TRANSIENT_RETRY_BASE_SECONDS", "0")
+        monkeypatch.setenv("IEP1E_TRANSIENT_MAX_RETRIES", "5")
+
+        cb_events: list[tuple[str, object]] = []
+        cb = SimpleNamespace(
+            allow_call=lambda: True,
+            record_failure=lambda kind: cb_events.append(("fail", kind)),
+            record_success=lambda: cb_events.append(("ok", None)),
+        )
+
+        async def _fake_wait(*_a: object, **_kw: object) -> bool:
+            return True
+
+        call_count = 0
+
+        async def _fake_call(_url: str, _payload: object, **_kw: object) -> object:
+            nonlocal call_count
+            call_count += 1
+            raise BackendError(
+                BackendErrorKind.SERVICE_ERROR,
+                "Service returned HTTP 400 from http://iep1e:8007/v1/semantic-norm: nope",
+            )
+
+        monkeypatch.setattr(worker_loop, "_wait_for_iep1e_ready", _fake_wait)
+        backend = SimpleNamespace(call=_fake_call)
+
+        result = await worker_loop._call_iep1e(
+            page_uris=["s3://bucket/page/1.tiff"],
+            x_centers=[100.0],
+            sub_page_indices=[0],
+            job_id="job-400",
+            page_number=1,
+            material_type="book",
+            endpoint="http://iep1e:8007/v1/semantic-norm",
+            backend=backend,
+            cb=cb,
+            ready_timeout_seconds=5.0,
+            ready_poll_interval_seconds=1.0,
+            execution_timeout_seconds=180.0,
+        )
+
+        assert call_count == 1
+        assert result is None
+        assert cb_events == [("fail", BackendErrorKind.SERVICE_ERROR)]
+
+    @pytest.mark.asyncio
+    async def test_transient_exhausted_records_failure_once(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from services.eep_worker.app import worker_loop
+        from shared.gpu.backend import BackendError, BackendErrorKind
+
+        monkeypatch.setenv("IEP1E_TRANSIENT_RETRY_BASE_SECONDS", "0")
+        monkeypatch.setenv("IEP1E_TRANSIENT_MAX_RETRIES", "2")
+
+        cb_events: list[tuple[str, object]] = []
+        cb = SimpleNamespace(
+            allow_call=lambda: True,
+            record_failure=lambda kind: cb_events.append(("fail", kind)),
+            record_success=lambda: cb_events.append(("ok", None)),
+        )
+
+        async def _fake_wait(*_a: object, **_kw: object) -> bool:
+            return True
+
+        call_count = 0
+
+        async def _fake_call(_url: str, _payload: object, **_kw: object) -> object:
+            nonlocal call_count
+            call_count += 1
+            raise BackendError(
+                BackendErrorKind.SERVICE_ERROR,
+                "Service returned HTTP 503 from http://iep1e:8007/v1/semantic-norm: gw",
+            )
+
+        monkeypatch.setattr(worker_loop, "_wait_for_iep1e_ready", _fake_wait)
+        backend = SimpleNamespace(call=_fake_call)
+
+        result = await worker_loop._call_iep1e(
+            page_uris=["s3://bucket/page/1.tiff"],
+            x_centers=[100.0],
+            sub_page_indices=[0],
+            job_id="job-503-exhaust",
+            page_number=1,
+            material_type="book",
+            endpoint="http://iep1e:8007/v1/semantic-norm",
+            backend=backend,
+            cb=cb,
+            ready_timeout_seconds=5.0,
+            ready_poll_interval_seconds=1.0,
+            execution_timeout_seconds=180.0,
+        )
+
+        assert call_count == 3
+        assert result is None
+        assert cb_events == [("fail", BackendErrorKind.SERVICE_ERROR)]
+
+
+def test_iep1e_transient_backend_error_classification() -> None:
+    from services.eep_worker.app.worker_loop import _iep1e_transient_backend_error
+    from shared.gpu.backend import BackendError, BackendErrorKind
+
+    assert _iep1e_transient_backend_error(
+        BackendError(
+            BackendErrorKind.SERVICE_ERROR,
+            "Connection error calling http://x: Server disconnected without sending a response.",
+        )
+    )
+    assert _iep1e_transient_backend_error(
+        BackendError(
+            BackendErrorKind.SERVICE_ERROR,
+            "Service returned HTTP 503 from http://x: busy",
+        )
+    )
+    assert not _iep1e_transient_backend_error(
+        BackendError(
+            BackendErrorKind.SERVICE_ERROR,
+            "Service returned HTTP 422 from http://x: bad",
+        )
+    )
+    assert not _iep1e_transient_backend_error(
+        BackendError(BackendErrorKind.WARM_INFERENCE_TIMEOUT, "slow"),
+    )
 
 
 class TestSplitIep1eNoneRegression:
@@ -1177,6 +1402,113 @@ class TestSplitIep1eNoneRegression:
             for _sp in (_split_sem_result.pages if _split_sem_result is not None else [])
         }
         assert _iep1e_by_sub == {0: fake_page}
+
+
+# ── iep1e execution-timeout regression ───────────────────────────────────────
+
+class TestIep1eExecutionTimeoutConfig:
+    """
+    _iep1e_execution_timeout() must default to 180 s (not the shared 30 s
+    EXECUTION_TIMEOUT_SECONDS) so that 4-rotation PaddleOCR inference does
+    not time out on 1-vCPU Fargate.
+    """
+
+    def test_default_is_180(self) -> None:
+        from services.eep_worker.app.worker_loop import _iep1e_execution_timeout
+        from types import SimpleNamespace
+        cfg = SimpleNamespace()
+        assert _iep1e_execution_timeout(cfg) == 180.0
+
+    def test_env_override_respected(self) -> None:
+        from services.eep_worker.app.worker_loop import _iep1e_execution_timeout
+        from types import SimpleNamespace
+        cfg = SimpleNamespace(iep1e_execution_timeout_seconds=300.0)
+        assert _iep1e_execution_timeout(cfg) == 300.0
+
+    def test_returns_float(self) -> None:
+        from services.eep_worker.app.worker_loop import _iep1e_execution_timeout
+        from types import SimpleNamespace
+        cfg = SimpleNamespace(iep1e_execution_timeout_seconds=120)
+        result = _iep1e_execution_timeout(cfg)
+        assert isinstance(result, float)
+
+
+class TestCallIep1ePassesExecutionTimeout:
+    """
+    _call_iep1e() must forward execution_timeout_seconds to backend.call()
+    so the HTTP client enforces the right timeout, not the shared 30 s default.
+    """
+
+    @pytest.mark.asyncio
+    async def test_execution_timeout_forwarded_to_backend(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from types import SimpleNamespace
+        from services.eep_worker.app import worker_loop
+
+        recorded: dict = {}
+
+        async def _fake_wait(*_a: object, **_kw: object) -> bool:
+            return True
+
+        async def _fake_call(_url: str, _payload: object, **kw: object) -> object:
+            recorded.update(kw)
+            return {
+                "reading_direction": "ltr",
+                "fallback_used": False,
+                "processing_time_ms": 1.0,
+                "warnings": [],
+                "pages": [
+                    {
+                        "sub_page_index": 0,
+                        "oriented_uri": "s3://b/1.tiff",
+                        "original_uri": "s3://b/1.tiff",
+                        "orientation": {
+                            "best_rotation_deg": 0,
+                            "orientation_confident": True,
+                            "score_ratio": 1.0,
+                            "score_diff": 0.0,
+                            "script_evidence": {
+                                "n_boxes": 1,
+                                "n_chars": 1,
+                                "mean_conf": 1.0,
+                                "latin_ratio": 1.0,
+                                "arabic_ratio": 0.0,
+                                "garbage_ratio": 0.0,
+                            },
+                        },
+                    }
+                ],
+                "ordered_page_uris": ["s3://b/1.tiff"],
+            }
+
+        cb = SimpleNamespace(
+            allow_call=lambda: True,
+            record_failure=lambda _k: None,
+            record_success=lambda: None,
+        )
+        monkeypatch.setattr(worker_loop, "_wait_for_iep1e_ready", _fake_wait)
+        backend = SimpleNamespace(call=_fake_call)
+
+        await worker_loop._call_iep1e(
+            page_uris=["s3://b/1.tiff"],
+            x_centers=[100.0],
+            sub_page_indices=[0],
+            job_id="job-timeout-test",
+            page_number=1,
+            material_type="book",
+            endpoint="http://iep1e:8007/v1/semantic-norm",
+            backend=backend,
+            cb=cb,
+            ready_timeout_seconds=5.0,
+            ready_poll_interval_seconds=1.0,
+            execution_timeout_seconds=180.0,
+        )
+
+        assert "execution_timeout_seconds" in recorded, (
+            "backend.call() was not passed execution_timeout_seconds"
+        )
+        assert recorded["execution_timeout_seconds"] == 180.0
 
 
 if __name__ == "__main__":

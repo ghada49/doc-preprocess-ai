@@ -122,6 +122,14 @@ def test_dataset_builder_corrected_export_min_samples_not_met(tmp_path: Path) ->
     assert proc.returncode == 0, proc.stderr
     payload = json.loads(proc.stdout)
     assert payload["status"] == "min_samples_not_met"
+    assert payload["minimums"] == {
+        "iep1a_book": 10,
+        "iep1a_newspaper": 10,
+        "iep1a_microfilm": 10,
+        "iep1b_book": 10,
+        "iep1b_newspaper": 10,
+        "iep1b_microfilm": 10,
+    }
 
 
 def test_resolve_dimensions_prefers_correction_wh() -> None:

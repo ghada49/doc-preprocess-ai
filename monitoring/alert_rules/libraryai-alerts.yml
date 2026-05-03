@@ -37,8 +37,8 @@ groups:
       # Rectification fallback rate exceeds 25% — persistence 24h
       - alert: EscalationRateAnomaly
         expr: |
-          rate(iep1d_rectification_triggered_total[1h])
-          / rate(eep_requests_total[1h]) > 0.25
+          (sum(increase(iep1d_rectification_triggered_total[1h])) or vector(0))
+          / clamp_min((sum(increase(eep_requests_total[1h])) or vector(0)), 1) > 0.25
         for: 24h
         labels:
           category: retraining_trigger
@@ -200,8 +200,8 @@ groups:
       # IEP1D rectification failure rate — informational (not a retraining trigger threshold)
       - alert: HighRectificationFailureRate
         expr: |
-          rate(iep1d_rectification_triggered_total[30m])
-          / rate(eep_requests_total[30m]) > 0.15
+          (sum(increase(iep1d_rectification_triggered_total[30m])) or vector(0))
+          / clamp_min((sum(increase(eep_requests_total[30m])) or vector(0)), 1) > 0.15
         for: 30m
         labels:
           category: operational

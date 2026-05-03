@@ -33,7 +33,8 @@ RUN uv pip install --system \
     "python-jose[cryptography]>=3.3" \
     "python-multipart>=0.0.9" \
     "PyYAML>=6.0" \
-    "bcrypt>=4.0"
+    "bcrypt>=4.0" \
+    "mlflow>=2.12"
 
 COPY shared/ ./shared/
 COPY services/eep/ ./services/eep/

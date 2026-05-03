@@ -206,9 +206,9 @@ export default function ModelLifecyclePage() {
               <p className={cn("text-xs mt-0.5",
                 deployment.feature_flags.retraining_mode === "stub" ? "text-amber-700" : "text-emerald-700"
               )}>
-                {deployment.feature_flags.retraining_mode === "stub"
-                  ? "Live model training is intentionally disabled. The full promotion / rollback / gate pipeline is implemented and tested. Training compute is stubbed pending GPU budget and dataset validation."
-                  : "Live training is active. New model versions are trained against the full dataset pipeline."}
+                {deployment.feature_flags.retraining_mode === "live"
+                  ? "Live training is active. New model versions are trained on the retraining worker against the full corrected-dataset pipeline."
+                  : `Retraining worker is in ${deployment.feature_flags.retraining_mode} mode. Set LIBRARYAI_RETRAINING_TRAIN=live on the retraining-worker ECS task to enable real training.`}
               </p>
             </div>
           </div>

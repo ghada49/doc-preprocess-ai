@@ -18,6 +18,10 @@ All metric names and types match spec Section 12.3 exactly.
 
 from __future__ import annotations
 
+import inspect
+from collections.abc import Callable
+from typing import Any
+
 from fastapi import APIRouter
 from fastapi.responses import Response
 from prometheus_client import CONTENT_TYPE_LATEST, Counter, Gauge, Histogram, generate_latest
@@ -421,11 +425,34 @@ SHADOW_CONF_DELTA = Histogram(
     buckets=_CONF_DELTA_BUCKETS,
 )
 
+# ── Retraining worker metrics ─────────────────────────────────────────────────
+
+RETRAINING_JOBS_STARTED = Counter(
+    "retraining_jobs_started",
+    "Retraining tasks started by the retraining worker",
+)
+
+RETRAINING_JOBS_COMPLETED = Counter(
+    "retraining_jobs_completed",
+    "Retraining tasks completed successfully by the retraining worker",
+)
+
+RETRAINING_JOBS_FAILED = Counter(
+    "retraining_jobs_failed",
+    "Retraining tasks that failed in the retraining worker",
+)
+
+RETRAINING_JOB_DURATION_SECONDS = Histogram(
+    "retraining_job_duration_seconds",
+    "Retraining task wall-clock duration in seconds",
+    buckets=[0.1, 1.0, 5.0, 15.0, 30.0, 60.0, 300.0, 900.0, 1800.0, 3600.0, 7200.0],
+)
+
 
 # ── /metrics endpoint factory ─────────────────────────────────────────────────
 
 
-def make_metrics_router() -> APIRouter:
+def make_metrics_router(before_collect: Callable[[], Any] | None = None) -> APIRouter:
     """
     Return an APIRouter that mounts ``GET /metrics`` (Prometheus text format).
     The endpoint is excluded from the OpenAPI schema.
@@ -434,6 +461,10 @@ def make_metrics_router() -> APIRouter:
 
     @router.get("/metrics", include_in_schema=False, summary="Prometheus metrics")
     async def metrics() -> Response:
+        if before_collect is not None:
+            result = before_collect()
+            if inspect.isawaitable(result):
+                await result
         return Response(generate_latest(), media_type=CONTENT_TYPE_LATEST)
 
     return router

@@ -53,6 +53,22 @@ scrape_configs:
       - targets: ["retraining-worker:9104"]
 
   # ── IEP services ──────────────────────────────────────────────────────────
+  # IEP0 / IEP1A / IEP1B: histograms (geometry confidence, TTA, etc.) are
+  # observed in-process on these GPU services (see services/iep1a/app/inference.py).
+  # Without scrape targets here, Grafana "LibraryAI - Model Signals" shows NO DATA
+  # for IEP1 panels while IEP2 (scraped below) still works.
+  - job_name: iep0
+    static_configs:
+      - targets: ["iep0:8006"]
+
+  - job_name: iep1a
+    static_configs:
+      - targets: ["iep1a:8001"]
+
+  - job_name: iep1b
+    static_configs:
+      - targets: ["iep1b:8002"]
+
   - job_name: iep1d
     static_configs:
       - targets: ["iep1d:8003"]

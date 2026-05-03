@@ -81,7 +81,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "rate(eep_requests_total[5m])",
+                                           "expr":  "sum(rate(eep_requests_total[$__rate_interval])) or on() vector(0)",
                                            "legendFormat":  "EEP requests/s",
                                            "refId":  "A"
                                        },
@@ -90,7 +90,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "rate(shadow_tasks_processed_total[5m])",
+                                           "expr":  "sum(rate(shadow_tasks_processed_total[$__rate_interval])) or on() vector(0)",
                                            "legendFormat":  "shadow tasks/s",
                                            "refId":  "B"
                                        },
@@ -99,7 +99,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "rate(shadow_tasks_enqueued_total[5m])",
+                                           "expr":  "sum(rate(shadow_tasks_enqueued_total[$__rate_interval])) or on() vector(0)",
                                            "legendFormat":  "shadow enqueued/s",
                                            "refId":  "C"
                                        }
@@ -172,7 +172,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "rate(shadow_tasks_failed_total[5m]) / rate(shadow_tasks_processed_total[5m])",
+                                           "expr":  "(sum(increase(shadow_tasks_failed_total[$__range])) or on() vector(0)) / clamp_min((sum(increase(shadow_tasks_processed_total[$__range])) or on() vector(0)), 1)",
                                            "legendFormat":  "shadow failure rate",
                                            "refId":  "A"
                                        }
@@ -238,7 +238,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "increase(shadow_tasks_enqueued_total[5m]) - increase(shadow_tasks_processed_total[5m])",
+                                           "expr":  "(sum(increase(shadow_tasks_enqueued_total[$__range])) or on() vector(0)) - (sum(increase(shadow_tasks_processed_total[$__range])) or on() vector(0))",
                                            "legendFormat":  "backlog delta (5m window)",
                                            "refId":  "A"
                                        }
@@ -321,7 +321,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "histogram_quantile(0.50, rate(iep1a_gpu_inference_seconds_bucket[5m]))",
+                                           "expr":  "histogram_quantile(0.50, sum(increase(iep1a_gpu_inference_seconds_bucket[$__range])) by (le))",
                                            "legendFormat":  "IEP1A p50",
                                            "refId":  "A"
                                        },
@@ -330,7 +330,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "histogram_quantile(0.95, rate(iep1a_gpu_inference_seconds_bucket[5m]))",
+                                           "expr":  "histogram_quantile(0.95, sum(increase(iep1a_gpu_inference_seconds_bucket[$__range])) by (le))",
                                            "legendFormat":  "IEP1A p95",
                                            "refId":  "B"
                                        },
@@ -339,7 +339,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "histogram_quantile(0.50, rate(iep1b_gpu_inference_seconds_bucket[5m]))",
+                                           "expr":  "histogram_quantile(0.50, sum(increase(iep1b_gpu_inference_seconds_bucket[$__range])) by (le))",
                                            "legendFormat":  "IEP1B p50",
                                            "refId":  "C"
                                        },
@@ -348,12 +348,12 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "histogram_quantile(0.95, rate(iep1b_gpu_inference_seconds_bucket[5m]))",
+                                           "expr":  "histogram_quantile(0.95, sum(increase(iep1b_gpu_inference_seconds_bucket[$__range])) by (le))",
                                            "legendFormat":  "IEP1B p95",
                                            "refId":  "D"
                                        }
                                    ],
-                       "title":  "IEP1A/B GPU Inference Latency (p50 / p95)",
+                       "title":  "IEP1A/B GPU Inference Latency (selected range)",
                        "type":  "timeseries"
                    },
                    {
@@ -402,7 +402,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "histogram_quantile(0.50, rate(iep1c_blur_score_bucket[5m]))",
+                                           "expr":  "histogram_quantile(0.50, sum(increase(iep1c_blur_score_bucket[$__range])) by (le))",
                                            "legendFormat":  "IEP1C blur p50",
                                            "refId":  "A"
                                        },
@@ -411,7 +411,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "histogram_quantile(0.95, rate(iep1c_skew_residual_bucket[5m]))",
+                                           "expr":  "histogram_quantile(0.95, sum(increase(iep1c_skew_residual_bucket[$__range])) by (le))",
                                            "legendFormat":  "IEP1C skew p95",
                                            "refId":  "B"
                                        },
@@ -420,7 +420,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "histogram_quantile(0.50, rate(iep1d_gpu_inference_seconds_bucket[5m]))",
+                                           "expr":  "histogram_quantile(0.50, sum(increase(iep1d_gpu_inference_seconds_bucket[$__range])) by (le))",
                                            "legendFormat":  "IEP1D p50",
                                            "refId":  "C"
                                        },
@@ -429,12 +429,12 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "histogram_quantile(0.95, rate(iep1d_gpu_inference_seconds_bucket[5m]))",
+                                           "expr":  "histogram_quantile(0.95, sum(increase(iep1d_gpu_inference_seconds_bucket[$__range])) by (le))",
                                            "legendFormat":  "IEP1D p95",
                                            "refId":  "D"
                                        }
                                    ],
-                       "title":  "IEP1C / IEP1D Latency (p50 / p95)",
+                       "title":  "IEP1C Quality / IEP1D Latency (selected range)",
                        "type":  "timeseries"
                    },
                    {
@@ -495,7 +495,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "rate(retraining_jobs_started_total[5m])",
+                                           "expr":  "sum(rate(retraining_jobs_started_total[$__rate_interval])) or on() vector(0)",
                                            "legendFormat":  "started/s",
                                            "refId":  "A"
                                        },
@@ -504,7 +504,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "rate(retraining_jobs_completed_total[5m])",
+                                           "expr":  "sum(rate(retraining_jobs_completed_total[$__rate_interval])) or on() vector(0)",
                                            "legendFormat":  "completed/s",
                                            "refId":  "B"
                                        },
@@ -513,7 +513,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "rate(retraining_jobs_failed_total[5m])",
+                                           "expr":  "sum(rate(retraining_jobs_failed_total[$__rate_interval])) or on() vector(0)",
                                            "legendFormat":  "failed/s",
                                            "refId":  "C"
                                        }
@@ -567,7 +567,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "histogram_quantile(0.50, rate(retraining_job_duration_seconds_bucket[5m]))",
+                                           "expr":  "histogram_quantile(0.50, sum(increase(retraining_job_duration_seconds_bucket[$__range])) by (le))",
                                            "legendFormat":  "p50",
                                            "refId":  "A"
                                        },
@@ -576,7 +576,7 @@
                                                               "type":  "prometheus",
                                                               "uid":  "prometheus"
                                                           },
-                                           "expr":  "histogram_quantile(0.95, rate(retraining_job_duration_seconds_bucket[5m]))",
+                                           "expr":  "histogram_quantile(0.95, sum(increase(retraining_job_duration_seconds_bucket[$__range])) by (le))",
                                            "legendFormat":  "p95",
                                            "refId":  "B"
                                        }

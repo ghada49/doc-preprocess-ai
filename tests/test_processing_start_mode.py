@@ -22,8 +22,7 @@ import os
 import threading
 import time
 import unittest
-from unittest.mock import MagicMock, call, patch
-
+from unittest.mock import MagicMock, patch
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
@@ -166,8 +165,9 @@ class TestScaleUpServiceList(unittest.TestCase):
 
         with patch.dict(os.environ, env, clear=False):
             with patch("boto3.client", return_value=mock_ecs):
-                from services.eep.app.scaling import normal_scaler
                 import importlib
+
+                from services.eep.app.scaling import normal_scaler
                 importlib.reload(normal_scaler)  # reload so env vars are re-read
                 with patch.object(
                     normal_scaler,
@@ -183,7 +183,12 @@ class TestScaleUpServiceList(unittest.TestCase):
                         "_register_eep_worker_with_runpod_urls",
                         return_value="arn:aws:ecs:us-east-1:123:task-definition/libraryai-eep-worker:2",
                     ):
-                        normal_scaler._do_scale_up()
+                        with patch.object(
+                            normal_scaler,
+                            "_has_shadow_candidate",
+                            return_value=True,
+                        ):
+                            normal_scaler._do_scale_up()
 
         return mock_ecs
 
@@ -237,6 +242,7 @@ class TestScaleUpServiceList(unittest.TestCase):
     def test_runpod_pods_created_when_api_key_set(self):
         """When RUNPOD_API_KEY is set, _create_runpod_pods is called for iep0/iep1a/iep1b."""
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)  # reload before patching so reload doesn't undo the patch
 
@@ -285,6 +291,7 @@ class TestScaleUpServiceList(unittest.TestCase):
     def test_runpod_pods_skipped_when_no_api_key(self):
         """When RUNPOD_API_KEY is absent, _create_runpod_pods is not called."""
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -296,6 +303,7 @@ class TestScaleUpServiceList(unittest.TestCase):
     def test_runpod_startup_failure_aborts_without_starting_workers(self):
         """RunPod create failures must not start workers with stale ECS DNS URLs."""
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -327,6 +335,7 @@ class TestScaleUpServiceList(unittest.TestCase):
         desired>=1 AND running>=1.
         """
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -360,6 +369,7 @@ class TestScaleUpServiceList(unittest.TestCase):
     def test_aws_startup_failure_terminates_created_runpod_pods(self):
         """If AWS startup fails after pod creation, the created RunPod pods are terminated."""
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -408,6 +418,7 @@ class TestScaleUpServiceList(unittest.TestCase):
 
     def test_runpod_gpu_candidates_normalize_aliases_and_fallbacks(self):
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -425,6 +436,7 @@ class TestScaleUpServiceList(unittest.TestCase):
 
     def test_runpod_cloud_type_normalizes_security_alias(self):
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -433,6 +445,7 @@ class TestScaleUpServiceList(unittest.TestCase):
 
     def test_runpod_cloud_candidates_default_to_both_pools(self):
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -441,6 +454,7 @@ class TestScaleUpServiceList(unittest.TestCase):
 
     def test_runpod_pod_mode_invalid_defaults_to_create(self):
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -484,6 +498,7 @@ class TestCreateRunPodPodWithFallback(unittest.TestCase):
 
     def _call(self, side_effects, gpu_types=None, cloud_types=None):
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -532,6 +547,7 @@ class TestCreateRunPodPodWithFallback(unittest.TestCase):
     def test_non_supply_error_propagates_immediately(self):
         """Auth failures and other non-capacity errors must not try the next GPU."""
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -558,6 +574,7 @@ class TestCreateRunPodPodWithFallback(unittest.TestCase):
 
     def test_gpu_types_empty_raises(self):
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -573,6 +590,7 @@ class TestCreateRunPodPodWithFallback(unittest.TestCase):
 
     def test_runpod_gpu_types_empty_env_uses_defaults(self):
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -585,6 +603,7 @@ class TestCreateRunPodPodWithFallback(unittest.TestCase):
 
     def test_runpod_rest_create_uses_gpu_type_ids_payload(self):
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
 
@@ -634,6 +653,7 @@ class TestNormalProcessingAlreadyActive(unittest.TestCase):
 
     def setUp(self):
         import importlib
+
         from services.eep.app.scaling import normal_scaler
         importlib.reload(normal_scaler)
         self.normal_scaler = normal_scaler
@@ -928,6 +948,7 @@ class TestDrainIgnoresHumanReviewStates(unittest.TestCase):
     def setUp(self):
         # Re-import to get fresh module state
         import importlib
+
         import scripts.ecs_scaler.drain_monitor as dm
         importlib.reload(dm)
         self.dm = dm
@@ -970,6 +991,7 @@ class TestDrainWaitsForActiveWork(unittest.TestCase):
 
     def setUp(self):
         import importlib
+
         import scripts.ecs_scaler.drain_monitor as dm
         importlib.reload(dm)
         self.dm = dm
@@ -1059,6 +1081,7 @@ class TestDrainMonitorSingleShotModes(unittest.TestCase):
 
     def setUp(self):
         import importlib
+
         import scripts.ecs_scaler.drain_monitor as dm
         importlib.reload(dm)
         self.dm = dm
@@ -1182,6 +1205,7 @@ class TestDrainMonitorActiveWorkDiagnostics(unittest.TestCase):
 
     def setUp(self):
         import importlib
+
         import scripts.ecs_scaler.drain_monitor as dm
         importlib.reload(dm)
         self.dm = dm
@@ -1397,6 +1421,193 @@ class TestIep1dPreWarmInvariant(unittest.TestCase):
         mock_ecs = MagicMock()
         with self.assertRaises(AssertionError):
             _update_service(mock_ecs, "test-cluster", "libraryai-retraining-worker", 1)
+
+
+# ── Service Connect config regression ─────────────────────────────────────────
+
+class TestIep1dServiceConnectConfig(unittest.TestCase):
+    """
+    iep1d must be present in _SERVICE_CONNECT_CONFIGS so that every
+    update-service call for libraryai-iep1d includes the Service Connect
+    block that registers the short discovery name ``iep1d`` in the mesh.
+    Without this entry the Service Connect endpoint for IEP1D is missing.
+    """
+
+    def _cfg(self):
+        from services.eep.app.scaling.normal_scaler import _SERVICE_CONNECT_CONFIGS
+        return _SERVICE_CONNECT_CONFIGS["libraryai-iep1d"]
+
+    def test_iep1d_in_service_connect_configs(self):
+        from services.eep.app.scaling.normal_scaler import _SERVICE_CONNECT_CONFIGS
+        self.assertIn("libraryai-iep1d", _SERVICE_CONNECT_CONFIGS)
+
+    def test_iep1d_service_connect_enabled(self):
+        self.assertTrue(self._cfg()["enabled"])
+
+    def test_iep1d_service_connect_namespace(self):
+        self.assertEqual(self._cfg()["namespace"], "libraryai.local")
+
+    def test_iep1d_service_connect_port_name(self):
+        svc = self._cfg()["services"][0]
+        self.assertEqual(svc["portName"], "http")
+
+    def test_iep1d_service_connect_discovery_name(self):
+        svc = self._cfg()["services"][0]
+        self.assertEqual(svc["discoveryName"], "iep1d")
+
+    def test_iep1d_service_connect_client_alias_port(self):
+        alias = self._cfg()["services"][0]["clientAliases"][0]
+        self.assertEqual(alias["port"], 8003)
+
+    def test_iep1d_service_connect_client_alias_dns(self):
+        alias = self._cfg()["services"][0]["clientAliases"][0]
+        self.assertEqual(alias["dnsName"], "iep1d")
+
+    def test_update_service_includes_service_connect_for_iep1d(self):
+        """_update_service must inject serviceConnectConfiguration for iep1d."""
+        from services.eep.app.scaling.normal_scaler import _update_service
+        mock_ecs = MagicMock()
+        _update_service(mock_ecs, "test-cluster", "libraryai-iep1d", 1)
+        call_kwargs = mock_ecs.update_service.call_args[1]
+        self.assertIn("serviceConnectConfiguration", call_kwargs)
+        sc = call_kwargs["serviceConnectConfiguration"]
+        self.assertTrue(sc["enabled"])
+        self.assertEqual(sc["namespace"], "libraryai.local")
+
+
+# ── iep1d task def port mapping regression ────────────────────────────────────
+
+class TestIep1dTaskDefPortMappings(unittest.TestCase):
+    """
+    iep1d-task-def.json must declare portMappings with name='http' and
+    containerPort=8003 to match the Service Connect portName='http' in
+    _SERVICE_CONNECT_CONFIGS.  If the names diverge ECS rejects the
+    update-service call with a validation error.
+    """
+
+    def _task_def(self):
+        import json
+        import pathlib
+        path = pathlib.Path(__file__).parent.parent / "k8s" / "ecs" / "iep1d-task-def.json"
+        return json.loads(path.read_text())
+
+    def test_iep1d_task_def_has_port_mappings(self):
+        container = self._task_def()["containerDefinitions"][0]
+        self.assertIn("portMappings", container)
+        self.assertTrue(len(container["portMappings"]) > 0)
+
+    def test_iep1d_task_def_port_name_is_http(self):
+        container = self._task_def()["containerDefinitions"][0]
+        names = [pm.get("name") for pm in container["portMappings"]]
+        self.assertIn("http", names)
+
+    def test_iep1d_task_def_container_port_is_8003(self):
+        container = self._task_def()["containerDefinitions"][0]
+        http_pm = next(
+            pm for pm in container["portMappings"] if pm.get("name") == "http"
+        )
+        self.assertEqual(http_pm["containerPort"], 8003)
+
+
+# ── eep-worker task def: IEP1D URLs must use Service Connect short name iep1d ─
+
+class TestEepWorkerTaskDefIep1dUrls(unittest.TestCase):
+    """
+    IEP1D readiness polls IEP1D_READY_URL; rectify uses IEP1D_URL. The FQDN
+    ``iep1d.libraryai.local`` does not resolve from Fargate tasks in this mesh
+    (gaierror); both env vars must use the short host ``iep1d``.
+    """
+
+    def _task_def(self):
+        import json
+        import pathlib
+
+        path = pathlib.Path(__file__).parent.parent / "k8s" / "ecs" / "eep-worker-task-def.json"
+        return json.loads(path.read_text())
+
+    @staticmethod
+    def _env_map(td: dict) -> dict[str, str]:
+        env_list = td["containerDefinitions"][0]["environment"]
+        return {e["name"]: e["value"] for e in env_list}
+
+    def test_iep1d_ready_url_does_not_use_libraryai_local_fqdn(self):
+        env = self._env_map(self._task_def())
+        ready = env.get("IEP1D_READY_URL", "")
+        self.assertNotIn(
+            "iep1d.libraryai.local",
+            ready,
+            "IEP1D_READY_URL must not use iep1d.libraryai.local (DNS fails in mesh)",
+        )
+
+    def test_iep1d_ready_and_rectify_urls_share_iep1d_host(self):
+        from urllib.parse import urlparse
+
+        env = self._env_map(self._task_def())
+        ready_url = env.get("IEP1D_READY_URL", "")
+        rectify_base = env.get("IEP1D_URL", "")
+        self.assertTrue(ready_url, "IEP1D_READY_URL must be set")
+        self.assertTrue(rectify_base, "IEP1D_URL must be set")
+        h_ready = urlparse(ready_url).hostname
+        h_rect = urlparse(rectify_base).hostname
+        self.assertEqual(h_ready, "iep1d", f"IEP1D_READY_URL host was {h_ready!r}")
+        self.assertEqual(h_rect, "iep1d", f"IEP1D_URL host was {h_rect!r}")
+        self.assertEqual(
+            h_ready,
+            h_rect,
+            "IEP1D_READY_URL and IEP1D_URL must use the same hostname for DNS consistency",
+        )
+
+
+# ── iep1e task def sizing + health check regression (Fargate / semantic-norm) ─
+
+class TestIep1eTaskDefHealthAndSizing(unittest.TestCase):
+    """
+    libraryai-iep1e task definition: CPU/memory for long Paddle/OCR work and a
+    health probe that tolerates load without depending on curl or probing /ready.
+    """
+
+    def _task_def(self):
+        import json
+        import pathlib
+
+        path = pathlib.Path(__file__).parent.parent / "k8s" / "ecs" / "iep1e-task-def.json"
+        return json.loads(path.read_text())
+
+    def test_iep1e_task_level_cpu_2048(self):
+        self.assertEqual(self._task_def()["cpu"], "2048")
+
+    def test_iep1e_task_level_memory_8192(self):
+        self.assertEqual(self._task_def()["memory"], "8192")
+
+    def test_iep1e_health_check_targets_health_not_ready(self):
+        td = self._task_def()
+        cmd_parts = td["containerDefinitions"][0]["healthCheck"]["command"]
+        joined = " ".join(cmd_parts)
+        self.assertIn("127.0.0.1:8007/health", joined)
+        self.assertNotIn("/ready", joined)
+
+    def test_iep1e_health_check_does_not_use_curl(self):
+        td = self._task_def()
+        joined = " ".join(td["containerDefinitions"][0]["healthCheck"]["command"])
+        self.assertNotIn("curl", joined.lower())
+
+    def test_iep1e_health_check_uses_python_urllib(self):
+        td = self._task_def()
+        joined = " ".join(td["containerDefinitions"][0]["healthCheck"]["command"])
+        self.assertIn("urllib.request", joined)
+        self.assertIn("python -c", joined)
+
+    def test_iep1e_health_check_timeout_at_least_10(self):
+        hc = self._task_def()["containerDefinitions"][0]["healthCheck"]
+        self.assertGreaterEqual(hc["timeout"], 10)
+
+    def test_iep1e_health_check_retries_at_least_5(self):
+        hc = self._task_def()["containerDefinitions"][0]["healthCheck"]
+        self.assertGreaterEqual(hc["retries"], 5)
+
+    def test_iep1e_health_check_start_period_at_least_300(self):
+        hc = self._task_def()["containerDefinitions"][0]["healthCheck"]
+        self.assertGreaterEqual(hc["startPeriod"], 300)
 
 
 if __name__ == "__main__":

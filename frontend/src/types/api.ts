@@ -94,6 +94,12 @@ export interface CreateJobResponse {
   created_at: string;
 }
 
+export interface JobActionResponse {
+  job_id: string;
+  status: JobStatus | "deleted";
+  affected_pages: number;
+}
+
 export interface JobSummary {
   job_id: string;
   collection_id: string;
@@ -453,32 +459,6 @@ export interface QueueStatusResponse {
   as_of: string;
 }
 
-// ---- Admin — Service Inventory -------------------------------------------------------
-
-export interface ServiceHealthSignal {
-  total_invocations: number;
-  success_count: number;
-  error_count: number;
-  success_rate: number | null;
-  last_invoked_at: string | null;
-  p95_latency_ms: number | null;
-}
-
-export interface ServiceInventoryItem {
-  service_name: string;
-  role: string;
-  deployment_type: string;
-  port: number | null;
-  model_applicable: boolean;
-  health_signal: ServiceHealthSignal | null;
-}
-
-export interface ServiceInventoryResponse {
-  items: ServiceInventoryItem[];
-  window_hours: number;
-  as_of: string;
-}
-
 // ---- Admin — Deployment Status -------------------------------------------------------
 
 export interface FeatureFlags {
@@ -547,7 +527,8 @@ export interface PromotionAuditResponse {
 // ---- Admin -------------------------------------------------------
 
 export interface DashboardSummary {
-  throughput_pages_per_hour: number | null;
+  trailing_wall_clock_pages_per_hour: number | null;
+  trailing_active_pages_per_hour: number | null;
   auto_accept_rate: number | null;
   structural_agreement_rate: number | null;
   pending_corrections_count: number;
@@ -725,6 +706,16 @@ export interface RetrainingStatusResponse {
   recently_completed: RetrainingJobSummary[];
   trigger_cooldowns: TriggerCooldown[];
   as_of: string;
+}
+
+export interface ManualRetrainingResponse {
+  trigger_id: string;
+  trigger_type: string;
+  status: string;
+  worker_start_status: string;
+  worker_start_message: string;
+  worker_external_id: string | null;
+  message: string;
 }
 
 // ---- Users -------------------------------------------------------

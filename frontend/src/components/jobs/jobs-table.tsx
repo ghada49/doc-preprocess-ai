@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { useRouter } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import toast from "react-hot-toast";
 import {
   Search,
   ChevronRight,
@@ -12,13 +13,16 @@ import {
   CheckCircle,
   Clock,
   XCircle,
+  Ban,
+  Trash2,
 } from "lucide-react";
-import { listJobs } from "@/lib/api/jobs";
+import { cancelJob, deleteJob, listJobs } from "@/lib/api/jobs";
 import type { JobSummary, JobStatus, PipelineMode } from "@/types/api";
 import { Input } from "@/components/ui/input";
 import { Button } from "@/components/ui/button";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { Pagination } from "@/components/shared/pagination";
+import { ConfirmModal } from "@/components/shared/confirm-modal";
 import { EmptyState } from "@/components/shared/empty-state";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -44,11 +48,16 @@ interface JobsTableProps {
 
 export function JobsTable({ isAdmin = false, basePath = "/jobs" }: JobsTableProps) {
   const router = useRouter();
+  const queryClient = useQueryClient();
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<JobStatus | "all">("all");
   const [pipelineFilter, setPipelineFilter] = useState<PipelineMode | "all">("all");
   const [page, setPage] = useState(1);
+  const [pendingAction, setPendingAction] = useState<{
+    type: "cancel" | "delete";
+    job: JobSummary;
+  } | null>(null);
   const pageSize = 25;
 
   const { data, isLoading, isFetching, isError, refetch } = useQuery({
@@ -62,13 +71,43 @@ export function JobsTable({ isAdmin = false, basePath = "/jobs" }: JobsTableProp
         page_size: pageSize,
       }),
     staleTime: 15_000,
-    refetchInterval: 20_000,
+    refetchInterval: (query) => {
+      const items = query.state.data?.items ?? [];
+      return items.some((job) => job.status === "queued" || job.status === "running")
+        ? 5_000
+        : 20_000;
+    },
     retry: 1,
   });
 
   const jobs = data?.items ?? [];
   const total = data?.total ?? 0;
   const columnCount = isAdmin ? 12 : 10;
+  const actionMutation = useMutation({
+    mutationFn: ({ type, jobId }: { type: "cancel" | "delete"; jobId: string }) =>
+      type === "cancel" ? cancelJob(jobId) : deleteJob(jobId),
+    onSuccess: (_result, variables) => {
+      toast.success(variables.type === "cancel" ? "Job canceled." : "Job removed.");
+      setPendingAction(null);
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["correction-queue"] });
+    },
+    onError: () => {
+      toast.error(
+        pendingAction?.type === "cancel"
+          ? "We could not cancel this job."
+          : "We could not remove this job."
+      );
+    },
+  });
+
+  const confirmTitle =
+    pendingAction?.type === "cancel" ? "Cancel this job?" : "Remove this job?";
+  const confirmDescription =
+    pendingAction?.type === "cancel"
+      ? "Unfinished pages will stop processing and be marked as failed. Finished pages will stay available."
+      : "This removes the job from the workspace, including its page records and review entries.";
+  const confirmLabel = pendingAction?.type === "cancel" ? "Cancel job" : "Remove job";
 
   return (
     <TooltipProvider>
@@ -185,6 +224,8 @@ export function JobsTable({ isAdmin = false, basePath = "/jobs" }: JobsTableProp
                     key={job.job_id}
                     job={job}
                     onClick={() => router.push(`${basePath}/${job.job_id}`)}
+                    onCancel={() => setPendingAction({ type: "cancel", job })}
+                    onDelete={() => setPendingAction({ type: "delete", job })}
                   />
                 ))}
               </div>
@@ -268,6 +309,8 @@ export function JobsTable({ isAdmin = false, basePath = "/jobs" }: JobsTableProp
                       job={job}
                       isAdmin={isAdmin}
                       onClick={() => router.push(`${basePath}/${job.job_id}`)}
+                      onCancel={() => setPendingAction({ type: "cancel", job })}
+                      onDelete={() => setPendingAction({ type: "delete", job })}
                     />
                   ))
                 )}
@@ -288,11 +331,39 @@ export function JobsTable({ isAdmin = false, basePath = "/jobs" }: JobsTableProp
         </div>
         )}
       </div>
+      <ConfirmModal
+        open={pendingAction != null}
+        onOpenChange={(open) => {
+          if (!open && !actionMutation.isPending) setPendingAction(null);
+        }}
+        title={confirmTitle}
+        description={confirmDescription}
+        confirmLabel={confirmLabel}
+        variant="danger"
+        loading={actionMutation.isPending}
+        onConfirm={() => {
+          if (!pendingAction) return;
+          actionMutation.mutate({
+            type: pendingAction.type,
+            jobId: pendingAction.job.job_id,
+          });
+        }}
+      />
     </TooltipProvider>
   );
 }
 
-function JobCard({ job, onClick }: { job: JobSummary; onClick: () => void }) {
+function JobCard({
+  job,
+  onClick,
+  onCancel,
+  onDelete,
+}: {
+  job: JobSummary;
+  onClick: () => void;
+  onCancel: () => void;
+  onDelete: () => void;
+}) {
   const hasPendingReview = job.pending_human_correction_count > 0;
   const hasIssues = job.failed_count > 0;
   const activePages = Math.max(
@@ -313,11 +384,18 @@ function JobCard({ job, onClick }: { job: JobSummary; onClick: () => void }) {
       : job.status;
 
   return (
-    <button
-      type="button"
+    <div
+      role="button"
+      tabIndex={0}
       onClick={onClick}
+      onKeyDown={(event) => {
+        if (event.key === "Enter" || event.key === " ") {
+          event.preventDefault();
+          onClick();
+        }
+      }}
       className={cn(
-        "surface-panel group flex min-h-[228px] flex-col p-5 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-[0_24px_70px_-42px_rgba(15,23,42,0.42)]",
+        "surface-panel group flex min-h-[228px] cursor-pointer flex-col p-5 text-left transition-all duration-200 hover:-translate-y-0.5 hover:border-slate-300 hover:shadow-[0_24px_70px_-42px_rgba(15,23,42,0.42)]",
         hasPendingReview && "ring-1 ring-amber-200",
         hasIssues && "ring-1 ring-rose-200"
       )}
@@ -372,7 +450,7 @@ function JobCard({ job, onClick }: { job: JobSummary; onClick: () => void }) {
         />
       </div>
 
-      <div className="mt-auto flex items-center justify-between pt-4">
+      <div className="mt-auto flex items-center justify-between gap-3 pt-4">
         <div className="flex items-center gap-1.5 text-xs text-slate-500">
           <Clock className="h-3.5 w-3.5 text-slate-400" />
           {activePages > 0
@@ -381,12 +459,9 @@ function JobCard({ job, onClick }: { job: JobSummary; onClick: () => void }) {
               ? `${job.pending_human_correction_count} waiting review`
               : "No pages processing"}
         </div>
-        <span className="inline-flex items-center gap-1 text-xs font-semibold text-slate-700 transition-colors group-hover:text-slate-950">
-          Open
-          <ChevronRight className="h-3.5 w-3.5" />
-        </span>
+        <JobActionButtons job={job} onCancel={onCancel} onDelete={onDelete} />
       </div>
-    </button>
+    </div>
   );
 }
 
@@ -416,10 +491,14 @@ function JobRow({
   job,
   isAdmin,
   onClick,
+  onCancel,
+  onDelete,
 }: {
   job: JobSummary;
   isAdmin: boolean;
   onClick: () => void;
+  onCancel: () => void;
+  onDelete: () => void;
 }) {
   const hasPendingReview = job.pending_human_correction_count > 0;
   const hasIssues = job.failed_count > 0;
@@ -534,8 +613,55 @@ function JobRow({
       </td>
 
       <td>
-        <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
+        <div className="flex items-center justify-end gap-1.5">
+          <JobActionButtons job={job} onCancel={onCancel} onDelete={onDelete} compact />
+          <ChevronRight className="h-3.5 w-3.5 text-slate-400" />
+        </div>
       </td>
     </tr>
+  );
+}
+
+function JobActionButtons({
+  job,
+  onCancel,
+  onDelete,
+  compact = false,
+}: {
+  job: JobSummary;
+  onCancel: () => void;
+  onDelete: () => void;
+  compact?: boolean;
+}) {
+  const canCancel = job.status === "queued" || job.status === "running";
+
+  return (
+    <div
+      className="flex items-center gap-1.5"
+      onClick={(event) => event.stopPropagation()}
+    >
+      {canCancel && (
+        <Button
+          type="button"
+          size="xs"
+          variant="outline"
+          onClick={onCancel}
+          className="gap-1"
+        >
+          <Ban className="h-3 w-3" />
+          {!compact && "Cancel"}
+        </Button>
+      )}
+      <Button
+        type="button"
+        size="xs"
+        variant="danger"
+        onClick={onDelete}
+        className="gap-1"
+      >
+        <Trash2 className="h-3 w-3" />
+        {!compact && "Remove"}
+      </Button>
+    </div>
   );
 }

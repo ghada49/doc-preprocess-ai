@@ -1,0 +1,75 @@
+{
+  "case_id": "iep1b_newspaper_na121_00029_rot90",
+  "model": "iep1b",
+  "material_type": "newspaper",
+  "source_collection": "na121_al-moqatam",
+  "image_s3_key": "golden-dataset/iep1b/newspaper/na121_al-moqatam_1908_oct-dec_00029_rot90.tif",
+  "image_sha256": "d3bc226bdbce773bc8355568e388c21d70e5b5f4d391c2ba75bef9e99f080965",
+  "split_expected": true,
+  "sub_page_count": 2,
+  "annotations": {
+    "detections": [
+      {
+        "class_id": 0,
+        "bbox_xyxy": [
+          0.013778,
+          0.039331,
+          0.889183,
+          0.476899
+        ],
+        "keypoints": [
+          [
+            0.889183,
+            0.040435
+          ],
+          [
+            0.889183,
+            0.476899
+          ],
+          [
+            0.020251,
+            0.476899
+          ],
+          [
+            0.013778,
+            0.039331
+          ]
+        ]
+      },
+      {
+        "class_id": 1,
+        "bbox_xyxy": [
+          0.016989,
+          0.501172,
+          0.894036,
+          0.948638
+        ],
+        "keypoints": [
+          [
+            0.894036,
+            0.508867
+          ],
+          [
+            0.885943,
+            0.948638
+          ],
+          [
+            0.018631,
+            0.947534
+          ],
+          [
+            0.016989,
+            0.501172
+          ]
+        ]
+      }
+    ]
+  },
+  "thresholds": {
+    "iou_min": 0.7,
+    "mean_keypoint_distance_max": 0.03,
+    "confidence_min": 0.7
+  },
+  "created_by": "ghada",
+  "created_at": "2026-04-19"
+}

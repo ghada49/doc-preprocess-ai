@@ -21,16 +21,22 @@ Exported:
 
 from __future__ import annotations
 
+import hmac
 import logging
-from datetime import datetime, timedelta, timezone
+import os
+import uuid
+from datetime import UTC, datetime, timedelta
+from typing import Any, Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Header, HTTPException, status
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from services.eep.app.auth import CurrentUser, require_admin
-from services.eep.app.db.models import RetrainingJob, RetrainingTrigger
+from services.eep.app.db.models import ModelVersion, PageLineage, RetrainingJob, RetrainingTrigger
 from services.eep.app.db.session import get_session
+from services.eep.app.scaling.retraining_scaler import maybe_start_retraining_worker
+from services.eep.app.scaling.runpod_scaler import terminate_retraining_pod
 
 logger = logging.getLogger(__name__)
 router = APIRouter(tags=["mlops"])
@@ -141,6 +147,49 @@ class RetrainingStatusResponse(BaseModel):
     as_of: datetime
 
 
+class ManualRetrainingRequest(BaseModel):
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class ManualRetrainingResponse(BaseModel):
+    trigger_id: str
+    trigger_type: str
+    status: str
+    worker_start_status: str
+    worker_start_message: str
+    worker_external_id: str | None
+    message: str
+
+
+class RunPodModelVersionPayload(BaseModel):
+    service_name: str
+    version_tag: str
+    mlflow_run_id: str | None = None
+    dataset_version: str | None = None
+    gate_results: dict | None = None
+    notes: str | None = None
+
+
+class RunPodRetrainingCallbackRequest(BaseModel):
+    trigger_id: str
+    job_id: str
+    status: Literal["running", "completed", "failed"]
+    mlflow_run_id: str | None = None
+    dataset_version: str | None = None
+    result_model_version: str | None = None
+    result_mAP: float | None = None
+    promotion_decision: str | None = None
+    error_message: str | None = None
+    model_versions: list[RunPodModelVersionPayload] = Field(default_factory=list)
+
+
+class RunPodRetrainingCallbackResponse(BaseModel):
+    ok: bool
+    trigger_id: str
+    job_id: str
+    status: str
+
+
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 
@@ -194,7 +243,7 @@ def _build_trigger_cooldowns(db: Session, now: datetime) -> list[TriggerCooldown
         in_cooldown = (
             cooldown_until is not None
             and (
-                cooldown_until.replace(tzinfo=timezone.utc)
+                cooldown_until.replace(tzinfo=UTC)
                 if cooldown_until.tzinfo is None
                 else cooldown_until
             )
@@ -212,6 +261,215 @@ def _build_trigger_cooldowns(db: Session, now: datetime) -> list[TriggerCooldown
         )
 
     return entries
+
+
+def _retraining_worker_start_mode() -> str:
+    return os.environ.get("RETRAINING_WORKER_START_MODE", "disabled").strip().lower()
+
+
+def _stub_gate_results() -> dict:
+    return {
+        "geometry_iou": {"pass": True, "value": 0.84},
+        "split_precision": {"pass": True, "value": 0.77},
+        "structural_agreement_rate": {"pass": True, "value": 0.71},
+        "golden_dataset": {"pass": True, "regressions": 0},
+        "latency_p95": {"pass": True, "value": 2.3},
+    }
+
+
+def _verify_retraining_callback_secret(secret: str | None) -> None:
+    expected = os.environ.get("RETRAINING_CALLBACK_SECRET", "").strip()
+    if not expected:
+        logger.error("runpod_callback: RETRAINING_CALLBACK_SECRET is not set")
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Retraining callback secret is not configured.",
+        )
+    if not secret or not hmac.compare_digest(secret, expected):
+        logger.warning("runpod_callback: invalid callback secret")
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid retraining callback secret.",
+        )
+
+
+def _extract_worker_external_id(notes: str | None) -> str | None:
+    if not notes:
+        return None
+    for part in notes.split(";"):
+        key, sep, value = part.strip().partition("=")
+        if sep and key == "worker_external_id" and value:
+            return value
+    return None
+
+
+def _create_callback_model_versions(
+    db: Session,
+    *,
+    job: RetrainingJob,
+    payload: RunPodRetrainingCallbackRequest,
+    mlflow_run_id: str | None,
+) -> str | None:
+    created_tags: list[str] = []
+    requested_versions = payload.model_versions
+
+    if not requested_versions and job.pipeline_type == "preprocessing":
+        requested_versions = [
+            RunPodModelVersionPayload(
+                service_name="iep1a",
+                version_tag=f"rt-{job.job_id.replace('-', '')[:12]}-iep1a",
+                mlflow_run_id=mlflow_run_id,
+                dataset_version=payload.dataset_version,
+                gate_results={},
+                notes="created from RunPod callback — awaiting evaluation",
+            ),
+            RunPodModelVersionPayload(
+                service_name="iep1b",
+                version_tag=f"rt-{job.job_id.replace('-', '')[:12]}-iep1b",
+                mlflow_run_id=mlflow_run_id,
+                dataset_version=payload.dataset_version,
+                gate_results={},
+                notes="created from RunPod callback — awaiting evaluation",
+            ),
+        ]
+
+    for version in requested_versions:
+        existing: ModelVersion | None = (
+            db.query(ModelVersion)
+            .filter(
+                ModelVersion.service_name == version.service_name,
+                ModelVersion.version_tag == version.version_tag,
+            )
+            .first()
+        )
+        if existing is not None:
+            created_tags.append(existing.version_tag)
+            continue
+
+        db.add(
+            ModelVersion(
+                model_id=str(uuid.uuid4()),
+                service_name=version.service_name,
+                version_tag=version.version_tag,
+                mlflow_run_id=mlflow_run_id or version.mlflow_run_id,
+                dataset_version=version.dataset_version or payload.dataset_version,
+                stage="staging",
+                gate_results=version.gate_results or {},
+                notes=version.notes,
+            )
+        )
+        created_tags.append(version.version_tag)
+
+    return ",".join(created_tags) if created_tags else None
+
+
+def _callback_mlflow_run_id(
+    *,
+    job: RetrainingJob,
+    payload: RunPodRetrainingCallbackRequest,
+) -> str | None:
+    """
+    Create a real MLflow run from a RunPod callback when EEP can reach MLflow.
+
+    The RunPod pod is intentionally outside the AWS VPC and should not need
+    direct access to private MLflow. EEP receives the callback, logs the run to
+    the internal MLflow service, then stores the real run id in the DB. If
+    MLflow is not configured or unavailable, the callback still succeeds and
+    falls back to the worker-provided run id.
+    """
+    existing_run_id = (payload.mlflow_run_id or "").strip() or None
+    tracking_uri = os.environ.get("MLFLOW_TRACKING_URI", "").strip()
+    if not tracking_uri:
+        return existing_run_id
+
+    try:
+        import mlflow  # type: ignore[import]
+    except Exception:
+        logger.warning(
+            "runpod_callback: MLFLOW_TRACKING_URI is set but mlflow is not installed; "
+            "using worker-provided run_id=%s",
+            existing_run_id,
+        )
+        return existing_run_id
+
+    experiment = os.environ.get(
+        "RETRAINING_MLFLOW_EXPERIMENT",
+        "libraryai_preprocessing",
+    ).strip() or "libraryai_preprocessing"
+
+    try:
+        mlflow.set_tracking_uri(tracking_uri)
+        mlflow.set_experiment(experiment)
+        run_name = f"runpod-{job.pipeline_type}-{job.job_id[:8]}"
+        with mlflow.start_run(run_name=run_name) as active_run:
+            real_run_id = active_run.info.run_id
+
+            mlflow.set_tags(
+                {
+                    "libraryai.source": "runpod_callback",
+                    "libraryai.trigger_id": payload.trigger_id,
+                    "libraryai.job_id": payload.job_id,
+                    "libraryai.pipeline_type": job.pipeline_type,
+                    "libraryai.worker_run_id": existing_run_id or "",
+                }
+            )
+            mlflow.log_param("trigger_id", payload.trigger_id)
+            mlflow.log_param("job_id", payload.job_id)
+            mlflow.log_param("pipeline_type", job.pipeline_type)
+            if payload.dataset_version:
+                mlflow.log_param("dataset_version", payload.dataset_version)
+            if payload.result_model_version:
+                mlflow.log_param("result_model_version", payload.result_model_version)
+            if payload.promotion_decision:
+                mlflow.log_param("promotion_decision", payload.promotion_decision)
+            if payload.result_mAP is not None:
+                mlflow.log_metric("result_mAP", float(payload.result_mAP))
+
+            model_versions_payload = [
+                version.model_dump(mode="json") for version in payload.model_versions
+            ]
+            if model_versions_payload:
+                mlflow.log_dict(
+                    {"model_versions": model_versions_payload},
+                    "model_versions.json",
+                )
+            for version in payload.model_versions:
+                prefix = version.service_name
+                mlflow.log_param(f"{prefix}.version_tag", version.version_tag)
+                if version.dataset_version:
+                    mlflow.log_param(f"{prefix}.dataset_version", version.dataset_version)
+                for gate_name, gate_value in (version.gate_results or {}).items():
+                    if isinstance(gate_value, dict):
+                        raw_value = gate_value.get("value")
+                        if isinstance(raw_value, (int, float)):
+                            mlflow.log_metric(f"{prefix}.{gate_name}", float(raw_value))
+                        regressions = gate_value.get("regressions")
+                        if isinstance(regressions, (int, float)):
+                            mlflow.log_metric(
+                                f"{prefix}.{gate_name}.regressions",
+                                float(regressions),
+                            )
+                        passed = gate_value.get("pass")
+                        if isinstance(passed, bool):
+                            mlflow.log_metric(
+                                f"{prefix}.{gate_name}.pass",
+                                1.0 if passed else 0.0,
+                            )
+
+        logger.info(
+            "runpod_callback: logged MLflow run job_id=%s run_id=%s experiment=%s",
+            payload.job_id,
+            real_run_id,
+            experiment,
+        )
+        return real_run_id
+    except Exception:
+        logger.exception(
+            "runpod_callback: MLflow logging failed for job_id=%s; using worker-provided run_id=%s",
+            payload.job_id,
+            existing_run_id,
+        )
+        return existing_run_id
 
 
 # ── Endpoint ──────────────────────────────────────────────────────────────────
@@ -238,7 +496,7 @@ def get_retraining_status(
 
     **Auth:** admin role required.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     recent_threshold = now - timedelta(hours=_RECENT_COMPLETED_HOURS)
 
     # Active jobs
@@ -305,4 +563,287 @@ def get_retraining_status(
         recently_completed=[_job_to_summary(j) for j in recently_completed],
         trigger_cooldowns=trigger_cooldowns,
         as_of=now,
+    )
+
+
+def _material_bucket(material_type: str) -> str:
+    """Map page_lineage material_type to dataset-builder family bucket."""
+    if material_type in {"book", "newspaper", "microfilm"}:
+        return material_type
+    if material_type == "archival_document":
+        return "microfilm"
+    return "book"
+
+
+def _check_training_data_sufficiency(db: Session) -> dict[str, Any] | None:
+    """
+    Count eligible human-corrected rows per (family, material) and check against
+    the minimum thresholds used by the dataset builder.
+
+    Returns None when at least one (family, material) combination has enough data.
+    Returns a detail dict when no combination meets its threshold, so the caller
+    can return HTTP 422 with a human-readable breakdown.
+
+    Thresholds match dataset_builder's RETRAINING_MIN_CORRECTED_{FAMILY}_{MATERIAL}
+    env vars (default 10).
+    """
+    _FAMILIES = ("iep1a", "iep1b")
+    _MATERIALS = ("book", "newspaper", "microfilm")
+
+    rows = (
+        db.query(
+            PageLineage.iep1a_used,
+            PageLineage.iep1b_used,
+            PageLineage.material_type,
+        )
+        .filter(
+            PageLineage.human_corrected.is_(True),
+            PageLineage.human_correction_fields.isnot(None),
+            PageLineage.acceptance_decision == "accepted",
+        )
+        .all()
+    )
+
+    counts: dict[tuple[str, str], int] = {(f, m): 0 for f in _FAMILIES for m in _MATERIALS}
+    for iep1a_used, iep1b_used, material_type in rows:
+        bucket = _material_bucket(material_type or "book")
+        if iep1a_used:
+            counts[("iep1a", bucket)] = counts.get(("iep1a", bucket), 0) + 1
+        if iep1b_used:
+            counts[("iep1b", bucket)] = counts.get(("iep1b", bucket), 0) + 1
+
+    thresholds: dict[tuple[str, str], int] = {}
+    for family in _FAMILIES:
+        for material in _MATERIALS:
+            env = f"RETRAINING_MIN_CORRECTED_{family.upper()}_{material.upper()}"
+            thresholds[(family, material)] = int(os.environ.get(env, "10"))
+
+    eligible = [
+        (f, m)
+        for (f, m), count in counts.items()
+        if count >= thresholds[(f, m)]
+    ]
+    if eligible:
+        return None
+
+    breakdown = {
+        f"{family}/{material}": {"have": counts[(family, material)], "need": thresholds[(family, material)]}
+        for family in _FAMILIES
+        for material in _MATERIALS
+        if counts[(family, material)] > 0 or thresholds[(family, material)] <= 20
+    }
+    return {
+        "reason": "insufficient_training_data",
+        "message": (
+            "Not enough accepted human-corrected pages to start retraining. "
+            "At least one model/material combination must meet its minimum. "
+            f"Current counts: {breakdown}"
+        ),
+        "breakdown": breakdown,
+    }
+
+
+@router.post(
+    "/v1/retraining/trigger",
+    response_model=ManualRetrainingResponse,
+    status_code=202,
+    summary="Trigger manual retraining",
+)
+def trigger_manual_retraining(
+    body: ManualRetrainingRequest | None = None,
+    db: Session = Depends(get_session),
+    caller: CurrentUser = Depends(require_admin),
+) -> ManualRetrainingResponse:
+    """
+    Queue a manual preprocessing retraining run.
+
+    In RunPod mode, EEP creates the retraining job and the external pod reports
+    back through the callback endpoint. In ECS/local mode, the DB-backed worker
+    can still poll ``retraining_triggers`` and create the job itself.
+    """
+    existing: RetrainingTrigger | None = (
+        db.query(RetrainingTrigger)
+        .filter(
+            RetrainingTrigger.trigger_type == "manual_retraining",
+            RetrainingTrigger.status.in_(["pending", "processing"]),
+        )
+        .first()
+    )
+    if existing is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Manual retraining is already queued or running.",
+        )
+
+    insufficiency = _check_training_data_sufficiency(db)
+    if insufficiency is not None:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=insufficiency["message"],
+        )
+
+    now = datetime.now(UTC)
+    reason = (body.reason if body else None) or "Manual retraining requested from admin UI"
+    row = RetrainingTrigger(
+        trigger_id=str(uuid.uuid4()),
+        trigger_type="manual_retraining",
+        metric_name="manual_admin_trigger",
+        metric_value=1.0,
+        threshold_value=1.0,
+        persistence_hours=0.0,
+        fired_at=now,
+        cooldown_until=None,
+        status="pending",
+        notes=f"requested_by={caller.user_id}; reason={reason}",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+
+    runpod_job: RetrainingJob | None = None
+    if _retraining_worker_start_mode() == "runpod_pod":
+        runpod_job = RetrainingJob(
+            job_id=str(uuid.uuid4()),
+            trigger_id=row.trigger_id,
+            pipeline_type="preprocessing",
+            status="pending",
+        )
+        db.add(runpod_job)
+        row.retraining_job_id = runpod_job.job_id
+        db.commit()
+        db.refresh(row)
+        db.refresh(runpod_job)
+
+    worker_start_status, worker_start_message, worker_external_id = maybe_start_retraining_worker(
+        row.trigger_id,
+        job_id=runpod_job.job_id if runpod_job is not None else None,
+    )
+    if worker_external_id:
+        notes_suffix = f"; worker_external_id={worker_external_id}"
+        row.notes = f"{row.notes or ''}{notes_suffix}"
+    if runpod_job is not None:
+        if worker_start_status == "requested":
+            row.status = "processing"
+            runpod_job.status = "running"
+            runpod_job.started_at = datetime.now(UTC)
+        elif worker_start_status == "failed":
+            row.status = "failed"
+            row.resolved_at = datetime.now(UTC)
+            runpod_job.status = "failed"
+            runpod_job.completed_at = datetime.now(UTC)
+            runpod_job.error_message = worker_start_message
+    if worker_external_id or runpod_job is not None:
+        db.commit()
+        db.refresh(row)
+
+    logger.info(
+        "trigger_manual_retraining: trigger_id=%s requested_by=%s worker_start_status=%s external_id=%s",
+        row.trigger_id,
+        caller.user_id,
+        worker_start_status,
+        worker_external_id,
+    )
+
+    return ManualRetrainingResponse(
+        trigger_id=row.trigger_id,
+        trigger_type=row.trigger_type,
+        status=row.status,
+        worker_start_status=worker_start_status,
+        worker_start_message=worker_start_message,
+        worker_external_id=worker_external_id,
+        message=(
+            "Manual retraining queued and worker start requested."
+            if worker_start_status == "requested"
+            else "Manual retraining queued."
+        ),
+    )
+
+
+@router.post(
+    "/v1/retraining/runpod/callback",
+    response_model=RunPodRetrainingCallbackResponse,
+    status_code=200,
+    summary="Receive RunPod retraining completion callback",
+)
+def runpod_retraining_callback(
+    payload: RunPodRetrainingCallbackRequest,
+    x_retraining_callback_secret: str | None = Header(
+        default=None,
+        alias="X-Retraining-Callback-Secret",
+    ),
+    db: Session = Depends(get_session),
+) -> RunPodRetrainingCallbackResponse:
+    """
+    Receive status from the RunPod one-shot retraining worker.
+
+    RunPod cannot reach private AWS RDS/Redis. EEP owns database writes and
+    exposes this authenticated callback so the external GPU pod only needs
+    public HTTP access back to EEP.
+    """
+    _verify_retraining_callback_secret(x_retraining_callback_secret)
+
+    trigger = db.get(RetrainingTrigger, payload.trigger_id)
+    job = db.get(RetrainingJob, payload.job_id)
+    if trigger is None or job is None or job.trigger_id != payload.trigger_id:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Retraining trigger/job pair was not found.",
+        )
+
+    now = datetime.now(UTC)
+    if payload.status == "running":
+        trigger.status = "processing"
+        job.status = "running"
+        job.started_at = job.started_at or now
+    elif payload.status == "failed":
+        trigger.status = "failed"
+        trigger.resolved_at = now
+        job.status = "failed"
+        job.completed_at = now
+        job.error_message = payload.error_message or "RunPod retraining failed."
+    else:
+        mlflow_run_id = _callback_mlflow_run_id(job=job, payload=payload)
+        created_versions = _create_callback_model_versions(
+            db,
+            job=job,
+            payload=payload,
+            mlflow_run_id=mlflow_run_id,
+        )
+        trigger.status = "completed"
+        trigger.resolved_at = now
+        trigger.mlflow_run_id = mlflow_run_id
+        job.status = "completed"
+        job.completed_at = now
+        job.mlflow_experiment = os.environ.get(
+            "RETRAINING_MLFLOW_EXPERIMENT",
+            "libraryai_preprocessing",
+        )
+        job.mlflow_run_id = mlflow_run_id
+        job.dataset_version = payload.dataset_version
+        job.result_model_version = payload.result_model_version or created_versions
+        job.result_mAP = payload.result_mAP
+        job.promotion_decision = payload.promotion_decision or "pending_gate_review"
+
+    db.commit()
+
+    logger.info(
+        "runpod_retraining_callback: trigger_id=%s job_id=%s status=%s",
+        payload.trigger_id,
+        payload.job_id,
+        payload.status,
+    )
+
+    if payload.status in {"completed", "failed"} and os.environ.get(
+        "RUNPOD_TERMINATE_ON_CALLBACK",
+        "true",
+    ).strip().lower() in {"1", "true", "yes", "on"}:
+        pod_id = _extract_worker_external_id(trigger.notes)
+        if pod_id:
+            terminate_retraining_pod(pod_id)
+
+    return RunPodRetrainingCallbackResponse(
+        ok=True,
+        trigger_id=payload.trigger_id,
+        job_id=payload.job_id,
+        status=payload.status,
     )

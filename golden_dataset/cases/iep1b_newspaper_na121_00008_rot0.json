@@ -1,0 +1,41 @@
+{
+  "case_id": "iep1b_newspaper_na121_00008_rot0",
+  "model": "iep1b",
+  "material_type": "newspaper",
+  "source_collection": "na121_al-moqatam",
+  "image_s3_key": "golden-dataset/iep1b/newspaper/na121_al-moqatam_1908_oct-dec_00008.tif",
+  "image_sha256": "f3e1196514a54acb8cfaa9b8aa228db5e8a895f974d3712748f0423d56827b0c",
+  "split_expected": true,
+  "sub_page_count": 2,
+  "annotations": {
+    "detections": [
+      {
+        "class_id": 0,
+        "bbox_xyxy": [0.051548, 0.107362, 0.474951, 0.961720],
+        "keypoints": [
+          [0.058711, 0.107362],
+          [0.474951, 0.111900],
+          [0.471924, 0.961720],
+          [0.051548, 0.958717]
+        ]
+      },
+      {
+        "class_id": 1,
+        "bbox_xyxy": [0.499517, 0.087842, 0.940322, 0.955699],
+        "keypoints": [
+          [0.499517, 0.110366],
+          [0.914751, 0.087842],
+          [0.940322, 0.922681],
+          [0.525098, 0.955699]
+        ]
+      }
+    ]
+  },
+  "thresholds": {
+    "iou_min": 0.7,
+    "mean_keypoint_distance_max": 0.03,
+    "confidence_min": 0.7
+  },
+  "created_by": "ghada",
+  "created_at": "2026-04-19"
+}
