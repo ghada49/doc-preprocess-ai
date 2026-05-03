@@ -35,11 +35,9 @@ Validates that the candidate exists in model_versions.
 Creates a retraining_jobs record with status='pending' representing the
 evaluation task.
 
-TODO (Packet 8.5): Wire this to the actual evaluation worker queue instead of
-creating a retraining_jobs record. The retraining_jobs pipeline_type should be
-mapped to a dedicated 'evaluation' task type or an existing pipeline_type that
-the worker recognises as an offline eval run. The DB record contract below is
-stable and the frontend contract is preserved.
+Creates a RetrainingTrigger with trigger_type='manual_evaluation'. The
+retraining worker's poll loop picks it up and calls _run_manual_evaluation(),
+which runs gate evaluation and writes results back to model_versions.gate_results.
 
 Auth: admin only for both endpoints.
 
@@ -314,15 +312,10 @@ def trigger_model_evaluate(
     ``retraining_jobs`` record with ``status='pending'`` representing the
     evaluation task.
 
-    The evaluation worker (Packet 8.5) picks up pending retraining_jobs
-    records and executes the evaluation, writing results back to
-    ``model_versions.gate_results``.
-
-    TODO (Packet 8.5): Map pipeline_type to a dedicated evaluation task type
-    that the worker recognises as an offline eval run (not a full retraining
-    cycle).  The current implementation reuses the retraining_jobs table with
-    the candidate's service-appropriate pipeline_type.  The DB record contract
-    below is stable.
+    Creates a RetrainingTrigger with trigger_type='manual_evaluation' and
+    notes=model_id. The retraining worker poll loop picks it up, calls
+    _run_manual_evaluation(), and writes gate results back to
+    model_versions.gate_results.
 
     **Auth:** admin role required.
 

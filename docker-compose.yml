@@ -484,11 +484,11 @@ services:
 
   # ── IEP1E — Semantic normalization service ───────────────────────────────────
   #
-  # Real-model build (optional):
+  # Real-model build (required for actual PaddleOCR inference):
   #   Set IEP1E_ENABLE_REAL_MODEL=true in your shell or .env, then:
   #     docker compose build iep1e
-  #   Enable inference at runtime by also setting IEP1E_MOCK_MODE=false in .env.
-  #   Without real-model, service runs in mock mode (returns no rotation, unresolved).
+  #   Without a real-model build the binary is absent; set IEP1E_MOCK_MODE=true
+  #   in .env to fall back to stub mode (returns no rotation, unresolved).
 
   iep1e:
     build:
@@ -502,8 +502,7 @@ services:
       PYTHONPATH: /app
       PYTHONDONTWRITEBYTECODE: "1"
       PYTHONUNBUFFERED: "1"
-      # Default to mock mode; set IEP1E_MOCK_MODE=false to use real PaddleOCR.
-      IEP1E_MOCK_MODE: "${IEP1E_MOCK_MODE:-true}"
+      IEP1E_MOCK_MODE: "${IEP1E_MOCK_MODE:-false}"
       IEP1E_USE_GPU: "${IEP1E_USE_GPU:-false}"
       IEP1E_MODEL_DIR: "${IEP1E_MODEL_DIR:-/opt/models/iep1e}"
     env_file: .env
