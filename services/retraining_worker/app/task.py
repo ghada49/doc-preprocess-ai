@@ -73,6 +73,7 @@ _MATERIALS: tuple[str, ...] = ("book", "newspaper", "microfilm")
 # trigger_type → pipeline_type (spec Section 16.3).
 # None means monitoring-only; no automated job is created.
 _TRIGGER_PIPELINE: dict[str, str | None] = {
+    "manual_retraining": "preprocessing",
     "escalation_rate_anomaly": "preprocessing",
     "auto_accept_rate_collapse": "preprocessing",
     "structural_agreement_degradation": "preprocessing",
@@ -187,6 +188,38 @@ def _resolve_production_weights(service_name: str, db: Session) -> dict[str, str
         mv.model_id,
         sorted(result.keys()),
     )
+    return result
+
+
+def _resolve_env_pretrained_weights(service_name: str) -> dict[str, str]:
+    """
+    Return material weight URIs from IEP1A_WEIGHTS_URI / IEP1B_WEIGHTS_URI.
+
+    Accepted formats:
+      - s3://.../iep1a-models.tar.gz  -> archive extracted by live_train.py
+      - book=s3://...pt,newspaper=s3://...pt,microfilm=s3://...pt
+    """
+    env_name = "IEP1A_WEIGHTS_URI" if service_name == "iep1a" else "IEP1B_WEIGHTS_URI"
+    raw = os.getenv(env_name, "").strip()
+    if not raw:
+        return {}
+
+    if "=" not in raw:
+        return {"__archive__": raw}
+
+    result: dict[str, str] = {}
+    for item in raw.split(","):
+        material, sep, uri = item.partition("=")
+        material = material.strip().lower()
+        uri = uri.strip()
+        if sep and material in _MATERIALS and uri:
+            result[material] = uri
+
+    if not result:
+        logger.warning(
+            "_resolve_env_pretrained_weights: %s is set but no material URI mapping could be parsed",
+            env_name,
+        )
     return result
 
 
@@ -324,6 +357,10 @@ def execute_retraining_task(trigger: RetrainingTrigger, db: Session) -> None:
         try:
             pretrained_iep1a = _resolve_production_weights("iep1a", db)
             pretrained_iep1b = _resolve_production_weights("iep1b", db)
+            if not pretrained_iep1a:
+                pretrained_iep1a = _resolve_env_pretrained_weights("iep1a")
+            if not pretrained_iep1b:
+                pretrained_iep1b = _resolve_env_pretrained_weights("iep1b")
             if pretrained_iep1a or pretrained_iep1b:
                 logger.info(
                     "execute_retraining_task: fine-tuning from production weights "
@@ -394,6 +431,13 @@ def execute_retraining_task(trigger: RetrainingTrigger, db: Session) -> None:
         )
 
     services = _PREPROCESSING_SERVICES if pipeline_type == "preprocessing" else ()
+    if trained_weights is not None:
+        trained_services: list[str] = []
+        if trained_weights.iep1a_weights:
+            trained_services.append("iep1a")
+        if trained_weights.iep1b_weights:
+            trained_services.append("iep1b")
+        services = tuple(trained_services)
     created_version_tags: list[str] = []
 
     for service_name in services:

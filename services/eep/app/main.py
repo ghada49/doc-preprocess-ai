@@ -44,10 +44,8 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from services.eep.app.admin.dashboard import (
-    refresh_dashboard_rate_metrics,
-    router as admin_dashboard_router,
-)
+from services.eep.app.admin.dashboard import refresh_dashboard_rate_metrics
+from services.eep.app.admin.dashboard import router as admin_dashboard_router
 from services.eep.app.admin.infra import router as admin_infra_router
 from services.eep.app.admin.users import router as admin_users_router
 from services.eep.app.artifacts_api import router as artifacts_router
@@ -58,8 +56,9 @@ from services.eep.app.correction.ptiff_qa_viewer import router as ptiff_qa_viewe
 from services.eep.app.correction.queue import router as correction_queue_router
 from services.eep.app.correction.reject import router as correction_reject_router
 from services.eep.app.correction.send_to_review import router as send_to_review_router
-from services.eep.app.jobs.download import router as jobs_download_router
+from services.eep.app.jobs.actions import router as job_actions_router
 from services.eep.app.jobs.create import router as jobs_router
+from services.eep.app.jobs.download import router as jobs_download_router
 from services.eep.app.jobs.list import router as job_list_router
 from services.eep.app.jobs.status import router as job_status_router
 from services.eep.app.lineage_api import router as lineage_router
@@ -139,6 +138,7 @@ def v1_status() -> dict:
     """Lightweight liveness probe for CI/CD smoke tests and ALB health checks."""
     return {"status": "ok", "service": "eep"}
 
+
 # ── Phase 7 routers ────────────────────────────────────────────────────────────
 app.include_router(auth_router)
 
@@ -147,6 +147,7 @@ app.include_router(uploads_router)
 app.include_router(jobs_router)
 app.include_router(job_list_router)
 app.include_router(job_status_router)
+app.include_router(job_actions_router)
 
 # ── Phase 7 admin routers ──────────────────────────────────────────────────────
 app.include_router(admin_dashboard_router)

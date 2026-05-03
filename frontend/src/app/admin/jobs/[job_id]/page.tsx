@@ -2,22 +2,26 @@
 
 import { Fragment, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import toast from "react-hot-toast";
 import {
   AlertTriangle,
+  Ban,
   ChevronDown,
   ChevronRight,
   Clock,
   FileSearch,
   GitBranch,
   RefreshCw,
+  Trash2,
 } from "lucide-react";
-import { getJob } from "@/lib/api/jobs";
+import { cancelJob, deleteJob, getJob } from "@/lib/api/jobs";
 import { AdminShell } from "@/components/layout/admin-shell";
 import { LayoutOverlay } from "@/components/jobs/layout-overlay";
 import { PageHeader } from "@/components/shared/page-header";
 import { StatusBadge } from "@/components/shared/status-badge";
 import { ErrorBanner } from "@/components/shared/error-banner";
+import { ConfirmModal } from "@/components/shared/confirm-modal";
 import { Button } from "@/components/ui/button";
 import { Spinner } from "@/components/ui/spinner";
 import { TooltipProvider } from "@/components/ui/tooltip";
@@ -37,7 +41,9 @@ import type { JobPage } from "@/types/api";
 export default function AdminJobDetailPage() {
   const { job_id } = useParams<{ job_id: string }>();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [expandedLayoutKey, setExpandedLayoutKey] = useState<string | null>(null);
+  const [pendingAction, setPendingAction] = useState<"cancel" | "delete" | null>(null);
 
   const { data, isLoading, isError, refetch, isFetching } = useQuery({
     queryKey: ["job", job_id],
@@ -53,6 +59,29 @@ export default function AdminJobDetailPage() {
         (operationalPages.length > 0 && hasActivePages(operationalPages));
 
       return active ? 6_000 : false;
+    },
+  });
+
+  const actionMutation = useMutation({
+    mutationFn: (type: "cancel" | "delete") =>
+      type === "cancel" ? cancelJob(job_id) : deleteJob(job_id),
+    onSuccess: (_result, type) => {
+      toast.success(type === "cancel" ? "Job canceled." : "Job removed.");
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["correction-queue"] });
+      setPendingAction(null);
+      if (type === "delete") {
+        router.push("/admin/jobs");
+      } else {
+        refetch();
+      }
+    },
+    onError: (_error, type) => {
+      toast.error(
+        type === "cancel"
+          ? "We could not cancel this job."
+          : "We could not remove this job."
+      );
     },
   });
 
@@ -122,19 +151,46 @@ export default function AdminJobDetailPage() {
         <div className="max-w-6xl space-y-6 p-6">
           <PageHeader
             title={`Job ${truncateId(summary.job_id, 12)}...`}
+            description={
+              isActive
+                ? "Processing runs in the background. This view updates automatically while pages move through the queue."
+                : undefined
+            }
             icon={FileSearch}
             badge={<StatusBadge status={displayStatus} type="job" />}
             actions={
-              summary.pending_human_correction_count > 0 ? (
+              <div className="flex flex-wrap items-center gap-2">
+                {summary.pending_human_correction_count > 0 && (
+                  <Button
+                    size="sm"
+                    onClick={() => router.push(`/admin/queue?job_id=${summary.job_id}`)}
+                    className="gap-1.5"
+                  >
+                    <AlertTriangle className="h-3.5 w-3.5" />
+                    {summary.pending_human_correction_count} pages need review
+                  </Button>
+                )}
+                {isActive && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setPendingAction("cancel")}
+                    className="gap-1.5"
+                  >
+                    <Ban className="h-3.5 w-3.5" />
+                    Cancel job
+                  </Button>
+                )}
                 <Button
                   size="sm"
-                  onClick={() => router.push(`/admin/queue?job_id=${summary.job_id}`)}
+                  variant="danger"
+                  onClick={() => setPendingAction("delete")}
                   className="gap-1.5"
                 >
-                  <AlertTriangle className="h-3.5 w-3.5" />
-                  {summary.pending_human_correction_count} pages need review
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Remove
                 </Button>
-              ) : undefined
+              </div>
             }
           />
 
@@ -363,6 +419,24 @@ export default function AdminJobDetailPage() {
             </div>
           </div>
         </div>
+        <ConfirmModal
+          open={pendingAction != null}
+          onOpenChange={(open) => {
+            if (!open && !actionMutation.isPending) setPendingAction(null);
+          }}
+          title={pendingAction === "cancel" ? "Cancel this job?" : "Remove this job?"}
+          description={
+            pendingAction === "cancel"
+              ? "Unfinished pages will stop processing and be marked as failed. Finished pages will stay available."
+              : "This removes the job from the workspace, including its page records and review entries."
+          }
+          confirmLabel={pendingAction === "cancel" ? "Cancel job" : "Remove job"}
+          variant="danger"
+          loading={actionMutation.isPending}
+          onConfirm={() => {
+            if (pendingAction) actionMutation.mutate(pendingAction);
+          }}
+        />
       </TooltipProvider>
     </AdminShell>
   );

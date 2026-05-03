@@ -179,6 +179,11 @@ def _material_bucket(material_type: str) -> str:
     return "book"
 
 
+def _corrected_threshold(family: str, material: str) -> int:
+    env_name = f"RETRAINING_MIN_CORRECTED_{family.upper()}_{material.upper()}"
+    return int(os.getenv(env_name, "10"))
+
+
 def _fetch_corrected_rows(database_url: str) -> list[CorrectedRow]:
     engine = create_engine(database_url)
     stmt = text(
@@ -281,28 +286,34 @@ def _run_corrected_export(args: argparse.Namespace, root: Path) -> dict[str, Any
     if not db_url:
         raise SystemExit("DATABASE_URL is required for --mode corrected-export")
 
-    min_iep1a_book = int(os.getenv("RETRAINING_MIN_CORRECTED_IEP1A_BOOK", "200"))
-    min_iep1b_total = int(os.getenv("RETRAINING_MIN_CORRECTED_IEP1B_TOTAL", "200"))
     split_seed = os.getenv("RETRAINING_DATASET_SPLIT_SEED", "libraryai-corrected-v1")
 
     all_rows = _fetch_corrected_rows(db_url)
     rows = [r for r in all_rows if _matches_source_window(r.human_correction_timestamp, args.source_window)]
 
-    count_iep1a_book = sum(1 for r in rows if r.iep1a_used and _material_bucket(r.material_type) == "book")
-    count_iep1b_total = sum(1 for r in rows if r.iep1b_used and _material_bucket(r.material_type) in {"newspaper", "microfilm"})
-    counts = {
-        "iep1a_book": count_iep1a_book,
-        "iep1b_total": count_iep1b_total,
-        "rows_total": len(rows),
-    }
-    if count_iep1a_book < min_iep1a_book or count_iep1b_total < min_iep1b_total:
+    material_keys = ("book", "newspaper", "microfilm")
+    counts: dict[str, int] = {"rows_total": len(rows)}
+    minimums: dict[str, int] = {}
+    eligible_targets: set[tuple[str, str]] = set()
+    for family in ("iep1a", "iep1b"):
+        for material in material_keys:
+            key = f"{family}_{material}"
+            count = sum(
+                1
+                for r in rows
+                if getattr(r, f"{family}_used") and _material_bucket(r.material_type) == material
+            )
+            minimum = _corrected_threshold(family, material)
+            counts[key] = count
+            minimums[key] = minimum
+            if count >= minimum:
+                eligible_targets.add((family, material))
+
+    if not eligible_targets:
         return {
             "status": "min_samples_not_met",
             "counts": counts,
-            "minimums": {
-                "iep1a_book": min_iep1a_book,
-                "iep1b_total": min_iep1b_total,
-            },
+            "minimums": minimums,
         }
 
     if args.dataset_version:
@@ -331,23 +342,15 @@ def _run_corrected_export(args: argparse.Namespace, root: Path) -> dict[str, Any
         s3_client = boto3.client("s3", **kwargs)
 
     family_material_roots: dict[tuple[str, str], Path] = {}
-    for fam in ("iep1a", "iep1b"):
-        materials = ("book", "newspaper", "microfilm")
-        if fam == "iep1a":
-            materials = ("book",)
-        for mat in materials:
-            base = export_root / fam / mat
-            (base / "images" / "train").mkdir(parents=True, exist_ok=True)
-            (base / "images" / "val").mkdir(parents=True, exist_ok=True)
-            (base / "labels" / "train").mkdir(parents=True, exist_ok=True)
-            (base / "labels" / "val").mkdir(parents=True, exist_ok=True)
-            family_material_roots[(fam, mat)] = base
+    for fam, mat in sorted(eligible_targets):
+        base = export_root / fam / mat
+        (base / "images" / "train").mkdir(parents=True, exist_ok=True)
+        (base / "images" / "val").mkdir(parents=True, exist_ok=True)
+        (base / "labels" / "train").mkdir(parents=True, exist_ok=True)
+        (base / "labels" / "val").mkdir(parents=True, exist_ok=True)
+        family_material_roots[(fam, mat)] = base
 
-    exported_counts: dict[str, int] = {
-        "iep1a_book": 0,
-        "iep1b_newspaper": 0,
-        "iep1b_microfilm": 0,
-    }
+    exported_counts: dict[str, int] = {f"{fam}_{mat}": 0 for fam, mat in sorted(eligible_targets)}
     skipped_counts: dict[str, int] = {}
     for row in rows:
         src_uri = str(row.correction.get("source_artifact_uri", "")).strip()
@@ -370,9 +373,9 @@ def _run_corrected_export(args: argparse.Namespace, root: Path) -> dict[str, Any
 
         targets: list[tuple[str, str]] = []
         mat = _material_bucket(row.material_type)
-        if row.iep1a_used and mat == "book":
-            targets.append(("iep1a", "book"))
-        if row.iep1b_used and mat in {"newspaper", "microfilm"}:
+        if row.iep1a_used and ("iep1a", mat) in eligible_targets:
+            targets.append(("iep1a", mat))
+        if row.iep1b_used and ("iep1b", mat) in eligible_targets:
             targets.append(("iep1b", mat))
         if not targets:
             skipped_counts["unused_service_material"] = skipped_counts.get("unused_service_material", 0) + 1
@@ -390,10 +393,23 @@ def _run_corrected_export(args: argparse.Namespace, root: Path) -> dict[str, Any
             label_out.write_text(seg_line + "\n", encoding="utf-8")
             exported_counts[f"{fam}_{material}"] = exported_counts.get(f"{fam}_{material}", 0) + 1
 
-    iep1a_manifest = {"book": str(_write_data_yaml(family_material_roots[("iep1a", "book")], "page"))}
+    if not any(count >= minimums[key] for key, count in exported_counts.items()):
+        return {
+            "status": "min_samples_not_met",
+            "counts": {**counts, "exported": exported_counts},
+            "minimums": minimums,
+            "skipped_counts": skipped_counts,
+        }
+
+    iep1a_manifest = {
+        mat: str(_write_data_yaml(family_material_roots[("iep1a", mat)], "page"))
+        for mat in material_keys
+        if exported_counts.get(f"iep1a_{mat}", 0) >= minimums[f"iep1a_{mat}"]
+    }
     iep1b_manifest = {
-        "newspaper": str(_write_data_yaml(family_material_roots[("iep1b", "newspaper")], "page")),
-        "microfilm": str(_write_data_yaml(family_material_roots[("iep1b", "microfilm")], "page")),
+        mat: str(_write_data_yaml(family_material_roots[("iep1b", mat)], "page"))
+        for mat in material_keys
+        if exported_counts.get(f"iep1b_{mat}", 0) >= minimums[f"iep1b_{mat}"]
     }
     train_manifest = {
         "iep0": {"data_root": str(iep0_stub_root)},

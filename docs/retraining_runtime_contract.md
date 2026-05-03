@@ -34,6 +34,10 @@ Each retraining run must resolve:
 }
 ```
 
+Corrected-export manifests may include only the service/material combinations
+that met the corrected-sample threshold for that run. Consumers must not assume
+all six IEP1A/IEP1B material entries are present.
+
 ## Dataset Registry
 
 Default path: `training/preprocessing/dataset_registry.json` (override via

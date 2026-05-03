@@ -94,6 +94,12 @@ export interface CreateJobResponse {
   created_at: string;
 }
 
+export interface JobActionResponse {
+  job_id: string;
+  status: JobStatus | "deleted";
+  affected_pages: number;
+}
+
 export interface JobSummary {
   job_id: string;
   collection_id: string;
@@ -700,6 +706,16 @@ export interface RetrainingStatusResponse {
   recently_completed: RetrainingJobSummary[];
   trigger_cooldowns: TriggerCooldown[];
   as_of: string;
+}
+
+export interface ManualRetrainingResponse {
+  trigger_id: string;
+  trigger_type: string;
+  status: string;
+  worker_start_status: string;
+  worker_start_message: string;
+  worker_external_id: string | null;
+  message: string;
 }
 
 // ---- Users -------------------------------------------------------

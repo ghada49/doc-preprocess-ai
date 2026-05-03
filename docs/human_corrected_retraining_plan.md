@@ -108,10 +108,16 @@ All coordinates normalized.
 
 ## 6) Threshold / Inactive Gate Design
 
-Define minimum counts (example):
+Define minimum counts:
 
-- IEP1A: `book >= 200`
-- IEP1B: `newspaper + microfilm combined >= 200` (single threshold for the shared geometry model)
+- IEP1A: `book >= 10`
+- IEP1A: `newspaper >= 10`
+- IEP1A: `microfilm >= 10`
+- IEP1B: `book >= 10`
+- IEP1B: `newspaper >= 10`
+- IEP1B: `microfilm >= 10`
+
+Each service/material is evaluated independently. A retraining run exports and trains only the combinations that meet the threshold; missing or below-threshold combinations do not block eligible combinations.
 
 Builder output contract:
 
@@ -263,7 +269,7 @@ Prereqs: Docker Desktop running; repo at project root; `.env` for containers use
 
    - POST `http://127.0.0.1:8000/v1/retraining/webhook` with header `X-Webhook-Secret` matching `RETRAINING_WEBHOOK_SECRET`, body shaped like Alertmanager (`alerts[].labels.trigger_type`, `alerts[].status=firing`).
 
-4. Expected with **no** human-corrected rows: worker logs contain `min_samples_not_met` and counts `iep1a_book` / `iep1b_total` / `rows_total`.
+4. Expected with **no** human-corrected rows: worker logs contain `min_samples_not_met` and counts for all IEP1A/IEP1B materials plus `rows_total`.
 
    `docker compose logs --since 30m retraining-worker`
 
@@ -271,4 +277,3 @@ Prereqs: Docker Desktop running; repo at project root; `.env` for containers use
    `postgresql+psycopg2://libraryai:changeme@127.0.0.1:5432/libraryai`
 
 This section is the evidence trail for “safe when empty”; when corrected data exists, steps 1–5 are the same, and logs should show export + training instead of deferral.
-

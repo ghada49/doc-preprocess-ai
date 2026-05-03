@@ -2,7 +2,8 @@
 
 import { Fragment, useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import toast from "react-hot-toast";
 import {
   RefreshCw,
   FileSearch,
@@ -15,8 +16,10 @@ import {
   LayoutGrid,
   ChevronDown,
   ChevronRight,
+  Ban,
+  Trash2,
 } from "lucide-react";
-import { getJob } from "@/lib/api/jobs";
+import { cancelJob, deleteJob, getJob } from "@/lib/api/jobs";
 import { downloadJobOutputZip } from "@/lib/api/download";
 import { UserShell } from "@/components/layout/user-shell";
 import { LayoutOverlay } from "@/components/jobs/layout-overlay";
@@ -27,6 +30,7 @@ import { ArtifactLinkButton } from "@/components/shared/artifact-link-button";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { ErrorBanner } from "@/components/shared/error-banner";
+import { ConfirmModal } from "@/components/shared/confirm-modal";
 import { Spinner } from "@/components/ui/spinner";
 import {
   Tooltip,
@@ -49,7 +53,9 @@ import type { JobPage } from "@/types/api";
 export default function JobDetailPage() {
   const { job_id } = useParams<{ job_id: string }>();
   const router = useRouter();
+  const queryClient = useQueryClient();
   const [isDownloading, setIsDownloading] = useState(false);
+  const [pendingAction, setPendingAction] = useState<"cancel" | "delete" | null>(null);
   const [expandedLayoutKey, setExpandedLayoutKey] = useState<string | null | undefined>(
     undefined
   );
@@ -99,6 +105,29 @@ export default function JobDetailPage() {
       setIsDownloading(false);
     }
   }
+
+  const actionMutation = useMutation({
+    mutationFn: (type: "cancel" | "delete") =>
+      type === "cancel" ? cancelJob(job_id) : deleteJob(job_id),
+    onSuccess: (_result, type) => {
+      toast.success(type === "cancel" ? "Job canceled." : "Job removed.");
+      queryClient.invalidateQueries({ queryKey: ["jobs"] });
+      queryClient.invalidateQueries({ queryKey: ["correction-queue"] });
+      setPendingAction(null);
+      if (type === "delete") {
+        router.push("/jobs");
+      } else {
+        refetch();
+      }
+    },
+    onError: (_error, type) => {
+      toast.error(
+        type === "cancel"
+          ? "We could not cancel this job."
+          : "We could not remove this job."
+      );
+    },
+  });
 
   if (isLoading) {
     return (
@@ -152,7 +181,9 @@ export default function JobDetailPage() {
           <PageHeader
             title={summary.collection_id || `Upload ${truncateId(summary.job_id, 8)}`}
             description={
-              supportsLayoutResults
+              isActive
+                ? "Processing runs in the background. Larger TIFF batches can take several minutes, and this page updates automatically."
+                : supportsLayoutResults
                 ? "Review progress, open finished pages, inspect page layout, and download results when they are ready."
                 : "Review progress, open finished pages, and download results when they are ready."
             }
@@ -189,6 +220,26 @@ export default function JobDetailPage() {
                 >
                   <Download className="h-3.5 w-3.5" />
                   {isDownloading ? "Downloading..." : "Download results"}
+                </Button>
+                {isActive && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => setPendingAction("cancel")}
+                    className="gap-1.5"
+                  >
+                    <Ban className="h-3.5 w-3.5" />
+                    Cancel job
+                  </Button>
+                )}
+                <Button
+                  size="sm"
+                  variant="danger"
+                  onClick={() => setPendingAction("delete")}
+                  className="gap-1.5"
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                  Remove
                 </Button>
               </div>
             }
@@ -367,6 +418,24 @@ export default function JobDetailPage() {
             </div>
           </div>
         </div>
+        <ConfirmModal
+          open={pendingAction != null}
+          onOpenChange={(open) => {
+            if (!open && !actionMutation.isPending) setPendingAction(null);
+          }}
+          title={pendingAction === "cancel" ? "Cancel this job?" : "Remove this job?"}
+          description={
+            pendingAction === "cancel"
+              ? "Unfinished pages will stop processing and be marked as failed. Finished pages will stay available."
+              : "This removes the job from the workspace, including its page records and review entries."
+          }
+          confirmLabel={pendingAction === "cancel" ? "Cancel job" : "Remove job"}
+          variant="danger"
+          loading={actionMutation.isPending}
+          onConfirm={() => {
+            if (pendingAction) actionMutation.mutate(pendingAction);
+          }}
+        />
       </TooltipProvider>
     </UserShell>
   );
@@ -495,6 +564,9 @@ function PageRow({
 }
 
 function pageMessage(page: JobPage): string {
+  if (page.status === "queued") {
+    return "Waiting for a worker.";
+  }
   if (page.status === "failed") {
     return "We could not process this page automatically.";
   }
