@@ -45,7 +45,19 @@ from sqlalchemy.orm import Session
 
 from monitoring.drift_observer import observe_and_check
 from services.eep.app.db.models import ServiceInvocation
-from shared.metrics import EEP_GEOMETRY_SELECTION_ROUTE
+from shared.metrics import (
+    EEP_GEOMETRY_SELECTION_ROUTE,
+    IEP1A_GEOMETRY_CONFIDENCE,
+    IEP1A_PAGE_COUNT,
+    IEP1A_SPLIT_DETECTION_RATE,
+    IEP1A_TTA_PREDICTION_VARIANCE,
+    IEP1A_TTA_STRUCTURAL_AGREEMENT_RATE,
+    IEP1B_GEOMETRY_CONFIDENCE,
+    IEP1B_PAGE_COUNT,
+    IEP1B_SPLIT_DETECTION_RATE,
+    IEP1B_TTA_PREDICTION_VARIANCE,
+    IEP1B_TTA_STRUCTURAL_AGREEMENT_RATE,
+)
 from services.eep.app.gates.geometry_selection import (
     GeometrySelectionResult,
     PreprocessingGateConfig,
@@ -402,6 +414,12 @@ def _observe_geometry_metrics(
       all eep.geometry_selection_route.* fractions (binary one-vs-rest)
     """
     if iep1a is not None:
+        IEP1A_GEOMETRY_CONFIDENCE.observe(iep1a.geometry_confidence)
+        IEP1A_PAGE_COUNT.observe(float(iep1a.page_count))
+        IEP1A_TTA_STRUCTURAL_AGREEMENT_RATE.observe(iep1a.tta_structural_agreement_rate)
+        IEP1A_TTA_PREDICTION_VARIANCE.observe(iep1a.tta_prediction_variance)
+        if iep1a.split_required:
+            IEP1A_SPLIT_DETECTION_RATE.inc()
         observe_and_check("iep1a.geometry_confidence", iep1a.geometry_confidence, session)
         observe_and_check(
             "iep1a.tta_structural_agreement_rate", iep1a.tta_structural_agreement_rate, session
@@ -409,6 +427,12 @@ def _observe_geometry_metrics(
         observe_and_check("iep1a.tta_prediction_variance", iep1a.tta_prediction_variance, session)
         observe_and_check("iep1a.split_detection_rate", float(iep1a.split_required), session)
     if iep1b is not None:
+        IEP1B_GEOMETRY_CONFIDENCE.observe(iep1b.geometry_confidence)
+        IEP1B_PAGE_COUNT.observe(float(iep1b.page_count))
+        IEP1B_TTA_STRUCTURAL_AGREEMENT_RATE.observe(iep1b.tta_structural_agreement_rate)
+        IEP1B_TTA_PREDICTION_VARIANCE.observe(iep1b.tta_prediction_variance)
+        if iep1b.split_required:
+            IEP1B_SPLIT_DETECTION_RATE.inc()
         observe_and_check("iep1b.geometry_confidence", iep1b.geometry_confidence, session)
         observe_and_check(
             "iep1b.tta_structural_agreement_rate", iep1b.tta_structural_agreement_rate, session
