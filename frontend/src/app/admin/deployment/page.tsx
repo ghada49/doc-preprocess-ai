@@ -197,15 +197,23 @@ export default function DeploymentPage() {
                   />
                 </>
               )}
-              <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
-                <p className="text-xs font-semibold text-amber-800 mb-1">Live Retraining Disabled</p>
-                <p className="text-xs text-amber-700">
-                  Live model retraining is intentionally not enabled in the current deployment.
-                  The pipeline flow, gate checks, staging, promotion, and rollback are all fully
-                  implemented and tested — but the training compute step remains stubbed
-                  pending GPU budget allocation and training dataset validation.
-                </p>
-              </div>
+              {deployment?.feature_flags?.retraining_mode === "live" ? (
+                <div className="mt-4 p-3 bg-emerald-50 border border-emerald-200 rounded-lg">
+                  <p className="text-xs font-semibold text-emerald-800 mb-1">Live Retraining Active</p>
+                  <p className="text-xs text-emerald-700">
+                    YOLO training scripts are active. Triggered retraining jobs will run real training,
+                    produce new weights, and create ModelVersion rows for admin review.
+                  </p>
+                </div>
+              ) : deployment?.feature_flags ? (
+                <div className="mt-4 p-3 bg-amber-50 border border-amber-200 rounded-lg">
+                  <p className="text-xs font-semibold text-amber-800 mb-1">Retraining in Stub Mode</p>
+                  <p className="text-xs text-amber-700">
+                    LIBRARYAI_RETRAINING_TRAIN is &ldquo;{deployment.feature_flags.retraining_mode}&rdquo;.
+                    Real YOLO training will not run until this is set to &ldquo;live&rdquo; in the ECS task definition.
+                  </p>
+                </div>
+              ) : null}
             </div>
 
             {/* Queue state */}

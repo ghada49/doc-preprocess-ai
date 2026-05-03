@@ -21,11 +21,11 @@ Exported:
 
 from __future__ import annotations
 
-import logging
 import hmac
+import logging
 import os
 import uuid
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, status
@@ -243,7 +243,7 @@ def _build_trigger_cooldowns(db: Session, now: datetime) -> list[TriggerCooldown
         in_cooldown = (
             cooldown_until is not None
             and (
-                cooldown_until.replace(tzinfo=timezone.utc)
+                cooldown_until.replace(tzinfo=UTC)
                 if cooldown_until.tzinfo is None
                 else cooldown_until
             )
@@ -320,16 +320,16 @@ def _create_callback_model_versions(
                 version_tag=f"rt-{job.job_id.replace('-', '')[:12]}-iep1a",
                 mlflow_run_id=mlflow_run_id,
                 dataset_version=payload.dataset_version,
-                gate_results=_stub_gate_results(),
-                notes="created from RunPod callback",
+                gate_results={},
+                notes="created from RunPod callback — awaiting evaluation",
             ),
             RunPodModelVersionPayload(
                 service_name="iep1b",
                 version_tag=f"rt-{job.job_id.replace('-', '')[:12]}-iep1b",
                 mlflow_run_id=mlflow_run_id,
                 dataset_version=payload.dataset_version,
-                gate_results=_stub_gate_results(),
-                notes="created from RunPod callback",
+                gate_results={},
+                notes="created from RunPod callback — awaiting evaluation",
             ),
         ]
 
@@ -354,7 +354,7 @@ def _create_callback_model_versions(
                 mlflow_run_id=mlflow_run_id or version.mlflow_run_id,
                 dataset_version=version.dataset_version or payload.dataset_version,
                 stage="staging",
-                gate_results=version.gate_results or _stub_gate_results(),
+                gate_results=version.gate_results or {},
                 notes=version.notes,
             )
         )
@@ -496,7 +496,7 @@ def get_retraining_status(
 
     **Auth:** admin role required.
     """
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     recent_threshold = now - timedelta(hours=_RECENT_COMPLETED_HOURS)
 
     # Active jobs
@@ -598,7 +598,7 @@ def trigger_manual_retraining(
             detail="Manual retraining is already queued or running.",
         )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     reason = (body.reason if body else None) or "Manual retraining requested from admin UI"
     row = RetrainingTrigger(
         trigger_id=str(uuid.uuid4()),
@@ -641,12 +641,12 @@ def trigger_manual_retraining(
         if worker_start_status == "requested":
             row.status = "processing"
             runpod_job.status = "running"
-            runpod_job.started_at = datetime.now(timezone.utc)
+            runpod_job.started_at = datetime.now(UTC)
         elif worker_start_status == "failed":
             row.status = "failed"
-            row.resolved_at = datetime.now(timezone.utc)
+            row.resolved_at = datetime.now(UTC)
             runpod_job.status = "failed"
-            runpod_job.completed_at = datetime.now(timezone.utc)
+            runpod_job.completed_at = datetime.now(UTC)
             runpod_job.error_message = worker_start_message
     if worker_external_id or runpod_job is not None:
         db.commit()
@@ -706,7 +706,7 @@ def runpod_retraining_callback(
             detail="Retraining trigger/job pair was not found.",
         )
 
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
     if payload.status == "running":
         trigger.status = "processing"
         job.status = "running"

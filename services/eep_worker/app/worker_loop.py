@@ -14,7 +14,7 @@ import socket
 import time
 import uuid
 from dataclasses import asdict, dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any, Literal
 from urllib.parse import urlparse
 
@@ -34,14 +34,18 @@ from services.eep.app.db.lineage import (
 )
 from services.eep.app.db.models import Job, JobPage, PageLineage, ShadowEvaluation
 from services.eep.app.db.page_state import advance_page_state
+from services.eep.app.db.quality_gate import log_gate
 from services.eep.app.db.session import SessionLocal
 from services.eep.app.gates.artifact_validation import (
     ArtifactValidationResult,
     build_artifact_gate_log_record,
     make_cv2_image_loader,
 )
+from services.eep.app.gates.geometry_selection import build_geometry_gate_log_record
 from services.eep.app.jobs.summary import (
     derive_job_status as _derive_job_status,
+)
+from services.eep.app.jobs.summary import (
     leaf_pages_from_pages,
 )
 from services.eep.app.queue import (
@@ -62,8 +66,11 @@ from services.eep_worker.app.geometry_invocation import (
     GeometryServiceError,
     invoke_geometry_services,
 )
-from services.eep.app.db.quality_gate import log_gate
-from services.eep.app.gates.geometry_selection import build_geometry_gate_log_record
+from services.eep_worker.app.iep1d_scaler import (
+    Iep1dScaler,
+    Iep1dUnavailableError,
+    build_iep1d_scaler,
+)
 from services.eep_worker.app.intake import (
     OtiffDecodeError,
     OtiffHashMismatchError,
@@ -83,18 +90,17 @@ from services.eep_worker.app.normalization_step import (
     NormalizationOutcome,
     run_normalization_and_first_validation,
 )
-from services.eep_worker.app.split_step import SplitOutcome, run_split_normalization
-from services.eep_worker.app.iep1d_scaler import Iep1dScaler, Iep1dUnavailableError, build_iep1d_scaler
 from services.eep_worker.app.presigned_inputs import (
     maybe_presign_input_uri,
     maybe_presign_input_uris,
 )
 from services.eep_worker.app.rescue_step import RescueOutcome, run_rescue_flow
+from services.eep_worker.app.split_step import SplitOutcome, run_split_normalization
 from services.eep_worker.app.task import build_gate_config
 from services.eep_worker.app.watchdog import TaskWatchdog
 from shared.gpu.backend import BackendError, GPUBackend, LocalHTTPBackend, RunpodBackend
-from shared.metrics import EEP_RECTIFICATION_POLICY_SKIPS, EEP_REQUESTS_TOTAL
 from shared.io.storage import get_backend
+from shared.metrics import EEP_RECTIFICATION_POLICY_SKIPS, EEP_REQUESTS_TOTAL, SHADOW_TASKS_ENQUEUED
 from shared.schemas.iep0 import BatchClassifyResponse, ClassifyResponse
 from shared.schemas.layout import (
     LayoutAdjudicationResult,
@@ -104,11 +110,9 @@ from shared.schemas.layout import (
     Region,
 )
 from shared.schemas.preprocessing import PreprocessBranchResponse
+from shared.schemas.queue import QUEUE_SHADOW_TASKS, PageTask, ShadowTask
 from shared.schemas.semantic_norm import SemanticNormResponse
 from shared.schemas.ucf import BoundingBox
-from shared.schemas.queue import PageTask, ShadowTask
-from shared.metrics import SHADOW_TASKS_ENQUEUED
-from shared.schemas.queue import QUEUE_SHADOW_TASKS
 
 logger = logging.getLogger(__name__)
 
@@ -342,7 +346,7 @@ async def _read_artifact_bytes_with_retry(
                 uri,
             )
             return data
-        except asyncio.TimeoutError:
+        except TimeoutError:
             last_error = TimeoutError(
                 f"artifact read timed out after {timeout_seconds:.1f}s for {uri}"
             )
@@ -429,7 +433,7 @@ def _find_lineage(
 def _sync_job_summary(session: Session, job: Job) -> None:
     pages = session.query(JobPage).filter_by(job_id=job.job_id).all()
     leaf_pages = leaf_pages_from_pages(pages)
-    now = datetime.now(timezone.utc)
+    now = datetime.now(UTC)
 
     job.accepted_count = sum(1 for page in leaf_pages if page.status == "accepted")
     job.review_count = sum(1 for page in leaf_pages if page.status == "review")
@@ -1631,6 +1635,8 @@ async def _run_preprocessing(
             if split_outcome.right.branch_response is not None else right_output_uri,
         }
         _split_sem_result: SemanticNormResponse | None = None
+        _orientation_conflict_meta: dict[int, dict] = {}
+        _inherited_rotation_meta: dict[int, dict] | None = None
         try:
             _left_br = split_outcome.left.branch_response
             _right_br = split_outcome.right.branch_response
@@ -1660,85 +1666,58 @@ async def _run_preprocessing(
                 if _split_sem_result is not None and _split_sem_result.pages:
                     for _sp in _split_sem_result.pages:
                         _split_iep1e_uri_map[_sp.sub_page_index] = _sp.oriented_uri
-                else:
-                    logger.info(
-                        "worker_loop: split iep1e fallback job=%s page=%d; "
-                        "using split-normalized URIs",
-                        job.job_id,
-                        page.page_number,
-                    )
 
-                    # ── Blank-page rotation inheritance ──────────────────────
-                    # If exactly one page has no OCR text (blank page),
-                    # it cannot self-determine its orientation.  Apply the
-                    # same rotation as the confident sibling so both halves
-                    # are consistently oriented.
-                    # Guard: _split_sem_result is None when iep1e timed out or
-                    # failed entirely; skip rotation inheritance in that case.
-                    _pages = _split_sem_result.pages if _split_sem_result is not None else []
-                    if len(_pages) == 2:
-                        _p0, _p1 = _pages[0], _pages[1]
-                        _confident_page = None
-                        _blank_page = None
-                        if _p0.orientation.orientation_confident and not _p1.orientation.orientation_confident:
-                            _confident_page, _blank_page = _p0, _p1
-                        elif _p1.orientation.orientation_confident and not _p0.orientation.orientation_confident:
-                            _confident_page, _blank_page = _p1, _p0
-
+                    # ── Orientation-conflict detection (Rule 5) ─────────────────
+                    # Both children confident but disagreeing rotations must not be
+                    # silently resolved; flag the conflict for review.
+                    if len(_split_sem_result.pages) == 2:
+                        _pc0 = next(
+                            (p for p in _split_sem_result.pages if p.sub_page_index == 0),
+                            None,
+                        )
+                        _pc1 = next(
+                            (p for p in _split_sem_result.pages if p.sub_page_index == 1),
+                            None,
+                        )
                         if (
-                            _confident_page is not None
-                            and _blank_page is not None
-                            and _confident_page.orientation.best_rotation_deg != 0
+                            _pc0 is not None
+                            and _pc1 is not None
+                            and _pc0.orientation.orientation_confident
+                            and _pc1.orientation.orientation_confident
+                            and _pc0.orientation.best_rotation_deg
+                            != _pc1.orientation.best_rotation_deg
                         ):
-                            _donor_deg = _confident_page.orientation.best_rotation_deg
-                            _blank_src_uri = _blank_page.original_uri
-                            _blank_oriented_uri = _artifact_uri(
-                                page.input_image_uri,
+                            logger.warning(
+                                "worker_loop: orientation_conflict job=%s page=%d "
+                                "sub0=%d° sub1=%d° — both children confident with "
+                                "disagreeing rotations",
                                 job.job_id,
-                                "oriented",
                                 page.page_number,
-                                _blank_page.sub_page_index,
-                                ".tiff",
+                                _pc0.orientation.best_rotation_deg,
+                                _pc1.orientation.best_rotation_deg,
                             )
-                            try:
-                                _raw = await asyncio.to_thread(
-                                    get_backend(_blank_src_uri).get_bytes, _blank_src_uri
-                                )
-                                _arr = np.frombuffer(_raw, dtype=np.uint8)
-                                _blank_img = cv2.imdecode(_arr, cv2.IMREAD_COLOR)
-                                if _blank_img is not None:
-                                    _cv2_rot = {
-                                        90: cv2.ROTATE_90_CLOCKWISE,
-                                        180: cv2.ROTATE_180,
-                                        270: cv2.ROTATE_90_COUNTERCLOCKWISE,
-                                    }[_donor_deg]
-                                    _rotated_blank = cv2.rotate(_blank_img, _cv2_rot)
-                                    _success, _buf = cv2.imencode(".tiff", _rotated_blank)
-                                    if _success:
-                                        get_backend(_blank_oriented_uri).put_bytes(
-                                            _blank_oriented_uri, bytes(_buf.tobytes())
-                                        )
-                                        _split_iep1e_uri_map[_blank_page.sub_page_index] = (
-                                            _blank_oriented_uri
-                                        )
-                                        logger.info(
-                                            "worker_loop: blank split child sub=%d rotated %d° "
-                                            "(inherited from sibling sub=%d) job=%s page=%d → %s",
-                                            _blank_page.sub_page_index,
-                                            _donor_deg,
-                                            _confident_page.sub_page_index,
-                                            job.job_id,
-                                            page.page_number,
-                                            _blank_oriented_uri,
-                                        )
-                            except Exception as _rot_exc:
-                                logger.warning(
-                                    "worker_loop: blank split rotation inheritance failed "
-                                    "sub=%d job=%s: %s — leaving original URI",
-                                    _blank_page.sub_page_index,
-                                    job.job_id,
-                                    _rot_exc,
-                                )
+                            _orientation_conflict_meta = {
+                                0: {
+                                    "orientation_source": "orientation_conflict",
+                                    "conflicting_sibling_rotation_degrees": (
+                                        _pc1.orientation.best_rotation_deg
+                                    ),
+                                },
+                                1: {
+                                    "orientation_source": "orientation_conflict",
+                                    "conflicting_sibling_rotation_degrees": (
+                                        _pc0.orientation.best_rotation_deg
+                                    ),
+                                },
+                            }
+
+                    # ── Blank-page sibling rotation inheritance (Rules 2–4) ─────
+                    _inherited_rotation_meta = await _inherit_blank_rotation_for_semantic_group(
+                        job=job,
+                        page_number=page.page_number,
+                        sem_result=_split_sem_result,
+                        oriented_uri_by_sub=_split_iep1e_uri_map,
+                    )
 
                     # ── Post-rotation left/right ordering ─────────────────────
                     # The geometry model runs on the pre-rotation scan, so the
@@ -1761,7 +1740,7 @@ async def _run_preprocessing(
                     try:
                         _iep1e_by_sub = {
                             _sp.sub_page_index: _sp
-                            for _sp in (_split_sem_result.pages if _split_sem_result is not None else [])
+                            for _sp in _split_sem_result.pages
                         }
                         _rot_p0 = _iep1e_by_sub.get(0)
                         _rot_p1 = _iep1e_by_sub.get(1)
@@ -1847,6 +1826,13 @@ async def _run_preprocessing(
                             page.page_number,
                             _swap_exc,
                         )
+                else:
+                    logger.info(
+                        "worker_loop: split iep1e fallback job=%s page=%d; "
+                        "using split-normalized URIs",
+                        job.job_id,
+                        page.page_number,
+                    )
         except Exception:
             logger.exception(
                 "worker_loop: iep1e split call raised unexpectedly job=%s page=%d; "
@@ -1945,6 +1931,12 @@ async def _run_preprocessing(
             if child_status == "accepted":
                 child_lineage.acceptance_decision = "accepted"
                 child_lineage.routing_path = "split_child_accepted"
+            _orient_gate = (
+                (_inherited_rotation_meta or {}).get(sub_idx)
+                or _orientation_conflict_meta.get(sub_idx)
+            )
+            if _orient_gate is not None:
+                child_lineage.gate_results = _orient_gate
             confirm_preprocessed_artifact(session, child_lineage.lineage_id)
 
             logger.info(
@@ -2586,7 +2578,7 @@ async def _prepare_layout_input_artifact(
             asyncio.to_thread(_decode_image_array, source_bytes, uri=source_page_artifact_uri),
             timeout=config.layout_artifact_io_timeout_seconds,
         )
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         raise RetryableTaskError(
             "layout source decode timed out "
             f"after {config.layout_artifact_io_timeout_seconds:.1f}s for {source_page_artifact_uri}"
@@ -2611,7 +2603,7 @@ async def _prepare_layout_input_artifact(
             ),
             timeout=config.layout_artifact_io_timeout_seconds,
         )
-    except asyncio.TimeoutError as exc:
+    except TimeoutError as exc:
         raise RetryableTaskError(
             "layout downsample timed out "
             f"after {config.layout_artifact_io_timeout_seconds:.1f}s for {source_page_artifact_uri}"
@@ -2721,16 +2713,20 @@ async def _inherit_blank_rotation_for_semantic_group(
     page_number: int,
     sem_result: SemanticNormResponse | None,
     oriented_uri_by_sub: dict[int, str],
-) -> None:
+) -> dict[int, dict] | None:
     """
     If one split child is blank, rotate it with the confident sibling's rotation.
 
     IEP1E leaves a blank page at rotation 0 because there is no OCR evidence.
     For a spread pair, a blank sibling should still follow the rotation resolved
     from the text-bearing page.
+
+    Returns a dict keyed by the inheriting child's sub_page_index with gate_results
+    metadata (orientation_source, inherited_rotation_from_child_id, etc.), or None
+    when no inheritance was performed.
     """
     if sem_result is None or len(sem_result.pages) != 2:
-        return
+        return None
 
     p0, p1 = sem_result.pages[0], sem_result.pages[1]
     confident_page = None
@@ -2741,11 +2737,11 @@ async def _inherit_blank_rotation_for_semantic_group(
         confident_page, blank_page = p1, p0
 
     if confident_page is None or blank_page is None:
-        return
+        return None
 
     donor_deg = confident_page.orientation.best_rotation_deg
     if donor_deg == 0:
-        return
+        return None
 
     blank_src_uri = blank_page.original_uri
     blank_oriented_uri = _artifact_uri(
@@ -2762,7 +2758,7 @@ async def _inherit_blank_rotation_for_semantic_group(
         arr = np.frombuffer(raw, dtype=np.uint8)
         blank_img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
         if blank_img is None:
-            return
+            return None
         cv2_rot = {
             90: cv2.ROTATE_90_CLOCKWISE,
             180: cv2.ROTATE_180,
@@ -2771,7 +2767,7 @@ async def _inherit_blank_rotation_for_semantic_group(
         rotated_blank = cv2.rotate(blank_img, cv2_rot)
         success, buf = cv2.imencode(".tiff", rotated_blank)
         if not success:
-            return
+            return None
         get_backend(blank_oriented_uri).put_bytes(blank_oriented_uri, bytes(buf.tobytes()))
         oriented_uri_by_sub[blank_page.sub_page_index] = blank_oriented_uri
         logger.info(
@@ -2784,6 +2780,14 @@ async def _inherit_blank_rotation_for_semantic_group(
             page_number,
             blank_oriented_uri,
         )
+        return {
+            blank_page.sub_page_index: {
+                "orientation_source": "inherited_from_sibling",
+                "inherited_rotation_from_child_id": confident_page.sub_page_index,
+                "inherited_rotation_degrees": donor_deg,
+                "inherited_rotation_reason": "sibling_confident_blank_page",
+            }
+        }
     except Exception as exc:
         logger.warning(
             "worker_loop: split semantic_norm blank rotation inheritance failed "
@@ -2793,6 +2797,7 @@ async def _inherit_blank_rotation_for_semantic_group(
             blank_page.sub_page_index,
             exc,
         )
+        return None
 
 
 async def _run_split_group_semantic_norm(
@@ -2847,10 +2852,11 @@ async def _run_split_group_semantic_norm(
 
     direction = sem_result.reading_direction if sem_result is not None else "unresolved"
     oriented_uri_by_sub: dict[int, str] = dict(zip(sub_page_indices, page_uris))
+    _rerun_inherited_meta: dict[int, dict] | None = None
     if sem_result is not None:
         for result in sem_result.pages:
             oriented_uri_by_sub[result.sub_page_index] = result.oriented_uri
-        await _inherit_blank_rotation_for_semantic_group(
+        _rerun_inherited_meta = await _inherit_blank_rotation_for_semantic_group(
             job=job,
             page_number=page.page_number,
             sem_result=sem_result,
@@ -2872,6 +2878,9 @@ async def _run_split_group_semantic_norm(
         if oriented_uri is not None:
             child.output_image_uri = oriented_uri
             child_lineage.output_image_uri = oriented_uri
+        _rerun_orient_gate = (_rerun_inherited_meta or {}).get(sub_idx)
+        if _rerun_orient_gate is not None:
+            child_lineage.gate_results = _rerun_orient_gate
         child.reading_order = _reading_order_for_sub(direction, sub_idx)
 
         if uri_changed:
@@ -3249,7 +3258,7 @@ async def _run_layout(
                 ),
                 timeout=config.iep2_call_timeout_seconds,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "worker_loop: iep2a timed out after %.1fs job=%s page=%d",
                 config.iep2_call_timeout_seconds,
@@ -3274,7 +3283,7 @@ async def _run_layout(
                 ),
                 timeout=config.iep2_call_timeout_seconds,
             )
-        except asyncio.TimeoutError:
+        except TimeoutError:
             logger.warning(
                 "worker_loop: iep2b timed out after %.1fs job=%s page=%d",
                 config.iep2_call_timeout_seconds,

@@ -152,14 +152,10 @@ def _runpod_env(trigger_id: str, *, job_id: str | None = None) -> dict[str, str]
         "RETRAINING_CALLBACK_SECRET": callback_secret,
         "PYTHONPATH": "/app",
         "HEALTH_PORT": os.environ.get("RETRAINING_HEALTH_PORT", "9104"),
-        "LIBRARYAI_RETRAINING_TRAIN": os.environ.get(
-            "LIBRARYAI_RETRAINING_TRAIN",
-            "stub",
-        ),
-        "LIBRARYAI_RETRAINING_GOLDEN_EVAL": os.environ.get(
-            "LIBRARYAI_RETRAINING_GOLDEN_EVAL",
-            "stub",
-        ),
+        # callback_once mode supports stub retraining only — live training
+        # runs via ECS db_poll mode (retraining-worker task def).
+        "LIBRARYAI_RETRAINING_TRAIN": "stub",
+        "LIBRARYAI_RETRAINING_GOLDEN_EVAL": "stub",
         "RETRAINING_DATASET_MODE": os.environ.get(
             "RETRAINING_DATASET_MODE",
             "corrected_hybrid",
