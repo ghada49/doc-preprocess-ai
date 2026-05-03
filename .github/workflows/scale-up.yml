@@ -11,8 +11,10 @@ permissions:
   contents: read
 
 env:
-  AWS_REGION:  ${{ vars.AWS_REGION }}
-  ECS_CLUSTER: ${{ vars.ECS_CLUSTER }}
+  AWS_REGION:   ${{ vars.AWS_REGION }}
+  ECS_CLUSTER:  ${{ vars.ECS_CLUSTER }}
+  DRAIN_SUBNET: ${{ vars.DRAIN_SUBNET_ID }}
+  DRAIN_SG:     ${{ vars.DRAIN_SECURITY_GROUP_ID }}
 
 jobs:
   scale-up:
@@ -72,9 +74,68 @@ jobs:
             echo "At least one normal-processing service is below desired/running >= 1; proceeding with scale-up."
           fi
 
+      # ── Step 1a: Register drain-monitor task definition ──────────────────
+      # Only needed when services are not already running.
+      - name: Register drain-monitor task definition
+        id: register_drain
+        if: steps.processing-active.outputs.active != 'true'
+        run: |
+          TASK_DEF_FILE=$(mktemp)
+          sed \
+            -e "s/ACCOUNT_ID/${{ vars.AWS_ACCOUNT_ID }}/g" \
+            -e "s/REGION/${{ vars.AWS_REGION }}/g" \
+            k8s/ecs/drain-monitor-task-def.json > "$TASK_DEF_FILE"
+          python3 -m json.tool "$TASK_DEF_FILE" > /dev/null
+          TASK_DEF_ARN=$(aws ecs register-task-definition \
+            --cli-input-json "file://$TASK_DEF_FILE" \
+            --query 'taskDefinition.taskDefinitionArn' --output text)
+          echo "task_def_arn=$TASK_DEF_ARN" >> "$GITHUB_OUTPUT"
+
+      # ── Step 1b: Check for processable work ───────────────────────────────
+      # Skip the entire scale-up if no pages are awaiting processing.
+      # drain_monitor --assert-has-work exits 0 if work exists, 1 if drained.
+      # This prevents wasting money on RunPod pods + Fargate tasks when the
+      # 10 PM cron fires but there is nothing to process.
+      - name: Check for processable work
+        id: check_work
+        if: steps.processing-active.outputs.active != 'true'
+        run: |
+          TASK_ARN=$(aws ecs run-task \
+            --cluster "$ECS_CLUSTER" \
+            --task-definition "${{ steps.register_drain.outputs.task_def_arn }}" \
+            --launch-type FARGATE \
+            --network-configuration "awsvpcConfiguration={subnets=[$DRAIN_SUBNET],securityGroups=[$DRAIN_SG],assignPublicIp=DISABLED}" \
+            --overrides "{\"containerOverrides\":[{\"name\":\"drain-monitor\",\"command\":[\"python\",\"/app/scripts/ecs_scaler/drain_monitor.py\",\"--assert-has-work\"],\"environment\":[{\"name\":\"ECS_CLUSTER\",\"value\":\"$ECS_CLUSTER\"},{\"name\":\"AWS_REGION\",\"value\":\"$AWS_REGION\"}]}]}" \
+            --query 'tasks[0].taskArn' --output text)
+          echo "Check task: $TASK_ARN"
+          for i in $(seq 1 30); do
+            STATUS=$(aws ecs describe-tasks \
+              --cluster "$ECS_CLUSTER" \
+              --tasks "$TASK_ARN" \
+              --query 'tasks[0].lastStatus' --output text)
+            echo "  attempt $i/30 — status=$STATUS"
+            if [ "$STATUS" = "STOPPED" ]; then break; fi
+            sleep 10
+          done
+          EXIT_CODE=$(aws ecs describe-tasks \
+            --cluster "$ECS_CLUSTER" \
+            --tasks "$TASK_ARN" \
+            --query 'tasks[0].containers[0].exitCode' --output text)
+          echo "drain_monitor exit_code=$EXIT_CODE"
+          if [ "$EXIT_CODE" = "0" ]; then
+            echo "has_work=true" >> "$GITHUB_OUTPUT"
+            echo "Processable work found — proceeding with scale-up."
+          elif [ "$EXIT_CODE" = "1" ]; then
+            echo "has_work=false" >> "$GITHUB_OUTPUT"
+            echo "No processable work — skipping scale-up."
+          else
+            echo "ERROR: drain_monitor failed unexpectedly (exit_code=$EXIT_CODE)."
+            exit 1
+          fi
+
       # ── Step 1: Create RunPod GPU pods (iep0, iep1a, iep1b) ─────────────
       - name: Create RunPod GPU pods
-        if: steps.processing-active.outputs.active != 'true'
+        if: steps.processing-active.outputs.active != 'true' && steps.check_work.outputs.has_work == 'true'
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
           RUNPOD_POD_MODE: ${{ vars.RUNPOD_POD_MODE || 'create' }}
@@ -389,7 +450,7 @@ jobs:
 
       # ── Step 2: Register eep-worker task def with RunPod IEP URLs ────────
       - name: Update eep-worker task definition with RunPod IEP URLs
-        if: steps.processing-active.outputs.active != 'true'
+        if: steps.processing-active.outputs.active != 'true' && steps.check_work.outputs.has_work == 'true'
         run: |
           CLUSTER="$ECS_CLUSTER"
           TASK_DEF=$(cat k8s/ecs/eep-worker-task-def.json \
@@ -419,7 +480,7 @@ jobs:
       # (~$0.02/hour) and eliminates that race.  The on-demand scaler still
       # exists as a defence-in-depth fallback (idempotent when desired=1).
       - name: Start CPU IEP services (iep1d, iep1e, iep2a-v2, iep2b)
-        if: steps.processing-active.outputs.active != 'true'
+        if: steps.processing-active.outputs.active != 'true' && steps.check_work.outputs.has_work == 'true'
         run: |
           sc_config() {
             case "$1" in
@@ -442,7 +503,7 @@ jobs:
           done
 
       - name: Wait for CPU IEP services to become healthy
-        if: steps.processing-active.outputs.active != 'true'
+        if: steps.processing-active.outputs.active != 'true' && steps.check_work.outputs.has_work == 'true'
         run: |
           aws ecs wait services-stable \
             --cluster "$ECS_CLUSTER" \
@@ -452,7 +513,7 @@ jobs:
       # ── Step 4: Start processing workers ─────────────────────────────────
       # NOTE: libraryai-eep is always-on and is NOT managed by this workflow.
       - name: Start workers
-        if: steps.processing-active.outputs.active != 'true'
+        if: steps.processing-active.outputs.active != 'true' && steps.check_work.outputs.has_work == 'true'
         run: |
           DESIRED=${{ vars.WORKER_DESIRED_COUNT || '2' }}
           EEP_WORKER_SC='{"enabled":true,"namespace":"libraryai.local","services":[{"portName":"health","discoveryName":"eep-worker","clientAliases":[{"port":9100,"dnsName":"eep-worker"}]}]}'
@@ -489,7 +550,7 @@ jobs:
           echo "Started libraryai-shadow-worker desired=$DESIRED"
 
       - name: Wait for workers to become healthy
-        if: steps.processing-active.outputs.active != 'true'
+        if: steps.processing-active.outputs.active != 'true' && steps.check_work.outputs.has_work == 'true'
         run: |
           aws ecs wait services-stable \
             --cluster "$ECS_CLUSTER" \
@@ -502,7 +563,7 @@ jobs:
           echo "  iep1b: ${IEP1B_URL}"
 
       - name: Cleanup failed scale-up resources
-        if: ${{ failure() && steps.processing-active.outputs.active != 'true' }}
+        if: ${{ failure() && steps.processing-active.outputs.active != 'true' && steps.check_work.outputs.has_work == 'true' }}
         env:
           RUNPOD_API_KEY: ${{ secrets.RUNPOD_API_KEY }}
         run: |
