@@ -616,7 +616,7 @@ def _check_training_data_sufficiency(db: Session) -> dict[str, Any] | None:
     for family in _FAMILIES:
         for material in _MATERIALS:
             env = f"RETRAINING_MIN_CORRECTED_{family.upper()}_{material.upper()}"
-            thresholds[(family, material)] = int(os.environ.get(env, "10"))
+            thresholds[(family, material)] = int(os.environ.get(env, "100"))
 
     eligible = [
         (f, m)
