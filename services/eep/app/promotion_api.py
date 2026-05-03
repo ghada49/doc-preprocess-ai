@@ -30,8 +30,10 @@ On success:
   - staging candidate → stage='production', promoted_at=now()
   - current production (if any) → stage='archived'
   - Redis PUBLISH libraryai:model_reload:{service} (best-effort)
-  - MLflow stage transition: logged but not executed (MLflow client not yet
-    wired; Packet 8.5 will add mlflow_run_id tracking — stub only)
+  - MLflow stage transition: _mlflow_transition() calls
+    MlflowClient.transition_model_version_stage when MLFLOW_TRACKING_URI is set
+    and a registered model version exists for mlflow_run_id; otherwise skipped
+    with a warning (never blocks DB promotion).
 
 --- POST /v1/models/rollback ---
 
