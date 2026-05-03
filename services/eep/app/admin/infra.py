@@ -274,21 +274,28 @@ def get_service_inventory(
         signal: ServiceHealthSignal | None = None
 
         if pattern:
-            q = db.query(ServiceInvocation).filter(
+            base_filters = (
                 ServiceInvocation.service_name.ilike(str(pattern)),
                 ServiceInvocation.invoked_at >= window_start,
             )
-            total = q.with_entities(func.count(ServiceInvocation.id)).scalar() or 0
+            total = (
+                db.query(func.count(ServiceInvocation.id)).filter(*base_filters).scalar() or 0
+            )
             success = (
-                q.filter(ServiceInvocation.status == "success")
-                .with_entities(func.count(ServiceInvocation.id))
+                db.query(func.count(ServiceInvocation.id))
+                .filter(
+                    *base_filters,
+                    ServiceInvocation.status == "success",
+                )
                 .scalar()
                 or 0
             )
             errors = total - success
 
             last_row = (
-                q.order_by(ServiceInvocation.invoked_at.desc())
+                db.query(ServiceInvocation)
+                .filter(*base_filters)
+                .order_by(ServiceInvocation.invoked_at.desc())
                 .first()
             )
             last_invoked_at = last_row.invoked_at if last_row else None
