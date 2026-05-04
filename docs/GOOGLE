@@ -1,0 +1,187 @@
+# Google Document AI setup
+
+ 
+
+LibraryAI uses **Google Document AI** only as an **optional fallback** during **layout adjudication**: when local detectors (IEP2A/IEP2B) disagree or fail, the **EEP worker** may call a **layout** processor. Code paths live under **`services/eep_worker/app/google_config.py`**, **`services/eep/app/google/document_ai.py`**, and **`services/eep/app/gates/layout_gate.py`**.
+
+ 
+
+If Google is disabled or misconfigured, the worker **still runs**; the layout gate skips Google and uses local/fallback behavior (see startup logs from **`validate_google_startup()`**).
+
+ 
+
+---
+
+ 
+
+## 1. Google Cloud prerequisites
+
+ 
+
+1. **Project** — A GCP project with **Document AI API** enabled.
+
+2. **Processor** — Create a **Document OCR / Layout** (or equivalent) processor in Document AI and note the **processor ID** (not only the full resource name).
+
+3. **Region** — Document AI “location” is often a **regional endpoint** id (for example **`us`** or **`eu`**). It must match where the processor was created.
+
+4. **Service account** — Create a service account with permission to **call Document AI** on that processor (typically **`roles/documentai.apiUser`** or a custom role granting `documentai.processors.processOnline`).
+
+5. **Key file** — Download a **JSON key** for that account. **Do not commit it** to git.
+
+ 
+
+---
+
+ 
+
+## 2. Environment variables (EEP worker)
+
+ 
+
+Authoritative list and defaults are in **`services/eep_worker/app/google_config.py`** (**`load_google_config()`**).
+
+ 
+
+| Variable | Required when `GOOGLE_ENABLED=true` | Default / notes |
+
+|----------|--------------------------------------|-----------------|
+
+| **`GOOGLE_ENABLED`** | — | `false`; use `true`, `1`, or `yes` to enable |
+
+| **`GOOGLE_PROJECT_ID`** | Yes | GCP project id |
+
+| **`GOOGLE_LOCATION`** | No | `us` |
+
+| **`GOOGLE_PROCESSOR_ID_LAYOUT`** | Yes | Layout processor id |
+
+| **`GOOGLE_PROCESSOR_ID_CLEANUP`** | No | Optional; reserved for future cleanup path |
+
+| **`GOOGLE_TIMEOUT_LAYOUT_SECONDS`** | No | `90` |
+
+| **`GOOGLE_TIMEOUT_CLEANUP_SECONDS`** | No | `120` |
+
+| **`GOOGLE_MAX_RETRIES`** | No | `2` |
+
+| **`GOOGLE_FALLBACK_ON_TIMEOUT`** | No | `true` |
+
+| **`GOOGLE_CREDENTIALS_PATH`** | No | `/var/secrets/google/key.json` — path to the **file** the worker reads |
+
+ 
+
+**Credentials:** The Python config **never** reads inline JSON from a custom env var. It only checks that **`GOOGLE_CREDENTIALS_PATH`** exists as a file. How that file appears depends on the runtime (below).
+
+ 
+
+**ECS / Secrets Manager:** The task definition injects **`GOOGLE_CREDENTIALS_JSON`** from AWS Secrets Manager. **`services/eep_worker/entrypoint.sh`** runs before the app and, if that variable is set, writes its contents to **`/var/secrets/google/key.json`** so the SDK path matches **`GOOGLE_CREDENTIALS_PATH`**.
+
+ 
+
+---
+
+ 
+
+## 3. Local development (Docker Compose)
+
+ 
+
+1. Set **`GOOGLE_ENABLED=true`** and fill **`GOOGLE_PROJECT_ID`**, **`GOOGLE_LOCATION`**, **`GOOGLE_PROCESSOR_ID_LAYOUT`** in **`.env`** (see **`.env.example`**).
+
+2. Point **`GOOGLE_CREDENTIALS_HOST_PATH`** at your host machine’s **JSON key** path. **`docker-compose.yml`** bind-mounts it into **`eep-worker`** at **`/var/secrets/google/key.json`** (see the **`eep-worker`** service comments).
+
+3. Rebuild/restart the worker if you change Google-related env vars.
+
+ 
+
+For a minimal disable, leave **`GOOGLE_ENABLED=false`** (default).
+
+ 
+
+---
+
+ 
+
+## 4. AWS ECS (same pattern as production staging)
+
+ 
+
+1. **Secrets Manager** — Store the **full service account JSON** as a secret (task defs expect a secret named like **`libraryai/GOOGLE_CREDENTIALS_JSON`**; ARN pattern is in **`k8s/ecs/eep-worker-task-def.json`** under **`secrets`** → **`GOOGLE_CREDENTIALS_JSON`**).
+
+2. **Task definition** — **`libraryai-eep-worker`** already maps:
+
+   - **`secrets`:** `GOOGLE_CREDENTIALS_JSON` → that ARN  
+
+   - **`environment`:** placeholders **`GOOGLE_ENABLED_VALUE`**, **`GOOGLE_PROJECT_ID_VALUE`**, etc., substituted at deploy time.
+
+3. **GitHub Actions variables** — Set (for **`deploy.yml`** ECS registration):
+
+   - **`GOOGLE_ENABLED`**
+
+   - **`GOOGLE_PROJECT_ID`**
+
+   - **`GOOGLE_LOCATION`**
+
+   - **`GOOGLE_PROCESSOR_ID_LAYOUT`**
+
+4. **Redeploy** the **`libraryai-eep-worker`** service so tasks pick up the new revision.
+
+ 
+
+**`eep-recovery`** task definitions may also list Google env placeholders for parity; recovery code paths do not call Google in the current tree—verify **`k8s/ecs/eep-recovery-task-def.json`** if you want recovery containers aligned with the same secrets.
+
+ 
+
+---
+
+ 
+
+## 5. Kubernetes (optional cluster path)
+
+ 
+
+Mount the key as a file (not inline in env):
+
+ 
+
+```bash
+
+kubectl create secret generic google-documentai-sa \
+
+  --from-file=key.json=/path/to/your/sa-key.json \
+
+  -n libraryai
+
+```
+
+ 
+
+Mount **`/var/secrets/google`** read-only and keep **`GOOGLE_CREDENTIALS_PATH=/var/secrets/google/key.json`**. See **`k8s/README.md`** and the K8s snippet in **`services/eep_worker/app/google_config.py`** module docstring.
+
+ 
+
+---
+
+ 
+
+## 6. Verification
+
+ 
+
+- **Worker logs** at startup: `Google Document AI: enabled` vs `disabled` / `credentials file … NOT FOUND` / `SDK not installed`.
+
+- **Runtime:** Layout disagreements that previously used only local fallback should show **`layout_decision_source=google_document_ai`** in lineage/admin when Google succeeds (see **`layout_gate.py`**).
+
+ 
+
+---
+
+ 
+
+## Related documentation
+
+ 
+
+- **`.env.example`** — Google block and Compose mount hints  
+
+- **`docs/05_DEPLOYMENT.md`** — GitHub variables **`GOOGLE_*`** in **`deploy.yml`**  
+
+- **`docs/04_API_CONTRACTS.md`** — API surface (Google is worker-internal, not a separate public IEP)

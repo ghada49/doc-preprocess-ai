@@ -43,8 +43,6 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel, Field
 
 from services.eep.app.auth import CurrentUser, require_user
-from shared.io.storage import rewrite_presigned_url_for_public_endpoint
-
 router = APIRouter()
 
 # ---------------------------------------------------------------------------
@@ -63,12 +61,20 @@ def _s3_secret_key() -> str | None:
     return os.environ.get("S3_SECRET_KEY") or os.environ.get("S3_SECRET_ACCESS_KEY")
 
 
-def _s3_client() -> Any:
+def _s3_presign_endpoint_url() -> str | None:
+    return (
+        os.environ.get("S3_PRESIGN_ENDPOINT_URL")
+        or os.environ.get("S3_PUBLIC_ENDPOINT_URL")
+        or os.environ.get("S3_ENDPOINT_URL")
+    )
+
+
+def _s3_client(*, endpoint_url: str | None = None) -> Any:
     """Return a boto3 S3 client using the canonical env-var config."""
     return boto3.client(
         "s3",
         region_name=os.environ.get("AWS_REGION", "eu-central-1"),
-        endpoint_url=os.environ.get("S3_ENDPOINT_URL"),
+        endpoint_url=endpoint_url if endpoint_url is not None else os.environ.get("S3_ENDPOINT_URL"),
         aws_access_key_id=_s3_access_key(),
         aws_secret_access_key=_s3_secret_key(),
     )
@@ -144,7 +150,7 @@ async def presign_otiff_upload(
     object_uri = f"s3://{_BUCKET}/{object_key}"
 
     try:
-        s3 = _s3_client()
+        s3 = _s3_client(endpoint_url=_s3_presign_endpoint_url())
         upload_url: str = s3.generate_presigned_url(
             "put_object",
             Params={
@@ -154,7 +160,6 @@ async def presign_otiff_upload(
             },
             ExpiresIn=_EXPIRES_IN,
         )
-        upload_url = rewrite_presigned_url_for_public_endpoint(upload_url)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,

@@ -14,6 +14,7 @@ LibraryAI processes raw scanned images through geometry correction, quality gati
 - [Prerequisites](#prerequisites)
 - [Quick start](#quick-start)
 - [Service URLs](#service-urls)
+- [Testing the deployed staging app](#testing-the-deployed-staging-app)
 - [Running tests](#running-tests)
 - [Development commands](#development-commands)
 - [Frontend development](#frontend-development)
@@ -52,55 +53,91 @@ Pages submitted to the API are processed through a multi-stage worker pipeline:
 
 ## Quick start
 
-### 1. Clone and configure
+### 1. Clone the repository
 
 ```bash
 git clone <repo-url>
 cd doc-preprocess-ai
+```
+
+### 2. Create the local environment file
+
+```bash
 cp .env.example .env
 ```
 
-The default `.env` works out of the box for local development. You do not need to change anything to get started.
+The default `.env` is designed for local Docker Compose development. Docker Compose also loads `docker-compose.override.yml` automatically. That override is local-only: it exposes the frontend/API on localhost, uses the local MinIO bucket, sets browser-reachable upload URLs, and enables immediate processing without changing the cloud deployment files.
 
-To enable automatic admin account creation on first start, set:
+For a local demo, set an admin account in `.env` before the first start:
 
-```
+```env
 BOOTSTRAP_ADMIN_USERNAME=admin
 BOOTSTRAP_ADMIN_PASSWORD=yourpassword
 ```
 
-### 2. Install Python dev dependencies
+### 3. Add model files if you want real inference
+
+The stack can start in mock mode, but real model inference requires downloaded model files. Download the trained models from:
+
+https://drive.google.com/drive/folders/1lGB0ZF9BsQPF25X364uO-d5PM_xGJZoG
+
+Place the downloaded files under `models/` in the matching IEP folders, following the Drive structure:
+
+```text
+models/
+  iep0/
+  iep1a/
+  iep1b/
+  iep2a/
+  iep2b/
+```
+
+Model weights are not committed to Git. Keep them local or in managed model storage.
+
+### 4. Install Python dev dependencies
+
+This is needed for running tests and developer commands from the host machine:
 
 ```bash
 uv sync
 ```
 
-### 3. Start all services
+### 5. Start the local stack
 
 ```bash
 docker compose up -d
 # or: make up
 ```
 
-The first run pulls images and builds containers — allow a few minutes. All services start automatically including Postgres, Redis, MinIO, and all IEP inference services.
+The first run pulls images and builds containers; allow a few minutes. The stack starts Postgres, Redis, MinIO, MLflow, monitoring, the frontend, EEP API, EEP worker, and IEP inference services.
 
-### 4. Check health
+If uploads fail because the MinIO bucket was not created yet, run:
+
+```bash
+docker compose run --rm minio-init
+```
+
+### 6. Check health
 
 ```bash
 # EEP API (main orchestrator)
 curl -sf http://localhost:8888/v1/status
 
-# IEP inference services (ports 8001–8005)
+# Quick IEP health subset from the Makefile
 make health
 ```
 
 Expected output from the first command: `{"status":"ok","service":"eep"}`
 
-> **Note:** `make health` checks ports 8000–8005. EEP runs on port **8888** — check it separately with `curl http://localhost:8888/health`.
+> **Windows PowerShell note:** if `curl -sf` fails because PowerShell aliases `curl`, use `curl.exe -sf http://127.0.0.1:8888/v1/status`.
 
-### 5. Open the UI
+> **Note:** `make health` checks the legacy local health subset in the Makefile. EEP runs on port **8888** and should be checked separately. The full local service list, including IEP0 on **8006** and IEP1E on **8007**, is in [Service URLs](#service-urls).
+
+### 7. Open the UI
 
 Go to **http://localhost:3000** in your browser and log in with the admin account.
+
+If `localhost` behaves unexpectedly on Windows, use **http://127.0.0.1:3000**.
 
 If you did not set `BOOTSTRAP_ADMIN_PASSWORD`, create the account manually:
 
@@ -109,7 +146,11 @@ docker compose exec eep python -m scripts.create_admin \
   --username admin --password yourpassword --email admin@example.com
 ```
 
-### 6. Get an API token (optional, for direct API use)
+### 8. Test with sample files
+
+If you want to test the system with sample scans, use the `testing dataset/` folder. It contains sample inputs that can be uploaded through the frontend for local smoke tests, validation, and demonstrations.
+
+### 9. Get an API token (optional, for direct API use)
 
 ```bash
 curl -s -X POST http://localhost:8888/v1/auth/token \
@@ -147,9 +188,21 @@ This returns a JWT access token. Pass it as `Authorization: Bearer <token>` on s
 
 ---
 
+## Testing the deployed staging app
+
+If you want to test the deployed staging version instead of running everything locally, open:
+
+http://libraryai-staging-alb-520535967.eu-central-1.elb.amazonaws.com/
+
+Use this link for hosted demos, quick frontend checks, or validating the deployed environment. For local development and upload testing, use the Quick start steps above.
+
+---
+
 ## Running tests
 
 Tests run against the host Python environment using `uv`. Make sure you have run `uv sync` first.
+
+If you want to test the system with sample files, use the `testing dataset/` folder. It includes sample inputs for local smoke tests, validation, and demonstrations.
 
 ```bash
 # Full test suite
@@ -234,6 +287,25 @@ npm run type-check # TypeScript type check (tsc --noEmit)
 ---
 
 ## Optional features
+
+### Trained model files
+
+The trained models used by the system are available in Google Drive:
+
+https://drive.google.com/drive/folders/1lGB0ZF9BsQPF25X364uO-d5PM_xGJZoG
+
+The Drive folder contains the model files used for classification, segmentation, pose estimation, and layout detection. To run the system locally with real models, download the files and place them under the repository's `models/` directory. Each model should go in its corresponding IEP folder, following the same structure as the Drive folder, for example:
+
+```text
+models/
+  iep0/   # material classification
+  iep1a/  # geometry segmentation
+  iep1b/  # geometry pose estimation
+  iep2a/  # layout detection
+  iep2b/  # alternative layout detection
+```
+
+Model weights are intentionally not committed to Git. Keep downloaded model files local or store them in managed model storage for deployment.
 
 ### Real layout model weights (IEP2A, IEP2B)
 

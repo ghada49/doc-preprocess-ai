@@ -69,6 +69,8 @@ def _s3_env(monkeypatch: pytest.MonkeyPatch) -> None:
       - Provide fake credentials so boto3 does not raise NoCredentialsError.
     """
     monkeypatch.delenv("S3_ENDPOINT_URL", raising=False)
+    monkeypatch.delenv("S3_PUBLIC_ENDPOINT_URL", raising=False)
+    monkeypatch.delenv("S3_PRESIGN_ENDPOINT_URL", raising=False)
     monkeypatch.setenv("S3_ACCESS_KEY", "testing")
     monkeypatch.setenv("S3_SECRET_KEY", "testing")
     monkeypatch.setenv("AWS_DEFAULT_REGION", "us-east-1")
@@ -134,6 +136,22 @@ class TestUploadUrl:
 
     def test_is_non_empty(self, presign_ok: dict) -> None:  # type: ignore[type-arg]
         assert presign_ok["upload_url"]
+
+    def test_public_endpoint_is_used_before_signing(
+        self, client: TestClient, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("S3_ENDPOINT_URL", "http://minio:9000")
+        monkeypatch.setenv("S3_PUBLIC_ENDPOINT_URL", "http://localhost:9000")
+
+        mock_s3 = MagicMock()
+        mock_s3.generate_presigned_url.return_value = "http://localhost:9000/libraryai/uploads/x.tiff?signature=ok"
+
+        with patch.object(uploads_mod, "_s3_client", return_value=mock_s3) as mock_client:
+            r = client.post("/v1/uploads/jobs/presign")
+
+        assert r.status_code == 200
+        mock_client.assert_called_once_with(endpoint_url="http://localhost:9000")
+        assert r.json()["upload_url"].startswith("http://localhost:9000/")
 
 
 # ---------------------------------------------------------------------------
